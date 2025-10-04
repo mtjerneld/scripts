@@ -435,21 +435,23 @@ $dmarcTxt = Resolve-Txt $dmarcHost
   $hasV = ($dmarc.ContainsKey('v') -and $dmarc['v'] -match '(?i)^DMARC1$')
   $hasP = $dmarc.ContainsKey('p')
     if ($hasV -and $hasP) {
+    # Use the parsed tag map to check p and sp separately (avoid false matches where 'sp' contains 'p')
+    $pVal = if ($dmarc.ContainsKey('p')) { $dmarc['p'] } else { $null }
+    $spVal = if ($dmarc.ContainsKey('sp')) { $dmarc['sp'] } else { $null }
+
     $dmarcEnforced = $false
-    if ($dmarcTxt) {
-      $pMatch = [regex]::Match($dmarcTxt, '(?i)p\s*=\s*(quarantine|reject)')
-      if ($pMatch.Success) {
-        $dmarcEnforced = $true
-      }
+    if ($pVal -and $pVal -match '(?i)^(quarantine|reject)$') {
+      $dmarcEnforced = $true
     }
+
     Write-Host "DMARC looks present with required tags (v & p)." -ForegroundColor Green
     if ($dmarcEnforced) {
       Write-Host "DMARC status: OK" -ForegroundColor Green
     } else {
       Write-Host "DMARC status: FAIL" -ForegroundColor Red
     }
-    $pNoneMatch = [regex]::Match($dmarcTxt, '(?i)p\s*=\s*none')
-    if ($pNoneMatch.Success) {
+
+    if ($pVal -and $pVal -match '(?i)^none$') {
       Write-Host "Warning: DMARC is in testing mode only (p=none) and not enforced." -ForegroundColor Yellow
     }
   } else {
