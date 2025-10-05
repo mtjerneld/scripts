@@ -458,61 +458,41 @@ function ConvertTo-HtmlSection {
         }
     }
     
-    $html = @"
-  <h2>$verboseTitle</h2>
-"@
+    $html = "  <h2>$verboseTitle</h2>`n"
     
-    # Add informational text
     if ($infoText) {
-        $html += @"
-  <p>$([System.Web.HttpUtility]::HtmlEncode($infoText))</p>
-"@
+        $html += "  <p>$([System.Web.HttpUtility]::HtmlEncode($infoText))</p>`n"
     }
     
-    # Console output (details)
     if ($Result.Details -and $Result.Details.Count -gt 0) {
         $html += "  <pre>"
         foreach ($line in $Result.Details) {
-            $html += [System.Web.HttpUtility]::HtmlEncode($line) + "`n"
+            $html += ([System.Web.HttpUtility]::HtmlEncode($line) + "`n")
         }
-        $html += "</pre>"
+        $html += "</pre>`n"
     }
     
-    # Info/Warning block
     $allMessages = @()
-    if ($Result.InfoMessages -and $Result.InfoMessages.Count -gt 0) { 
-        $allMessages += $Result.InfoMessages 
-    }
-    if ($Result.Warnings -and $Result.Warnings.Count -gt 0) { 
-        $allMessages += $Result.Warnings 
-    }
-    
+    if ($Result.InfoMessages -and $Result.InfoMessages.Count -gt 0) { $allMessages += $Result.InfoMessages }
+    if ($Result.Warnings -and $Result.Warnings.Count -gt 0) { $allMessages += $Result.Warnings }
     if ($allMessages.Count -gt 0) {
-        $html += @"
-
-  <div class='info-block'>"@
+        $html += "`n  <div class='info-block'>`n"
         foreach ($msg in $allMessages) {
             $cls = 'info'
             if ($msg -match '^(?i)\s*Warning:') { $cls = 'warn' }
-            $html += @"
-    <p class='$cls'>$([System.Web.HttpUtility]::HtmlEncode($msg))</p>
-"@
+            $html += ("    <p class='" + $cls + "'>" + [System.Web.HttpUtility]::HtmlEncode($msg) + "</p>`n")
         }
-        $html += @"
-  </div>"@
+        $html += "  </div>`n"
     }
     
-    # Status line
     $statusText = "$($Result.Section) status: $($Result.Status)"
-    $cls = switch ($Result.Status) {
+    $clsFinal = switch ($Result.Status) {
         'OK'   { 'ok' }
         'FAIL' { 'fail' }
         'WARN' { 'warn' }
         'N/A'  { 'warn' }
     }
-    $html += @"
-  <p class='$cls'>$([System.Web.HttpUtility]::HtmlEncode($statusText))</p>
-"@
+    $html += "  <p class='" + $clsFinal + "'>" + [System.Web.HttpUtility]::HtmlEncode($statusText) + "</p>`n"
     
     return $html
 }
