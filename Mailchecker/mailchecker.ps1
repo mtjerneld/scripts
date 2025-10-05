@@ -40,9 +40,14 @@ function Write-Section($title) {
 }
 
 function Write-BoolLine {
-  param([string]$Label, [bool]$Value)
-  $color = if ($Value) { 'Green' } else { 'Red' }
-  $text  = if ($Value) { 'True' }  else { 'False' }
+  param([string]$Label, $Value)
+  if ($Value -is [string] -and $Value -eq "N/A") {
+    $color = 'Yellow'
+    $text = 'N/A'
+  } else {
+    $color = if ($Value) { 'Green' } else { 'Red' }
+    $text  = if ($Value) { 'True' }  else { 'False' }
+  }
   Write-Host ("- {0}: " -f $Label) -NoNewline
   Write-Host $text -ForegroundColor $color
 }
@@ -207,11 +212,96 @@ function Write-HtmlReport {
     [string]$TlsRptSection
   )
 
+  # Simple function to render any section with console output
+  function Render-Section($title, $sectionText, $warnings = @(), $infoMessages = @()) {
+    # Add informational text at the top of each section
+    $infoText = ""
+    switch ($title) {
+      "MX Records" { 
+        $infoText = "Mail Exchange (MX) records define which servers are authorized to receive email for your domain. Missing or incorrect MX records mean your domain cannot receive mail reliably." 
+      }
+      "SPF" { 
+        $infoText = "SPF (Sender Policy Framework) helps prevent email spoofing by specifying which mail servers are allowed to send messages on behalf of your domain. Weak or missing SPF records make it easier for attackers to impersonate your domain." 
+      }
+      "DKIM" { 
+        $infoText = "DKIM (DomainKeys Identified Mail) adds a digital signature to outgoing messages, proving they were not altered in transit and originate from an authorized sender. Without valid DKIM keys, recipients cannot verify the authenticity of your emails." 
+      }
+      "MTA-STS" { 
+        $infoText = "MTA-STS (Mail Transfer Agent - Strict Transport Security) enforces encrypted mail delivery (TLS) between servers, protecting messages from interception. Without MTA-STS, emails may still be sent unencrypted even if your server supports TLS." 
+      }
+      "DMARC" { 
+        $infoText = "DMARC (Domain-based Message Authentication, Reporting and Conformance) ties SPF and DKIM together and instructs receiving servers how to handle messages that fail authentication. A missing or unenforced DMARC policy allows spoofed emails to appear legitimate." 
+      }
+      "TLS-RPT" { 
+        $infoText = "TLS-RPT (SMTP TLS Reporting) provides feedback about encryption issues in mail delivery, helping administrators identify failed or downgraded TLS connections. It is optional but highly recommended for visibility and security monitoring." 
+      }
+    }
+    
+    # Update titles with more verbose definitions
+    $verboseTitle = $title
+    switch ($title) {
+      "MX Records" { $verboseTitle = "MX Records" }
+      "SPF" { $verboseTitle = "SPF (Sender Policy Framework)" }
+      "DKIM" { $verboseTitle = "DKIM (DomainKeys Identified Mail)" }
+      "MTA-STS" { $verboseTitle = "MTA-STS (Mail Transfer Agent - Strict Transport Security)" }
+      "DMARC" { $verboseTitle = "DMARC (Domain-based Message Authentication, Reporting and Conformance)" }
+      "TLS-RPT" { $verboseTitle = "TLS-RPT (SMTP TLS Reporting)" }
+    }
+    
+    $result = "  <h2>$verboseTitle</h2>`n"
+    if ($infoText) {
+      $result += "  <p>$([System.Web.HttpUtility]::HtmlEncode($infoText))</p>`n"
+    }
+    if ($sectionText) {
+      $parts = Split-SectionAndStatus $sectionText
+      $before = $parts[0]; $statusLine = $parts[1]; $extractedWarnings = $parts[2]
+      
+      # Console output
+      if ($before) { 
+        $formatted = Format-SectionHtml $before
+        $result += "  $formatted`n"
+      }
+      
+      # Combine all messages into one block
+      $allMessages = @()
+      
+      # Add passed info messages first
+      if ($infoMessages -and $infoMessages.Count -gt 0) { $allMessages += $infoMessages }
+      
+      # Add passed warnings
+      if ($warnings -and $warnings.Count -gt 0) { $allMessages += $warnings }
+      
+      # Add extracted warnings
+      if ($extractedWarnings -and $extractedWarnings.Count -gt 0) { $allMessages += $extractedWarnings }
+      
+      # Render combined block - only if we have messages
+      if ($allMessages.Count -gt 0) {
+        $result += "`n  <div class='info-block'>`n"
+        foreach ($msg in $allMessages) {
+          $cls = 'info'
+          if ($msg -match '^(?i)\s*Warning:') { $cls = 'warn' }
+          $result += "    <p class='$cls'>$( [System.Web.HttpUtility]::HtmlEncode($msg) )</p>`n"
+        }
+        $result += "  </div>`n"
+      }
+      
+      # Status line
+      if ($statusLine) { 
+        $statusHtml = Render-FinalStatusParagraph $statusLine
+        $result += "  $statusHtml`n"
+      }
+    } else {
+      $result += "  <p class='fail'>No $title data available.</p>`n"
+    }
+    return $result
+  }
+
   $css = @'
   body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; color:#222 }
   h1 { color:#0078D7 }
   h2 { border-bottom:1px solid #ddd; padding-bottom:4px }
-  table { border-collapse: collapse; width:100%; margin-bottom:12px }
+  table { border-collapse: collapse; width: 480px; margin-bottom: 12px; table-layout: fixed; }
+  table th, table td { word-wrap: break-word; overflow-wrap: break-word; padding: 6px 8px; }
   /* Borderless table variant for DKIM (columns still align) */
   table.no-borders { border: none }
   table.no-borders th, table.no-borders td { border: none; padding:6px 8px; text-align:left; vertical-align:top; }
@@ -222,11 +312,14 @@ function Write-HtmlReport {
   .warn { color: #b58900 }
   .fail { color: red }
   .info { color: #0078D7 }
-  p.ok, p.fail, p.warn, p.info { font-size: 14px; margin: 8px 0; font-weight: 600 }
+  p.ok, p.fail, p.warn, p.info { font-size: 14px; margin: 4px 0; font-weight: 600 }
   p.ok { color: green }
   p.fail { color: red }
   p.warn { color: #b58900 }
   p.info { color: #0078D7 }
+  /* Info blocks styling */
+  .info-block { margin: 8px 0 4px 0; }
+  .info-block p { margin: 2px 0; }
 '@
 
   $now = (Get-Date).ToString('u')
@@ -243,12 +336,39 @@ function Write-HtmlReport {
     <p>Generated: $now</p>
 "@
 
-  $html += "<h2>Summary</h2><table><tr><th>Item</th><th>Value</th></tr>"
+  # Friendly names mapping for Summary table
+  $friendlyNames = @{
+    'Domain' = 'Domain'
+    'MX_Records_Present' = 'MX records found'
+    'SPF_Present' = 'SPF record present'
+    'SPF_Healthy' = 'SPF configuration valid'
+    'DKIM_ValidSelector' = 'DKIM selector valid'
+    'MTA_STS_DNS_Present' = 'MTA-STS DNS record present'
+    'MTA_STS_Enforced' = 'MTA-STS policy enforced'
+    'DMARC_Present' = 'DMARC record present'
+    'DMARC_Enforced' = 'DMARC policy enforced (reject/quarantine)'
+    'TLS_RPT_Present' = 'TLS-RPT reporting enabled'
+  }
+
+  $html += "<h2>Summary</h2>"
+  $html += "<p>Tested domain: <strong>$([System.Web.HttpUtility]::HtmlEncode($Summary.Domain))</strong></p>"
+  $html += "<table style='width: 480px; table-layout: fixed;'><tr><th style='width: 360px;'>Test</th><th style='width: 120px;'>Result</th></tr>"
   foreach ($k in $Summary.PSObject.Properties.Name) {
+    # Skip Domain since it's now shown above the table
+    if ($k -eq 'Domain') { continue }
     $v = $Summary.$k
-    if ($v -is [bool]) { $cls = if ($v) { 'ok' } else { 'fail' } } else { $cls = '' }
-    $valStr = if ($v -is [bool]) { [string]$v } else { [System.Web.HttpUtility]::HtmlEncode($v) }
-    $html += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($k) )</td><td class='$cls'>$valStr</td></tr>"
+    if ($v -is [string] -and $v -eq "N/A") { 
+      $cls = 'warn'
+      $valStr = 'N/A'
+    } elseif ($v -is [bool]) { 
+      $cls = if ($v) { 'ok' } else { 'fail' }
+      $valStr = [string]$v
+    } else { 
+      $cls = ''
+      $valStr = [System.Web.HttpUtility]::HtmlEncode($v)
+    }
+    $displayName = if ($friendlyNames.ContainsKey($k)) { $friendlyNames[$k] } else { $k }
+    $html += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($displayName) )</td><td class='$cls'>$valStr</td></tr>"
   }
   $html += "</table>"
 
@@ -264,19 +384,19 @@ function Write-HtmlReport {
       # Default: just HTML-encode the line
       $outLines += [System.Web.HttpUtility]::HtmlEncode($line)
     }
-    return "<pre>" + ($outLines -join "`n") + "</pre>"
+    return "  <pre>" + ($outLines -join "`n") + "</pre>"
   }
 
   function Render-FinalStatusParagraph([string]$line) {
     if (-not $line) { return '' }
     $enc = [System.Web.HttpUtility]::HtmlEncode($line.Trim())
-    if ($line -match '(?i)status:\s*(OK)') { return "<p class='ok'>$enc</p>" }
-    if ($line -match '(?i)status:\s*(FAIL)') { return "<p class='fail'>$enc</p>" }
-    if ($line -match '(?i)status:\s*(WARNING|WARN)') { return "<p class='warn'>$enc</p>" }
+    if ($line -match '(?i)status:\s*(OK)') { return "  <p class='ok'>$enc</p>" }
+    if ($line -match '(?i)status:\s*(FAIL)') { return "  <p class='fail'>$enc</p>" }
+    if ($line -match '(?i)status:\s*(WARNING|WARN)') { return "  <p class='warn'>$enc</p>" }
     # Generic fallback: if line begins with Warning/Info, render with matching class
-    if ($line -match '(?i)^\s*warning') { return "<p class='warn'>$enc</p>" }
-    if ($line -match '(?i)^\s*info') { return "<p class='info'>$enc</p>" }
-    return "<p>$enc</p>"
+    if ($line -match '(?i)^\s*warning') { return "  <p class='warn'>$enc</p>" }
+    if ($line -match '(?i)^\s*info') { return "  <p class='info'>$enc</p>" }
+    return "  <p>$enc</p>"
   }
 
   function Render-Insights($arr) {
@@ -292,185 +412,56 @@ function Write-HtmlReport {
   }
 
   function Split-SectionAndStatus([string]$sectionText) {
-    # Returns array: [0]=contentBeforeStatus, [1]=statusLine or $null
-    if (-not $sectionText) { return @('',$null) }
+    # Returns array: [0]=contentBeforeStatus, [1]=statusLine or $null, [2]=warnings array
+    if (-not $sectionText) { return @('',$null,@()) }
     $sec = $sectionText
+    
+    # Extract warnings first (lines containing "Warning:")
+    $warnings = @()
+    $lines = $sec -split "`n"
+    $contentLines = @()
+    foreach ($line in $lines) {
+      if ($line -match '(?i)\s*Warning:') {
+        $warnings += $line.Trim()
+      } else {
+        $contentLines += $line
+      }
+    }
+    $sec = $contentLines -join "`n"
+    
     # Find all lines that contain 'status:' (case-insensitive) and pick the last
     $matches = [regex]::Matches($sec, '(?im)^.*status:.*$')
     if ($matches.Count -gt 0) {
       $last = $matches[$matches.Count - 1]
       $statusLine = $last.Value.Trim()
       $before = $sec.Substring(0, $last.Index).TrimEnd("`r","`n")
-      return @($before, $statusLine)
+      return @($before, $statusLine, $warnings)
     }
-    return @($sec, $null)
+    return @($sec, $null, $warnings)
   }
 
   # (Block status table removed - verbose per-block console text is included in each section below)
 
-  # MX
-  $html += "<h2>MX Records</h2>"
-  if ($MXSection) {
-    $parts = Split-SectionAndStatus $MXSection
-    $before = $parts[0]; $statusLine = $parts[1]
-    if ($before) { $html += Format-SectionHtml $before }
-    if ($statusLine) { $html += Render-FinalStatusParagraph $statusLine }
+  # Use simple approach for all sections
+  $html += Render-Section "MX Records" $MXSection
+  $html += Render-Section "SPF" $SPFSection $SpfWarnings
   
+  # DKIM needs special handling for validation message - add it to existing warnings
+  if ($DKIM_AnySelector_Valid) { 
+    $DkimWarnings += "Info: DKIM validation successful - at least one valid selector found with proper public key." 
+  } else { 
+    $DkimWarnings += "Warning: DKIM validation failed - no valid selectors found with proper public keys." 
   }
-  elseif ($MX -and @($MX).Count -gt 0) { $html += ($MX | Select-Object Preference,NameExchange | ConvertTo-Html -Fragment) -join "`n"; $html += "<p class='ok'>MX status: OK</p>" } else { $html += "<p class='fail'>No MX records found.</p>" }
-
-  # SPF
-  $html += "<h2>SPF</h2>"
-  if ($SPFSection) {
-    # If a pre-built SPFSection exists, split out the final status line so we can inject warnings before it
-    $parts = Split-SectionAndStatus $SPFSection
-    $before = $parts[0]; $statusLine = $parts[1]
-    if ($before) { $html += Format-SectionHtml $before }
-    if ($SpfWarnings -and $SpfWarnings.Count -gt 0) { $html += Render-Insights $SpfWarnings }
-    if ($statusLine) { $html += Render-FinalStatusParagraph $statusLine }
-  }
-  elseif ($SPF -and @($SPF).Count -gt 0) {
-    $html += "<ul>"
-    foreach ($r in $SPF) { $html += "<li>$( [System.Web.HttpUtility]::HtmlEncode($r) )</li>" }
-    $html += "</ul>"
-    if ($SpfWarnings -and $SpfWarnings.Count -gt 0) { foreach ($w in $SpfWarnings) { $html += "<p class='warn'>$( [System.Web.HttpUtility]::HtmlEncode($w) )</p>" } }
-  } else {
-    $html += "<p class='fail'>No SPF (v=spf1) record found.</p>"
-  }
-
-  # DKIM
-  $html += "<h2>DKIM</h2>"
-  if ($DKIMSection) {
-    # If the prebuilt DKIMSection looks like selector summary lines ("Selector <name>: Found=... V=... p=..."),
-    # render it as a borderless table so columns line up.
-    function Convert-DkimSectionToPre([string]$txt) {
-      if (-not $txt) { return $null }
-      $lines = $txt -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-      $rows = @()
-      foreach ($ln in $lines) {
-        if ($ln -match '^(?i)Selector\s+([^:]+):\s*Found=([^\s]+)\s+V=([^\s]+)\s+p=([^\s]+)') {
-          $rows += [pscustomobject]@{ Selector = $Matches[1].Trim(); Found = $Matches[2]; V = $Matches[3]; P = $Matches[4] }
-        }
-      }
-      if ($rows.Count -eq 0) { return $null }
-
-      # compute selector column width for alignment
-      $selWidth = ($rows | ForEach-Object { $_.Selector.Length } | Measure-Object -Maximum).Maximum
-      if (-not $selWidth) { $selWidth = 8 }
-
-      $out = @()
-      foreach ($r in $rows) {
-        $sel = $r.Selector.PadRight($selWidth)
-        $out += ("Selector {0}: Found={1} V={2} p={3}" -f $sel, $r.Found, $r.V, $r.P)
-      }
-
-      return Format-SectionHtml ($out -join "`n")
-    }
-
-    # If a pre-built DKIMSection exists, split out the final status so we can insert warnings before it
-    $parts = Split-SectionAndStatus $DKIMSection
-    $before = $parts[0]; $statusLine = $parts[1]
-    if ($before) {
-      # Try to convert selector-summary text into aligned preformatted lines; fallback to pre block if not matched
-      $converted = Convert-DkimSectionToPre $before
-      if ($converted) { $html += $converted } else { $html += Format-SectionHtml $before }
-    }
-    if ($DkimWarnings -and $DkimWarnings.Count -gt 0) { $html += Render-Insights $DkimWarnings }
-    if ($statusLine) { $html += Render-FinalStatusParagraph $statusLine } elseif ($DkimStatusLine) { $html += Render-FinalStatusParagraph $DkimStatusLine }
-  } elseif ($DKIM -and @($DKIM).Count -gt 0) {
-    # Render structured DKIM results as aligned console-like preformatted lines (no colors, no HTML spans)
-    $rows = @()
-    foreach ($d in $DKIM) {
-      $rows += [pscustomobject]@{ Selector = $d.Selector; Found = if ($d.Found) { 'True' } else { 'False' }; V = if ($d.Has_V_DKIM1) { 'True' } else { 'False' }; P = if ($d.Has_PublicKey_p) { 'True' } else { 'False' } }
-    }
-    # compute selector width
-    $selWidth = ($rows | ForEach-Object { $_.Selector.Length } | Measure-Object -Maximum).Maximum
-    if (-not $selWidth) { $selWidth = 8 }
-    $lines = @()
-    foreach ($r in $rows) {
-      $sel = $r.Selector.PadRight($selWidth)
-      $lines += ("Selector {0}: Found={1} V={2} p={3}" -f $sel, $r.Found, $r.V, $r.P)
-    }
-    $html += Format-SectionHtml ($lines -join "`n")
-    if ($DkimWarnings -and $DkimWarnings.Count -gt 0) { $html += Render-Insights $DkimWarnings }
-    # Add final concise status paragraph
-    # Use same logic as console output - check for valid selectors
-    $validSelectors = $DKIM | Where-Object { $_.Found -and $_.Has_PublicKey_p -and (-not $_.Has_V_DKIM1 -or $_.Has_V_DKIM1) }
-    if (@($validSelectors).Count -gt 0) { $html += "<p class='ok'>DKIM status: OK</p>" } else { $html += "<p class='fail'>DKIM status: FAIL</p>" }
-  } else { $html += "<p class='fail'>No DKIM selectors found.</p>" }
-
-
-# --- MTA-STS: safe boolean defaults to avoid empty-string -> [bool] issues ---
-$MtaStsModeTesting = $false
-$MtaStsEnforced    = $false
-[string]$mtaStsUrlVal = $null
-[string]$mtaStsBody   = $null
-# --- end defaults ---
-  # MTA-STS
-  $html += "<h2>MTA-STS</h2>"
-  # Always check for testing mode warning first, regardless of code path
-  if ($MtaStsModeTesting) { $html += Render-Insights @("Warning: MTA-STS is in testing mode (mode=testing) and not enforced (HTTPS policy).") }
+  $html += Render-Section "DKIM" $DKIMSection $DkimWarnings
+  $html += Render-Section "MTA-STS" $MtaStsSection
   
-  if ($MtaStsSection) {
-    # If a pre-built section exists, split out final status and render insights consistently
-    $parts = Split-SectionAndStatus $MtaStsSection
-    $before = $parts[0]; $statusLine = $parts[1]
-    if ($before) { $html += Format-SectionHtml $before }
-    if ($statusLine) { $html += Render-FinalStatusParagraph $statusLine } else { if ($MtaStsEnforced) { $html += "<p class='ok'>MTA-STS status: OK</p>" } else { $html += "<p class='fail'>MTA-STS status: FAIL</p>" } }
-  } else {
-    if ($MtaStsTxt) { $html += Format-SectionHtml $MtaStsTxt }
-    if ($MtaStsBody) {
-      $html += "<h3>HTTPS policy ($MtaStsUrl)</h3>"
-      # Render the fetched policy body inside its own pre block
-      $html += Format-SectionHtml $MtaStsBody
-      # Finally, render a short status line for MTA-STS enforcement
-      if ($MtaStsEnforced) { $html += "<p class='ok'>MTA-STS status: OK</p>" } else { $html += "<p class='fail'>MTA-STS status: FAIL</p>" }
-    }
-  }
-
-
-# --- DMARC: safe boolean defaults ---
-$dmarcEnforced = $false
-# --- end DMARC defaults ---
-  # DMARC
-  $html += "<h2>DMARC</h2>"
-  if ($DmarcSection) {
-    # If a pre-built section exists, split out final status and render insights consistently
-    $parts = Split-SectionAndStatus $DmarcSection
-    $before = $parts[0]; $statusLine = $parts[1]
-    if ($before) { $html += Format-SectionHtml $before }
-    if ($DmarcWarning) { $html += Render-Insights @($DmarcWarning) }
-    if ($statusLine) { $html += Render-FinalStatusParagraph $statusLine } else { if ($DmarcEnforced) { $html += "<p class='ok'>DMARC status: OK</p>" } else { $html += "<p class='fail'>DMARC status: FAIL</p>" } }
-  } else {
-    if ($DmarcMap -and $DmarcMap.Keys.Count -gt 0) {
-      # Build ordered tag lines so we can split at the 'p' tag
-      $tagsOrder = @('v','p','sp','rua','ruf','fo','aspf','adkim','pct')
-      $tagLines = @()
-      foreach ($t in $tagsOrder) {
-        if ($DmarcMap.ContainsKey($t)) { $tagLines += "- $t = $($DmarcMap[$t])" }
-      }
-
-      # Render a single pre block with all tag lines, then render warnings and a final status paragraph
-      $preTop = "TXT at _dmarc.$($Domain):`n$DmarcTxt"
-      $allTags = ($tagLines -join "`n")
-      $html += "<pre>" + [System.Web.HttpUtility]::HtmlEncode($preTop + "`n" + $allTags) + "</pre>"
-      if ($DmarcWarning) { $html += "<p class='warn'>$( [System.Web.HttpUtility]::HtmlEncode($DmarcWarning) )</p>" }
-      if ($DmarcEnforced) { $html += "<p class='ok'>DMARC status: OK</p>" } else { $html += "<p class='fail'>DMARC status: FAIL</p>" }
-    } else { $html += "<p class='fail'>No DMARC record found.</p>" }
-  }
-
-  # TLS-RPT
-  $html += "<h2>TLS-RPT</h2>"
-  if ($TlsRptSection) {
-    $parts = Split-SectionAndStatus $TlsRptSection
-    $before = $parts[0]; $statusLine = $parts[1]
-    if ($before) { $html += Format-SectionHtml $before }
-    if ($statusLine) { $html += Render-FinalStatusParagraph $statusLine }
-  } elseif ($TlsRptTxt) {
-    $html += Format-SectionHtml $TlsRptTxt
-  } else {
-    $html += "<p class='warn'>No TLS-RPT record found (optional).</p>"
-  }
+  # DMARC - handle warnings and info separately since they come as strings, not arrays
+  $dmarcWarnings = @()
+  $dmarcInfoMessages = @()
+  if ($DmarcWarning) { $dmarcWarnings = @($DmarcWarning) }
+  if ($dmarcInfo) { $dmarcInfoMessages = @($dmarcInfo) }
+  $html += Render-Section "DMARC" $DmarcSection $dmarcWarnings $dmarcInfoMessages
+  $html += Render-Section "TLS-RPT" $TlsRptSection
 
   $html += "</body></html>"
 
@@ -536,22 +527,9 @@ if (@($spfRecs).Count -gt 0) {
   $i = 1
   foreach ($rec in $spfRecs) {
     $spfConsoleLines += ("SPF #{0}: {1}" -f $i, $rec)
-    $all = [regex]::Match($rec, '(?i)(^|\s)([~+\-?])?all(\s|$)')
-    if ($all.Success) {
-      $sign = $all.Groups[2].Value
-      $desc = switch ($sign) {
-        '-' { 'Hard fail (-all)' }
-        '~' { 'Soft fail (~all)' }
-        '+' { 'Pass (+all)' }
-        '?' { 'Neutral (?all)' }
-        default { 'Pass (+all)' }
-      }
-      Write-Host ("- all mechanism: {0}" -f $desc)
-    } else {
-      Write-Host "- all mechanism: (missing)"
-    }
+    # Remove the all mechanism analysis - not needed in output
     $lookupCount = Get-SpfLookups $rec @()
-  $spfConsoleLines += ("- DNS lookups (SPF): {0}" -f $lookupCount)
+  $spfConsoleLines += ("Info: DNS lookups (SPF): {0}" -f $lookupCount)
     $spfHealthy = $true
     $spfSoftFail = $false
     if (-not $rec) {
@@ -565,7 +543,6 @@ if (@($spfRecs).Count -gt 0) {
     $allMatch = [regex]::Match($rec, '(?i)(^|\s)([~+\-?])?all(\s|$)')
     if ($allMatch.Success -and $allMatch.Groups[2].Value -eq '~') {
       $msg = "Warning: SPF uses soft fail (~all), which is not recommended for production."
-  $spfConsoleLines += $msg
       $spfWarnings += $msg
       $spfHealthy = $false
       $spfSoftFail = $true
@@ -573,7 +550,13 @@ if (@($spfRecs).Count -gt 0) {
     $i++
   }
   # Print buffered SPF console lines (DNS/SPF record details)
-  foreach ($ln in $spfConsoleLines) { Write-Host $ln }
+  foreach ($ln in $spfConsoleLines) { 
+    if ($ln -match '^Info:') {
+      Write-Host $ln -ForegroundColor Cyan
+    } else {
+      Write-Host $ln
+    }
+  }
   # Print collected SPF warnings/insights
   foreach ($w in $spfWarnings) { Write-Host $w -ForegroundColor Yellow }
   # Final SPF status
@@ -589,11 +572,30 @@ if (@($spfRecs).Count -gt 0) {
 
 # 3) DKIM (by selectors)
 Write-Section "DKIM"
-$selectorList = ($Selectors -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$dkimResults = @()
-$dkimWarnings = @()
+# Skip DKIM test only if domain has no MX AND (no SPF record OR SPF only has -all)
+$hasSpfWithMechanisms = $false
+if (@($spfRecs).Count -gt 0) {
+  foreach ($spf in $spfRecs) {
+    # Check if SPF has any mechanisms other than just v=spf1 and -all
+    # Remove v=spf1 and -all, then check if anything meaningful remains
+    $cleanSpf = $spf -replace '(?i)\bv=spf1\s*', '' -replace '(?i)\s*[~+\-?]?all\s*$', '' -replace '^\s+|\s+$', ''
+    $hasMechanisms = $cleanSpf.Length -gt 0 -and $cleanSpf -match '(?i)(include:|a:|mx:|ptr:|exists:|redirect=)'
+    if ($hasMechanisms) {
+      $hasSpfWithMechanisms = $true
+      break
+    }
+  }
+}
 
-foreach($sel in $selectorList){
+if (-not $mxOk -and -not $hasSpfWithMechanisms) {
+  Write-Host "Info: Not applicable - domain has no mail flow (no MX and no SPF mechanisms)" -ForegroundColor Cyan
+  Write-Host "DKIM status: N/A" -ForegroundColor Yellow
+} else {
+  $selectorList = ($Selectors -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+  $dkimResults = @()
+  $dkimWarnings = @()
+
+  foreach($sel in $selectorList){
   $dkimHost = "$sel._domainkey.$Domain"
   $txt = Resolve-Txt $dkimHost
   if ($txt -is [System.Collections.IEnumerable]) { $txt = ($txt -join "") }
@@ -643,8 +645,7 @@ foreach ($dkim in @($validSelectors)) {
     $dkimWarnings += $msg
   }
   if ($dkim.FullTXT -match '(?i)\bt=s\b') {
-    $msg = "Info: DKIM selector '$($dkim.Selector)' has strict flag (t=s)."
-    Write-Host $msg -ForegroundColor Cyan
+    $msg = "Info: DKIM selector '$($dkim.Selector)' uses strict mode (t=s) - good security practice that prevents email spoofing from other domains."
     $dkimWarnings += $msg
   }
   if ($dkim.FullTXT -match '(?i)\bp=\s*;') {
@@ -658,20 +659,34 @@ foreach ($dkim in @($validSelectors)) {
 $dkimResults | Format-Table -AutoSize
 
 # Then print collected warnings/insights
-foreach ($w in $dkimWarnings) { Write-Host $w -ForegroundColor Yellow }
+foreach ($w in $dkimWarnings) { 
+  if ($w -match '^Info:') {
+    Write-Host $w -ForegroundColor Cyan
+  } else {
+    Write-Host $w -ForegroundColor Yellow
+  }
+}
 
 # Finally print summarized DKIM status
-if ($DKIM_AnySelector_Valid) {
-  Write-Host "DKIM: At least one valid selector found." -ForegroundColor Green
+if (-not $mxOk) {
+  Write-Host "Info: Not applicable - domain cannot receive email" -ForegroundColor Cyan
+  Write-Host "DKIM status: N/A" -ForegroundColor Yellow
+} elseif ($DKIM_AnySelector_Valid) {
+  Write-Host "Info: DKIM validation successful - at least one valid selector found with proper public key." -ForegroundColor Cyan
   Write-Host "DKIM status: OK" -ForegroundColor Green
 } else {
-  Write-Host "DKIM: No valid selector found." -ForegroundColor Red
+  Write-Host "Warning: DKIM validation failed - no valid selectors found with proper public keys." -ForegroundColor Yellow
   Write-Host "DKIM status: FAIL" -ForegroundColor Red
+}
 }
 
 
 # 4) MTA-STS
 Write-Section "MTA-STS"
+if (-not $mxOk) {
+  Write-Host "Info: Not applicable - domain cannot receive email" -ForegroundColor Cyan
+  Write-Host "MTA-STS status: N/A" -ForegroundColor Yellow
+} else {
 
 # --- MTA-STS: säkra defaults (alltid bools) ---
 $MtaStsModeTesting = $false
@@ -768,10 +783,14 @@ if ($mtaStsBody) {
 }
 
 # Final MTA-STS status based on our robust parsing
-if ($MtaStsEnforced) {
+if (-not $mxOk) {
+  Write-Host "Info: Not applicable - domain cannot receive email" -ForegroundColor Cyan
+  Write-Host "MTA-STS status: N/A" -ForegroundColor Yellow
+} elseif ($MtaStsEnforced) {
   Write-Host "MTA-STS status: OK" -ForegroundColor Green
 } else {
   Write-Host "MTA-STS status: FAIL" -ForegroundColor Red
+}
 }
 
 # 5) DMARC
@@ -841,8 +860,12 @@ try {
 
 # 6) TLS-RPT
 Write-Section "SMTP TLS Reporting (TLS-RPT)"
-$tlsRptHost = "_smtp._tls.$Domain"
-$tlsRptTxt = Resolve-Txt $tlsRptHost
+if (-not $mxOk) {
+  Write-Host "Info: Not applicable - domain cannot receive email" -ForegroundColor Cyan
+  Write-Host "TLS-RPT status: N/A" -ForegroundColor Yellow
+} else {
+  $tlsRptHost = "_smtp._tls.$Domain"
+  $tlsRptTxt = Resolve-Txt $tlsRptHost
 if ($tlsRptTxt) {
   Write-Host ("TXT at $($tlsRptHost):`n$($tlsRptTxt)")
   $hasV = $tlsRptTxt -match "(?i)\bv=TLSRPTv1\b"
@@ -851,24 +874,33 @@ if ($tlsRptTxt) {
   if ($ruaMatch.Success) { Write-Host ("- rua: {0}" -f $ruaMatch.Groups[1].Value) } else { Write-Host "- rua: (missing)" }
   Write-Host "TLS-RPT status: OK" -ForegroundColor Green
 } else {
-  Write-Host "No TLS-RPT record found (optional but recommended)." -ForegroundColor Yellow
-  Write-Host "TLS-RPT status: FAIL" -ForegroundColor Red
+  if (-not $mxOk) {
+    Write-Host "Info: Not applicable - domain cannot receive email" -ForegroundColor Cyan
+    Write-Host "TLS-RPT status: N/A" -ForegroundColor Yellow
+  } else {
+    Write-Host "No TLS-RPT record found (optional but recommended)." -ForegroundColor Yellow
+    Write-Host "TLS-RPT status: FAIL" -ForegroundColor Red
+  }
+}
 }
 
 # Summary
 Write-Section "Summary"
 Write-Host "Tested domain: $Domain" -ForegroundColor White
+
+# If no MX records, only validate outbound features (SPF, DMARC)
+$hasMXRecords = [bool]$mxOk
 $summary = [pscustomobject]@{
   Domain                 = $Domain
-  MX_Records_Present     = [bool]$mxOk
+  MX_Records_Present     = $hasMXRecords
   SPF_Present            = [bool](@($spfRecs).Count -gt 0)
   SPF_Healthy            = [bool]$spfHealthy
-  DKIM_ValidSelector     = [bool]$DKIM_AnySelector_Valid
-  MTA_STS_DNS_Present    = [bool]$mtaStsTxt
-  MTA_STS_Enforced       = [bool]$MtaStsEnforced
+  DKIM_ValidSelector     = if ($hasMXRecords -or $hasSpfWithMechanisms) { [bool]$DKIM_AnySelector_Valid } else { "N/A" }
+  MTA_STS_DNS_Present    = if ($hasMXRecords) { [bool]$mtaStsTxt } else { "N/A" }
+  MTA_STS_Enforced       = if ($hasMXRecords) { [bool]$MtaStsEnforced } else { "N/A" }
   DMARC_Present          = [bool]$dmarcTxt
   DMARC_Enforced         = [bool]$dmarcEnforced
-  TLS_RPT_Present        = [bool]$tlsRptTxt
+  TLS_RPT_Present        = if ($hasMXRecords) { [bool]$tlsRptTxt } else { "N/A" }
 }
 
 
@@ -927,27 +959,42 @@ if ($outPath) {
   } else { $spfSection = "No SPF (v=spf1) record found at $Domain`nSPF status: FAIL" }
 
   $dkimSection = $null
-  if ($dkimResults -and @($dkimResults).Count -gt 0) {
+  if (-not $mxOk -and -not $hasSpfWithMechanisms) {
+    # N/A case - domain has no mail flow
+    $dkimSection = "Info: Not applicable - domain has no mail flow (no MX and no SPF mechanisms)`nDKIM status: N/A"
+  } elseif ($dkimResults -and @($dkimResults).Count -gt 0) {
     $lines = @()
     foreach ($d in $dkimResults) { $lines += "Selector $($d.Selector): Found=$($d.Found) V=$($d.Has_V_DKIM1) p=$($d.Has_PublicKey_p)" }
-  if ($DKIM_AnySelector_Valid) { $lines += "DKIM: At least one valid selector found.`n`n"; $dkimStatusLine = "DKIM status: OK" } else { $lines += "DKIM: No valid selector found.`n`n"; $dkimStatusLine = "DKIM status: FAIL" }
-    # We have structured DKIM results available; prefer rendering the verbose HTML table
-    # instead of embedding the console-style pre block. Clear $dkimSection so the
-    # HTML writer will use the structured $DKIM data path.
-    $dkimSection = $null
+  if ($DKIM_AnySelector_Valid) { $dkimStatusLine = "DKIM status: OK" } else { $dkimStatusLine = "DKIM status: FAIL" }
+    # Add status line to the section
+    $lines += $dkimStatusLine
+    # Build console-style section for HTML rendering
+    $dkimSection = $lines -join "`n"
   } else { $dkimSection = "DKIM: No selectors checked.`nDKIM status: FAIL" }
 
+  # Build MTA-STS section with all console output including warnings
   $mtaStsSection = $null
-  if ($mtaStsTxtVal) {
+  if (-not $mxOk) {
+    # N/A case - domain cannot receive email
+    $mtaStsSection = "Info: Not applicable - domain cannot receive email`nMTA-STS status: N/A"
+  } elseif ($mtaStsTxtVal) {
     $mtaStsSection = "TXT at _mta-sts.$($Domain):`n$($mtaStsTxtVal)"
-  if ($mtaStsBodyVal) { $mtaStsSection += "`nFetched policy from $($mtaStsUrlVal)`n" + $mtaStsBodyVal }
-  # Testing mode warning is handled separately in HTML function via $MtaStsModeTesting
-  # Add correct status based on MtaStsEnforced
-  if ($MtaStsEnforced) { $mtaStsSection += "`nMTA-STS status: OK" } else { $mtaStsSection += "`nMTA-STS status: FAIL" }
-  } else { $mtaStsSection = "No _mta-sts TXT record found.`nMTA-STS status: FAIL" }
+    if ($mtaStsBodyVal) { 
+      $mtaStsSection += "`nFetched policy from $($mtaStsUrlVal)`n" + $mtaStsBodyVal 
+      # Add testing mode warning if applicable (same as console output)
+      if ($MtaStsModeTesting) { 
+        $mtaStsSection += "`n`nWarning: MTA-STS is in testing mode (mode=testing) and not enforced (HTTPS policy)." 
+      }
+    }
+    # Add status (same as console output)
+    if ($MtaStsEnforced) { $mtaStsSection += "`nMTA-STS status: OK" } else { $mtaStsSection += "`nMTA-STS status: FAIL" }
+  } else { 
+    $mtaStsSection = "No _mta-sts TXT record found.`nMTA-STS status: FAIL" 
+  }
 
   $dmarcSection = $null
   $dmarcWarning = $null
+  $dmarcInfo = $null
   if ($dmarcMap -and $dmarcMap.Keys.Count -gt 0) {
     $lines = @()
   $lines += "TXT at _dmarc.$($Domain):`n$($dmarcTxt)"
@@ -962,15 +1009,19 @@ if ($outPath) {
         }
       }
     }
+    # Add info message about DMARC presence
+    $dmarcInfo = "Info: DMARC looks present with required tags (v & p)."
   if ($dmarcEnforced) { $dmarcStatus = "`nDMARC status: OK" } else { $dmarcStatus = "`nDMARC status: FAIL" }
   $lines += $dmarcStatus
     $dmarcSection = $lines -join "`n"
   } else { $dmarcSection = "No DMARC record found at _dmarc.$Domain`nDMARC status: FAIL" }
-  # If we captured a separate DMARC warning, prefer the structured rendering in the HTML writer
-  if ($dmarcWarning) { $dmarcSection = $null }
+  # Keep DMARC section for HTML rendering (warnings will be handled by Split-SectionAndStatus)
 
   $tlsRptSection = $null
-  if ($tlsRptTxtVal) {
+  if (-not $mxOk) {
+    # N/A case - domain cannot receive email
+    $tlsRptSection = "Info: Not applicable - domain cannot receive email`nTLS-RPT status: N/A"
+  } elseif ($tlsRptTxtVal) {
     $tlsRptSection = "TXT at _smtp._tls.$($Domain):`n$($tlsRptTxtVal)`n`nTLS-RPT status: OK"
   } else { $tlsRptSection = "No TLS-RPT record found (optional but recommended).`n`nTLS-RPT status: FAIL" }
 
