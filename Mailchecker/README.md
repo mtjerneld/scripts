@@ -13,6 +13,14 @@ This tool performs a complete email security audit by checking:
 - **DMARC (Domain-based Message Authentication, Reporting and Conformance)**: Email authentication policy
 - **TLS-RPT (TLS Reporting)**: TLS connection reporting configuration
 
+## Recent Improvements
+
+- **Unified Result Objects**: All security checks now return structured result objects for better consistency
+- **Simplified HTML Generation**: Clean, maintainable HTML report generation using unified result objects
+- **Streamlined Parameters**: Removed redundant `-HtmlOutput` parameter - use `-Html` for auto-generated timestamped reports
+- **Enhanced Code Structure**: Eliminated duplicate code and improved maintainability
+- **Better Error Handling**: More robust DNS resolution with automatic fallback between multiple servers
+
 ## Requirements
 
 - Windows PowerShell 5.1 or PowerShell Core 6+
@@ -36,11 +44,8 @@ This tool performs a complete email security audit by checking:
 # Use specific DNS servers
 .\mailchecker.ps1 -Domain example.com -DnsServer @("8.8.8.8", "1.1.1.1")
 
-# Generate HTML report
+# Generate HTML report (auto-generated filename with timestamp)
 .\mailchecker.ps1 -Domain example.com -Html
-
-# Generate HTML report to specific file
-.\mailchecker.ps1 -Domain example.com -HtmlOutput "report.html"
 ```
 
 ### Parameters
@@ -50,8 +55,7 @@ This tool performs a complete email security audit by checking:
 | `-Domain` | String | Domain to check (e.g., example.com) | Prompted if not provided |
 | `-Selectors` | String | Comma-separated DKIM selectors to test | `"default,s1,s2,selector1,selector2,google,mail,k1"` |
 | `-DnsServer` | String[] | DNS server(s) to query first | Falls back to 8.8.8.8 and 1.1.1.1 |
-| `-Html` | Switch | Generate HTML report with timestamp | - |
-| `-HtmlOutput` | String | Generate HTML report to specific file | - |
+| `-Html` | Switch | Generate HTML report with auto-generated timestamped filename | - |
 
 ## Output
 
@@ -65,7 +69,7 @@ The script provides color-coded console output with:
 
 ### HTML Reports
 
-When using `-Html` or `-HtmlOutput`, the script generates a comprehensive HTML report including:
+When using `-Html`, the script generates a comprehensive HTML report with an auto-generated filename (format: `domain-yyyyMMdd-HHmmss.html`) including:
 - Summary table with all check results
 - Detailed sections for each security component
 - Color-coded status indicators
@@ -123,6 +127,7 @@ When using `-Html` or `-HtmlOutput`, the script generates a comprehensive HTML r
 ### Generate HTML report
 ```powershell
 .\mailchecker.ps1 -Domain example.com -Html
+# Creates: example.com-20231201-143022.html
 ```
 
 ### Use specific DNS servers

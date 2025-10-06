@@ -25,11 +25,8 @@ param(
   [string]$Selectors = "default,s1,s2,selector1,selector2,google,mail,k1",
 
   [Parameter(Mandatory=$false)]
-  [string[]]$DnsServer
-  ,
-  [Parameter(Mandatory=$false)]
-  [string]$HtmlOutput
-  ,
+  [string[]]$DnsServer,
+  
   [Parameter(Mandatory=$false)]
   [switch]$Html
 )
@@ -478,21 +475,27 @@ function ConvertTo-HtmlSection {
     if ($allMessages.Count -gt 0) {
         $html += "`n  <div class='info-block'>`n"
         foreach ($msg in $allMessages) {
-            $cls = 'info'
-            if ($msg -match '^(?i)\s*Warning:') { $cls = 'warn' }
-            $html += ("    <p class='" + $cls + "'>" + [System.Web.HttpUtility]::HtmlEncode($msg) + "</p>`n")
+            $cls = 'status-info'
+            $icon = '&#x2139;&#xFE0F; '  # ℹ️
+            if ($msg -match '^(?i)\s*Warning:') { 
+                $cls = 'status-warn'
+                $icon = '&#x26A0;&#xFE0F; '  # ⚠️
+            }
+            $encodedMsg = [System.Web.HttpUtility]::HtmlEncode($msg)
+            $html += ("    <p class='" + $cls + "'>" + $icon + $encodedMsg + "</p>`n")
         }
         $html += "  </div>`n"
     }
     
     $statusText = "$($Result.Section) status: $($Result.Status)"
     $clsFinal = switch ($Result.Status) {
-        'OK'   { 'ok' }
-        'FAIL' { 'fail' }
-        'WARN' { 'warn' }
-        'N/A'  { 'warn' }
+        'OK'   { 'status-ok'; $icon = '&#x2705; ' }    # ✅
+        'FAIL' { 'status-fail'; $icon = '&#x274C; ' }  # ❌
+        'WARN' { 'status-warn'; $icon = '&#x26A0;&#xFE0F; ' }  # ⚠️
+        'N/A'  { 'status-warn'; $icon = '&#x26A0;&#xFE0F; ' }  # ⚠️
     }
-    $html += "  <p class='" + $clsFinal + "'>" + [System.Web.HttpUtility]::HtmlEncode($statusText) + "</p>`n"
+    $encodedStatus = [System.Web.HttpUtility]::HtmlEncode($statusText)
+    $html += "  <p class='" + $clsFinal + "'>" + $icon + $encodedStatus + "</p>`n"
     
     return $html
 }
@@ -682,6 +685,11 @@ function Write-HtmlReport {
   p.fail { color: red }
   p.warn { color: #b58900 }
   p.info { color: #0078D7 }
+  /* Icon support - icons are manually added in HTML content */
+  .status-ok { color: green; }
+  .status-fail { color: red; }
+  .status-warn { color: #b58900; }
+  .status-info { color: #0078D7; }
   /* Info blocks styling */
   .info-block { margin: 8px 0 4px 0; }
   .info-block p { margin: 2px 0; }
@@ -723,11 +731,11 @@ function Write-HtmlReport {
     if ($k -eq 'Domain') { continue }
     $v = $Summary.$k
     if ($v -is [string] -and $v -eq "N/A") { 
-      $cls = 'warn'
-      $valStr = 'N/A'
+      $cls = 'status-warn'
+      $valStr = '&#x26A0;&#xFE0F; N/A'  # ⚠️ N/A
     } elseif ($v -is [bool]) { 
-      $cls = if ($v) { 'ok' } else { 'fail' }
-      $valStr = [string]$v
+      $cls = if ($v) { 'status-ok' } else { 'status-fail' }
+      $valStr = if ($v) { '&#x2705; True' } else { '&#x274C; False' }  # ✅ True / ❌ False
     } else { 
       $cls = ''
       $valStr = [System.Web.HttpUtility]::HtmlEncode($v)
@@ -859,9 +867,7 @@ Write-BoolLine "TLS_RPT_Present"        $summary.TLS_RPT_Present
 Write-Host "`nTip: For DKIM, inspect a real message header to learn the active selector (s=) and re-run with -Selectors 'thatSelector'." -ForegroundColor DarkCyan
 
 # If requested, write an HTML report
-if ($HtmlOutput -and $HtmlOutput.Trim() -ne '') {
-  $outPath = $HtmlOutput
-} elseif ($Html) {
+if ($Html) {
   $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
   $safeDomain = $Domain -replace '[^a-z0-9.-]','-'
   $outPath = "$safeDomain-$ts.html"
