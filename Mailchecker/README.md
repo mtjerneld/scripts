@@ -15,6 +15,8 @@ This tool performs a complete email security audit by checking:
 
 ## Recent Improvements
 
+- **Output Path Control**: Added `-OutputPath` parameter for organized file management and custom directory structure
+- **Strict Security Profile**: Implemented PASS/WARN/FAIL severity ratings with comprehensive reason fields
 - **Summary HTML Reports**: Added `-SummaryHtml` switch for consolidated HTML tables in bulk mode with overview statistics
 - **Comprehensive Help System**: Added `-Help` switch with Linux man-page style documentation
 - **Bulk Domain Checking**: Added ability to check multiple domains from input files with CSV export
@@ -76,6 +78,9 @@ This tool performs a complete email security audit by checking:
 
 # Full export: CSV + Summary HTML + Individual HTML reports
 .\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html
+
+# Save all output files to a custom directory
+.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml -OutputPath ./reports
 ```
 
 ### Parameters
@@ -89,6 +94,7 @@ This tool performs a complete email security audit by checking:
 | `-Html` | Switch | Generate HTML report(s) with auto-generated timestamped filename | - |
 | `-Csv` | Switch | Export bulk results to CSV file (only with `-BulkFile`) | - |
 | `-SummaryHtml` | Switch | Generate consolidated HTML summary table (only with `-BulkFile`) | - |
+| `-OutputPath` | String | Directory where output files (CSV, HTML) will be saved | Current directory (`.`) |
 | `-Help` | Switch | Show comprehensive help information and exit | - |
 
 ## Output
@@ -235,6 +241,14 @@ Example reasons:
 # Full export with all formats
 .\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html
 # Creates: CSV + summary HTML + individual HTML files for each domain
+
+# Save all output files to a specific directory
+.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml -OutputPath ./reports
+# Creates: ./reports/bulk-summary-20231201-143022.html
+
+# Organize reports by date
+.\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html -OutputPath ".\reports\2024-01"
+# Creates directory if needed and saves all files there
 ```
 
 ### Use specific DNS servers
@@ -294,9 +308,13 @@ Mailchecker/
 ├── mailchecker.ps1          # Main PowerShell script
 ├── README.md                # This documentation
 ├── domains.txt              # Example input file for bulk checking
-├── domain-*.html            # Individual HTML reports (timestamped)
-├── bulk-summary-*.html      # Consolidated HTML summary reports (timestamped)
-└── bulk-results-*.csv       # CSV exports (timestamped)
+├── domain-*.html            # Individual HTML reports (timestamped, default location)
+├── bulk-summary-*.html      # Consolidated HTML summary reports (timestamped, default location)
+├── bulk-results-*.csv       # CSV exports (timestamped, default location)
+└── reports/                 # Optional custom output directory (via -OutputPath)
+    ├── domain-*.html
+    ├── bulk-summary-*.html
+    └── bulk-results-*.csv
 ```
 
 ## License

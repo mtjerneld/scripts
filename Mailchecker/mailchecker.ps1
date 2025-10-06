@@ -40,6 +40,9 @@ param(
   [switch]$SummaryHtml,
   
   [Parameter(Mandatory=$false)]
+  [string]$OutputPath = ".",
+  
+  [Parameter(Mandatory=$false)]
   [switch]$Help
 )
 
@@ -114,6 +117,11 @@ OPTIONS
               Generate consolidated HTML summary table (only applicable with -BulkFile)
               (format: bulk-summary-yyyyMMdd-HHmmss.html)
 
+       -OutputPath <path>
+              Directory where output files (CSV, HTML) will be saved.
+              Defaults to current directory if not specified.
+              Directory will be created if it doesn't exist.
+
        -Help  Show this help information and exit
 
 EXAMPLES
@@ -145,6 +153,9 @@ EXAMPLES
 
               .\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html
                      Full export: CSV, summary HTML, and individual HTML reports
+
+              .\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml -OutputPath ./reports
+                     Save all output files to ./reports directory
 
        Advanced Usage
               .\mailchecker.ps1 -Domain example.com -DnsServer @("8.8.8.8","1.1.1.1")
@@ -304,7 +315,7 @@ function Test-MXRecords {
     if (@($mx).Count -gt 0) {
         $details = $mx | Sort-Object Preference,NameExchange | 
                    ForEach-Object { "$($_.Preference) $($_.NameExchange)" }
-        $status = 'OK'
+        $status = 'PASS'
         $mxList = ($mx | Sort-Object Preference,NameExchange | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) -join ', '
         $reason = "MX: $mxList"
     } else {
@@ -426,7 +437,7 @@ function Test-SPFRecords {
                     $reason = "SPF: ~all (soft fail)"
                 }
             } else {
-                $status = 'OK'
+                $status = 'PASS'
                 $reason = "SPF: valid ($maxLookups lookups)"
                 $spfHealthy = $true
             }
@@ -528,7 +539,7 @@ function Test-DKIMRecords {
     $reason = ""
     if ($anyValid) {
         $infoMessages += "DKIM validation successful - at least one valid selector found with proper public key."
-        $status = 'OK'
+        $status = 'PASS'
         $validSelectorNames = ($validSelectors | ForEach-Object { $_.Selector }) -join ', '
         $reason = "DKIM: valid selectors ($validSelectorNames)"
     } else {
@@ -606,7 +617,7 @@ function Test-MTASts {
                 '^(?i)enforce$' { 
                     $MtaStsEnforced = $true
                     $MtaStsModeTesting = $false
-                    $status = 'OK'
+                    $status = 'PASS'
                     $reason = "MTA-STS: mode=enforce"
                     $infoMessages += "MTA-STS is properly enforced (mode=enforce)."
                     break 
@@ -658,7 +669,41 @@ function Test-DMARC {
     $reason = ""
 
     $dmarcHost = "_dmarc.$Domain"
-    $dmarcTxt = Resolve-Txt $dmarcHost
+    
+    # Check if _dmarc uses CNAME (not best practice)
+    $hasCname = $false
+    $cnameTarget = $null
+    try {
+        if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+            $dnsCheck = Resolve-DnsName -Name $dmarcHost -ErrorAction SilentlyContinue
+            $cnameRec = $dnsCheck | Where-Object { $_.Type -eq 'CNAME' } | Select-Object -First 1
+            if ($cnameRec) {
+                $hasCname = $true
+                $cnameTarget = $cnameRec.NameHost
+            }
+        }
+    } catch { }
+    
+    if ($hasCname) {
+        $infoMessages += "Info: _dmarc.$Domain uses CNAME to $cnameTarget (not recommended - direct TXT records are preferred)."
+    }
+    
+    # Get all TXT records separately to check for multiple DMARC records
+    $allDmarcRecords = @(Resolve-TxtAll $dmarcHost | Where-Object { $_ -match '(?i)v=DMARC1' })
+    
+    # Check for multiple DMARC records (RFC violation)
+    if ($allDmarcRecords.Count -gt 1) {
+        $warnings += "Warning: Multiple DMARC records detected (RFC violation) - behavior is undefined!"
+        $status = 'FAIL'
+        $reason = "DMARC: multiple records (RFC violation)"
+        $details += "Multiple DMARC records found ($($allDmarcRecords.Count)):"
+        foreach ($rec in $allDmarcRecords) {
+            $details += "  - $rec"
+        }
+    }
+    
+    # Use the joined version for parsing (first DMARC record if multiple)
+    $dmarcTxt = if ($allDmarcRecords.Count -gt 0) { $allDmarcRecords[0] } else { Resolve-Txt $dmarcHost }
     $dmarcMap = @{}
     $pVal = $null
 
@@ -673,6 +718,32 @@ function Test-DMARC {
                 $dmarcMap[$t] = $val
                 $details += "- $t = $val"
                 if ($t -eq 'p') { $pVal = $val }
+            }
+        }
+        
+        # Parse rua/ruf addresses (can be comma-separated)
+        if ($dmarcMap.ContainsKey('rua')) {
+            $ruaAddresses = $dmarcMap['rua'] -split ',' | ForEach-Object { $_.Trim() }
+            $details += "- rua addresses: $($ruaAddresses.Count)"
+            foreach ($addr in $ruaAddresses) {
+                if ($addr -match '^mailto:') {
+                    $details += "  * $addr"
+                } else {
+                    $details += "  * $addr (⚠️ not mailto:)"
+                    $warnings += "Warning: DMARC rua address '$addr' does not use mailto: URI"
+                }
+            }
+        }
+        if ($dmarcMap.ContainsKey('ruf')) {
+            $rufAddresses = $dmarcMap['ruf'] -split ',' | ForEach-Object { $_.Trim() }
+            $details += "- ruf addresses: $($rufAddresses.Count)"
+            foreach ($addr in $rufAddresses) {
+                if ($addr -match '^mailto:') {
+                    $details += "  * $addr"
+                } else {
+                    $details += "  * $addr (⚠️ not mailto:)"
+                    $warnings += "Warning: DMARC ruf address '$addr' does not use mailto: URI"
+                }
             }
         }
         
@@ -691,7 +762,7 @@ function Test-DMARC {
             $warnings += "Warning: DMARC pct<100 - not all messages are subject to policy."
         }
         if (-not $dmarcMap.ContainsKey('sp')) {
-            $warnings += "Warning: DMARC sp (subdomain policy) not set."
+            $infoMessages += "Info: DMARC sp (subdomain policy) not set - subdomains will inherit main policy."
         }
         if (-not $dmarcMap.ContainsKey('rua') -and -not $dmarcMap.ContainsKey('ruf')) {
             $warnings += "Warning: DMARC has no reporting addresses (rua/ruf)."
@@ -703,9 +774,9 @@ function Test-DMARC {
             $infoMessages += "Info: DMARC aspf=relaxed (default) - consider strict mode for better security."
         }
         
-        # Strict profile: p=reject → OK, p=quarantine → WARN, p=none → WARN, missing/other → FAIL
+        # Strict profile: p=reject → PASS, p=quarantine → WARN, p=none → WARN, missing/other → FAIL
         if ($pVal -and $pVal -match '(?i)^reject$') {
-            $status = 'OK'
+            $status = 'PASS'
             $infoMessages += "DMARC policy is enforced (p=reject)."
         } elseif ($pVal -and $pVal -match '(?i)^quarantine$') {
             $status = 'WARN'
@@ -754,7 +825,7 @@ function Test-TLSReport {
         $ruaMatch = [regex]::Match($tlsRptTxt, "(?i)\bru[a]\s*=\s*(mailto:[^,;]+|https?://[^,;]+)")
         if ($hasV) { $details += "- v=TLSRPTv1 present: True" }
         if ($ruaMatch.Success) { $details += ("- rua: {0}" -f $ruaMatch.Groups[1].Value) }
-        $status = 'OK'
+        $status = 'PASS'
         $reason = "TLS-RPT: configured"
         $infoMessages += "TLS-RPT is configured for encryption monitoring."
     } else {
@@ -795,7 +866,8 @@ function Write-CheckResult {
     
     # Status
     $color = switch ($Result.Status) {
-        'OK'   { 'Green' }
+        'PASS' { 'Green' }
+        'OK'   { 'Green' }  # Legacy support
         'FAIL' { 'Red' }
         'WARN' { 'Yellow' }
         'N/A'  { 'Yellow' }
@@ -874,7 +946,8 @@ function ConvertTo-HtmlSection {
     
     $statusText = "$($Result.Section) status: $($Result.Status)"
     $clsFinal = switch ($Result.Status) {
-        'OK'   { 'status-ok'; $icon = '&#x2705; ' }    # ✅
+        'PASS' { 'status-ok'; $icon = '&#x2705; ' }    # ✅
+        'OK'   { 'status-ok'; $icon = '&#x2705; ' }    # ✅ (Legacy)
         'FAIL' { 'status-fail'; $icon = '&#x274C; ' }  # ❌
         'WARN' { 'status-warn'; $icon = '&#x26A0;&#xFE0F; ' }  # ⚠️
         'N/A'  { 'status-info'; $icon = '&#x2139;&#xFE0F; ' }  # ℹ️
@@ -895,17 +968,18 @@ function Write-StatusLine {
   
   # Map status to color
   $color = switch ($Status) {
-    'OK'   { 'Green' }
     'PASS' { 'Green' }
+    'OK'   { 'Green' }  # Legacy support
     'WARN' { 'Yellow' }
     'FAIL' { 'Red' }
     'N/A'  { 'Cyan' }
     default { 'White' }
   }
   
-  # Map status to display text
+  # Map status to display text (OK is legacy, normalize to PASS)
   $statusText = switch ($Status) {
     'OK'   { 'PASS' }
+    'PASS' { 'PASS' }
     default { $Status }
   }
   
@@ -923,6 +997,39 @@ $Resolvers = @()
 if ($DnsServer) { $Resolvers += $DnsServer }
 $Resolvers += @('8.8.8.8','1.1.1.1')
 $Resolvers = $Resolvers | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique
+
+function Resolve-TxtAll {
+  param([string]$Name)
+
+  foreach ($srv in $Resolvers) {
+    try {
+      if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+        $ans = Resolve-DnsName -Name $Name -Type TXT -Server $srv -ErrorAction Stop
+        $txtRecs = $ans | Where-Object { $_.Type -eq 'TXT' -and $_.PSObject.Properties['Strings'] }
+
+        $strings = @(foreach ($rec in $txtRecs) { ($rec.Strings -join '') })
+        if ($strings.Count -gt 0) { return $strings }
+
+        # Follow any CNAME to the target and query TXT there
+        $cname = ($ans | Where-Object { $_.Type -eq 'CNAME' } | Select-Object -First 1 -ExpandProperty NameHost -ErrorAction SilentlyContinue)
+        if ($cname) {
+          $ans2 = Resolve-DnsName -Name $cname -Type TXT -Server $srv -ErrorAction Stop
+          $txtRecs2 = $ans2 | Where-Object { $_.Type -eq 'TXT' -and $_.PSObject.Properties['Strings'] }
+          $strings2 = @(foreach ($rec in $txtRecs2) { ($rec.Strings -join '') })
+          if ($strings2.Count -gt 0) { return $strings2 }
+        }
+      }
+      else {
+        # Fallback: nslookup - harder to separate multiple records, return as single-item array
+        $out = nslookup -type=txt $Name $srv 2>$null
+        $txt = ($out | Select-String -Pattern '"([^"]*)"' -AllMatches).Matches.Value -replace '"',''
+        $joined = ($txt -join '')
+        if ($joined) { return @($joined) }
+      }
+    } catch { }
+  }
+  return @()
+}
 
 function Resolve-Txt {
   param([string]$Name)
@@ -1134,23 +1241,23 @@ function Write-HtmlReport {
   $renderStatus = {
     param($status)
     $cls = switch ($status) {
-      'OK' { 'status-ok' }
       'PASS' { 'status-ok' }
+      'OK' { 'status-ok' }  # Legacy support
       'WARN' { 'status-warn' }
       'FAIL' { 'status-fail' }
       'N/A' { 'status-info' }
       default { '' }
     }
     $icon = switch ($status) {
-      'OK' { '&#x2705; ' }
       'PASS' { '&#x2705; ' }
+      'OK' { '&#x2705; ' }  # Legacy support
       'WARN' { '&#x26A0;&#xFE0F; ' }
       'FAIL' { '&#x274C; ' }
       'N/A' { '&#x2139;&#xFE0F; ' }
       default { '' }
     }
     $text = switch ($status) {
-      'OK' { 'PASS' }
+      'OK' { 'PASS' }  # Normalize OK to PASS
       default { $status }
     }
     return "<td class='$cls'>$icon$text</td>"
@@ -1158,7 +1265,7 @@ function Write-HtmlReport {
   
   # Add rows for each check
   # MX Records - show actual records instead of just status
-  if ($mxResult.Status -eq 'OK') {
+  if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
     $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
     $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
   } else {
@@ -1295,23 +1402,23 @@ function Write-SummaryHtmlReport {
     $renderStatusCell = {
       param($status)
       $cls = switch ($status) {
-        'OK' { 'status-ok' }
         'PASS' { 'status-ok' }
+        'OK' { 'status-ok' }  # Legacy support
         'WARN' { 'status-warn' }
         'FAIL' { 'status-fail' }
         'N/A' { 'status-info' }
         default { '' }
       }
       $icon = switch ($status) {
-        'OK' { '&#x2705; ' }
         'PASS' { '&#x2705; ' }
+        'OK' { '&#x2705; ' }  # Legacy support
         'WARN' { '&#x26A0;&#xFE0F; ' }
         'FAIL' { '&#x274C; ' }
         'N/A' { '&#x2139;&#xFE0F; ' }
         default { '' }
       }
       $text = switch ($status) {
-        'OK' { 'PASS' }
+        'OK' { 'PASS' }  # Normalize OK to PASS
         default { $status }
       }
       return "<td class='$cls'>$icon$([System.Web.HttpUtility]::HtmlEncode($text))</td>"
@@ -1326,7 +1433,7 @@ function Write-SummaryHtmlReport {
     $tlsStatus = $result.TLSResult.Status
     
     # MX Records - show actual records instead of just status
-    if ($mxStatus -eq 'OK') {
+    if ($mxStatus -eq 'PASS' -or $mxStatus -eq 'OK') {
       $mxRecords = ($result.MXResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
       $html += "<td class='status-ok'>$mxRecords</td>`n"
     } else {
@@ -1484,7 +1591,7 @@ Write-Host $summary.Status -ForegroundColor $statusColor
 
 # Status per check
 Write-Host "`nDetailed Status:"
-Write-StatusLine "MX Records"   $mxResult.Status    $(if ($mxResult.Status -eq 'OK') { $mxRecordsDisplay })
+Write-StatusLine "MX Records"   $mxResult.Status    $(if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') { $mxRecordsDisplay })
 Write-StatusLine "SPF"          $spfResult.Status
 Write-StatusLine "DKIM"         $dkimResult.Status
 Write-StatusLine "MTA-STS"      $mtaStsResult.Status
@@ -1515,6 +1622,18 @@ if ($BulkFile) {
         Write-Host "Error: File not found: $BulkFile" -ForegroundColor Red
         Write-Host "Please check the file path and try again." -ForegroundColor Yellow
         exit 1
+    }
+    
+    # Ensure output directory exists
+    if (-not (Test-Path $OutputPath)) {
+        try {
+            New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+            Write-Host "Created output directory: $OutputPath" -ForegroundColor Cyan
+        } catch {
+            Write-Host "Error: Could not create output directory: $OutputPath" -ForegroundColor Red
+            Write-Host $_.Exception.Message -ForegroundColor Red
+            exit 1
+        }
     }
     
     $domains = @(Get-Content $BulkFile | 
@@ -1563,8 +1682,8 @@ if ($BulkFile) {
     # Export CSV if requested
     if ($Csv) {
         $csvData = $allResults | ForEach-Object { $_.Summary }
-  $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
-        $csvPath = "bulk-results-$ts.csv"
+        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        $csvPath = Join-Path $OutputPath "bulk-results-$ts.csv"
         $csvData | Export-Csv -Path $csvPath -NoTypeInformation
         Write-Host "CSV exported to: $csvPath" -ForegroundColor Green
     }
@@ -1572,7 +1691,7 @@ if ($BulkFile) {
     # Generate summary HTML report if requested
     if ($SummaryHtml) {
         $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
-        $summaryHtmlPath = "bulk-summary-$ts.html"
+        $summaryHtmlPath = Join-Path $OutputPath "bulk-summary-$ts.html"
         Write-SummaryHtmlReport -Path $summaryHtmlPath -AllResults $allResults
     }
     
@@ -1582,14 +1701,14 @@ if ($BulkFile) {
         $htmlCount = 0
         foreach ($result in $allResults) {
             $safeDomain = $result.Domain -replace '[^a-z0-9.-]','-'
-            $htmlPath = "$safeDomain-$ts.html"
+            $htmlPath = Join-Path $OutputPath "$safeDomain-$ts.html"
             Write-HtmlReport -Path $htmlPath -Domain $result.Domain -Summary $result.Summary `
                            -mxResult $result.MXResult -spfResult $result.SPFResult `
                            -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult `
                            -dmarcResult $result.DMARCResult -tlsResult $result.TLSResult
             $htmlCount++
         }
-        Write-Host "Generated $htmlCount HTML reports." -ForegroundColor Green
+        Write-Host "Generated $htmlCount HTML reports in: $OutputPath" -ForegroundColor Green
     }
     
 } else {
@@ -1598,9 +1717,20 @@ if ($BulkFile) {
     
     # Generate HTML report if requested
     if ($Html) {
+        # Ensure output directory exists
+        if (-not (Test-Path $OutputPath)) {
+            try {
+                New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+            } catch {
+                Write-Host "Error: Could not create output directory: $OutputPath" -ForegroundColor Red
+                Write-Host $_.Exception.Message -ForegroundColor Red
+                exit 1
+            }
+        }
+        
         $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
         $safeDomain = $Domain -replace '[^a-z0-9.-]','-'
-        $outPath = "$safeDomain-$ts.html"
+        $outPath = Join-Path $OutputPath "$safeDomain-$ts.html"
         Write-HtmlReport -Path $outPath -Domain $Domain -Summary $result.Summary `
                        -mxResult $result.MXResult -spfResult $result.SPFResult `
                        -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult `
