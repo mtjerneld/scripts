@@ -297,6 +297,7 @@ function Test-MXRecords {
     
     $mx = Resolve-MX $Domain
     $details = @()
+    $infoMessages = @()
     $status = 'FAIL'
     
     if (@($mx).Count -gt 0) {
@@ -305,9 +306,11 @@ function Test-MXRecords {
         $status = 'OK'
     } else {
         $details = @("No MX records found via any configured resolver.")
+        $infoMessages = @("Info: No MX records is not necessarily an error - domain may only send email (not receive).")
+        $status = 'N/A'
     }
     
-    return New-CheckResult -Section 'MX Records' -Status $status -Details $details -Data @{ MXRecords = $mx }
+    return New-CheckResult -Section 'MX Records' -Status $status -Details $details -InfoMessages $infoMessages -Data @{ MXRecords = $mx }
 }
 
 function Get-SpfLookups($spf, $checked) {
@@ -734,7 +737,7 @@ function ConvertTo-HtmlSection {
         'OK'   { 'status-ok'; $icon = '&#x2705; ' }    # ✅
         'FAIL' { 'status-fail'; $icon = '&#x274C; ' }  # ❌
         'WARN' { 'status-warn'; $icon = '&#x26A0;&#xFE0F; ' }  # ⚠️
-        'N/A'  { 'status-warn'; $icon = '&#x26A0;&#xFE0F; ' }  # ⚠️
+        'N/A'  { 'status-info'; $icon = '&#x2139;&#xFE0F; ' }  # ℹ️
     }
     $encodedStatus = [System.Web.HttpUtility]::HtmlEncode($statusText)
     $html += "  <p class='" + $clsFinal + "'>" + $icon + $encodedStatus + "</p>`n"
@@ -750,8 +753,12 @@ function Write-Section($title) {
 function Write-BoolLine {
   param([string]$Label, $Value)
   if ($Value -is [string] -and $Value -eq "N/A") {
-    $color = 'Yellow'
+    $color = 'Cyan'
     $text = 'N/A'
+  } elseif ($Label -eq 'MX_Records_Present' -and -not $Value) {
+    # MX records not present is informational, not an error (domain may only send email)
+    $color = 'Cyan'
+    $text = 'False'
   } else {
     $color = if ($Value) { 'Green' } else { 'Red' }
     $text  = if ($Value) { 'True' }  else { 'False' }
@@ -973,8 +980,12 @@ function Write-HtmlReport {
     if ($k -eq 'Domain') { continue }
     $v = $Summary.$k
     if ($v -is [string] -and $v -eq "N/A") { 
-      $cls = 'status-warn'
-      $valStr = '&#x26A0;&#xFE0F; N/A'  # ⚠️ N/A
+      $cls = 'status-info'
+      $valStr = '&#x2139;&#xFE0F; N/A'  # ℹ️ N/A
+    } elseif ($k -eq 'MX_Records_Present' -and $v -eq $false) {
+      # MX records not present is informational, not an error (domain may only send email)
+      $cls = 'status-info'
+      $valStr = '&#x2139;&#xFE0F; False'  # ℹ️ False
     } elseif ($v -is [bool]) { 
       $cls = if ($v) { 'status-ok' } else { 'status-fail' }
       $valStr = if ($v) { '&#x2705; True' } else { '&#x274C; False' }  # ✅ True / ❌ False
@@ -1026,6 +1037,7 @@ function Write-SummaryHtmlReport {
   .status-ok { color: green; }
   .status-fail { color: red; }
   .status-warn { color: #b58900; }
+  .status-info { color: #0078D7; }
   tr:hover { background-color: #f9f9f9; }
   .summary-stats { background-color: #f0f8ff; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
   .summary-stats p { margin: 5px 0; }
@@ -1043,14 +1055,16 @@ function Write-SummaryHtmlReport {
     $summary = $result.Summary
     $failCount = 0
     
-    # Count failures (excluding N/A)
-    if ($summary.MX_Records_Present -eq $false) { $failCount++ }
+    # Count failures (excluding N/A and MX_Records_Present which is informational)
+    # Note: MX_Records_Present = False is not a failure (domain may only send email)
     if ($summary.SPF_Present -eq $false) { $failCount++ }
     if ($summary.SPF_Healthy -eq $false) { $failCount++ }
     if ($summary.DKIM_ValidSelector -is [bool] -and $summary.DKIM_ValidSelector -eq $false) { $failCount++ }
+    if ($summary.MTA_STS_DNS_Present -is [bool] -and $summary.MTA_STS_DNS_Present -eq $false) { $failCount++ }
     if ($summary.MTA_STS_Enforced -is [bool] -and $summary.MTA_STS_Enforced -eq $false) { $failCount++ }
     if ($summary.DMARC_Present -eq $false) { $failCount++ }
     if ($summary.DMARC_Enforced -eq $false) { $failCount++ }
+    if ($summary.TLS_RPT_Present -is [bool] -and $summary.TLS_RPT_Present -eq $false) { $failCount++ }
     
     if ($failCount -eq 0) {
       $allOK++
@@ -1105,9 +1119,12 @@ function Write-SummaryHtmlReport {
     
     # Helper function to render cell
     $renderCell = {
-      param($value)
+      param($value, $fieldName)
       if ($value -is [string] -and $value -eq "N/A") {
-        return "<td class='status-warn'>&#x26A0;&#xFE0F; N/A</td>"
+        return "<td class='status-info'>&#x2139;&#xFE0F; N/A</td>"
+      } elseif ($fieldName -eq 'MX_Records_Present' -and $value -eq $false) {
+        # MX records not present is informational, not an error (domain may only send email)
+        return "<td class='status-info'>&#x2139;&#xFE0F; No</td>"
       } elseif ($value -eq $true) {
         return "<td class='status-ok'>&#x2705; Yes</td>"
       } else {
@@ -1115,7 +1132,7 @@ function Write-SummaryHtmlReport {
       }
     }
     
-    $html += (& $renderCell $summary.MX_Records_Present) + "`n"
+    $html += (& $renderCell $summary.MX_Records_Present 'MX_Records_Present') + "`n"
     $html += (& $renderCell $summary.SPF_Present) + "`n"
     $html += (& $renderCell $summary.SPF_Healthy) + "`n"
     $html += (& $renderCell $summary.DKIM_ValidSelector) + "`n"
@@ -1133,9 +1150,9 @@ function Write-SummaryHtmlReport {
   
   <p style='margin-top: 30px; color: #666; font-size: 12px;'>
     <strong>Legend:</strong> 
-    &#x2705; Yes = Passed | 
-    &#x274C; No = Failed | 
-    &#x26A0;&#xFE0F; N/A = Not Applicable
+    <span style='color: green;'>&#x2705; Yes</span> = Passed | 
+    <span style='color: red;'>&#x274C; No</span> = Failed | 
+    <span style='color: #0078D7;'>&#x2139;&#xFE0F; N/A / No MX</span> = Informational (not a failure)
   </p>
   </body>
 </html>
@@ -1156,95 +1173,95 @@ function Invoke-DomainCheck {
         [bool]$QuietMode = $false
     )
     
-    $Domain = $Domain.Trim().ToLower()
-    
+$Domain = $Domain.Trim().ToLower()
+
     if (-not $QuietMode) {
-        Write-Host "Checking domain: $Domain (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
+Write-Host "Checking domain: $Domain (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
     }
 
-    # 1) MX Records
-    $mxResult = Test-MXRecords -Domain $Domain
-    $mx = $mxResult.Data.MXRecords
-    $mxOk = @($mx).Count -gt 0
+# 1) MX Records
+$mxResult = Test-MXRecords -Domain $Domain
+$mx = $mxResult.Data.MXRecords
+$mxOk = @($mx).Count -gt 0
     if (-not $QuietMode) { Write-CheckResult $mxResult }
 
-    # 2) SPF
-    $spfResult = Test-SPFRecords -Domain $Domain
-    $spfRecs = $spfResult.Data.SPFRecords
-    $spfHealthy = $spfResult.Data.Healthy
+# 2) SPF
+$spfResult = Test-SPFRecords -Domain $Domain
+$spfRecs = $spfResult.Data.SPFRecords
+$spfHealthy = $spfResult.Data.Healthy
     if (-not $QuietMode) { Write-CheckResult $spfResult }
 
-    # 3) DKIM (by selectors)
-    # Check if SPF has any mechanisms other than just v=spf1 and -all
-    $hasSpfWithMechanisms = $false
-    if (@($spfRecs).Count -gt 0) {
-      foreach ($spf in $spfRecs) {
-        $cleanSpf = $spf -replace '(?i)\bv=spf1\s*', '' -replace '(?i)\s*[~+\-?]?all\s*$', '' -replace '^\s+|\s+$', ''
-        $hasMechanisms = $cleanSpf.Length -gt 0 -and $cleanSpf -match '(?i)(include:|a:|mx:|ptr:|exists:|redirect=)'
-        if ($hasMechanisms) {
-          $hasSpfWithMechanisms = $true
-          break
-        }
-      }
+# 3) DKIM (by selectors)
+# Check if SPF has any mechanisms other than just v=spf1 and -all
+$hasSpfWithMechanisms = $false
+if (@($spfRecs).Count -gt 0) {
+  foreach ($spf in $spfRecs) {
+    $cleanSpf = $spf -replace '(?i)\bv=spf1\s*', '' -replace '(?i)\s*[~+\-?]?all\s*$', '' -replace '^\s+|\s+$', ''
+    $hasMechanisms = $cleanSpf.Length -gt 0 -and $cleanSpf -match '(?i)(include:|a:|mx:|ptr:|exists:|redirect=)'
+    if ($hasMechanisms) {
+      $hasSpfWithMechanisms = $true
+      break
     }
+  }
+}
 
-    $selectorList = ($Selectors -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-    $dkimResult = Test-DKIMRecords -Domain $Domain -Selectors $selectorList -HasMX $mxOk -HasSpfWithMechanisms $hasSpfWithMechanisms
-    $dkimResults = $dkimResult.Data.DKIMResults
-    $DKIM_AnySelector_Valid = $dkimResult.Data.AnyValid
+$selectorList = ($Selectors -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+$dkimResult = Test-DKIMRecords -Domain $Domain -Selectors $selectorList -HasMX $mxOk -HasSpfWithMechanisms $hasSpfWithMechanisms
+$dkimResults = $dkimResult.Data.DKIMResults
+$DKIM_AnySelector_Valid = $dkimResult.Data.AnyValid
     if (-not $QuietMode) { Write-CheckResult $dkimResult }
 
-    # 4) MTA-STS
-    $mtaStsResult = Test-MTASts -Domain $Domain -HasMX $mxOk
-    $mtaStsTxt = $mtaStsResult.Data.MtaStsTxt
-    $MtaStsEnforced = $mtaStsResult.Data.MtaStsEnforced
-    $MtaStsModeTesting = $mtaStsResult.Data.MtaStsModeTesting
+# 4) MTA-STS
+$mtaStsResult = Test-MTASts -Domain $Domain -HasMX $mxOk
+$mtaStsTxt = $mtaStsResult.Data.MtaStsTxt
+$MtaStsEnforced = $mtaStsResult.Data.MtaStsEnforced
+$MtaStsModeTesting = $mtaStsResult.Data.MtaStsModeTesting
     if (-not $QuietMode) { Write-CheckResult $mtaStsResult }
 
-    # 5) DMARC
-    $dmarcResult = Test-DMARC -Domain $Domain
-    $dmarc = $dmarcResult.Data.DmarcMap
-    $dmarcTxt = $dmarcResult.Data.DmarcTxt
-    $dmarcEnforced = [bool]$dmarcResult.Data.Enforced
+# 5) DMARC
+$dmarcResult = Test-DMARC -Domain $Domain
+$dmarc = $dmarcResult.Data.DmarcMap
+$dmarcTxt = $dmarcResult.Data.DmarcTxt
+$dmarcEnforced = [bool]$dmarcResult.Data.Enforced
     if (-not $QuietMode) { Write-CheckResult $dmarcResult }
 
-    # 6) TLS-RPT
-    $tlsResult = Test-TLSReport -Domain $Domain -HasMX $mxOk
-    $tlsRptTxt = $tlsResult.Data.TlsRptTxt
+# 6) TLS-RPT
+$tlsResult = Test-TLSReport -Domain $Domain -HasMX $mxOk
+$tlsRptTxt = $tlsResult.Data.TlsRptTxt
     if (-not $QuietMode) { Write-CheckResult $tlsResult }
 
-    # Summary
-    $hasMXRecords = [bool]$mxOk
-    $summary = [pscustomobject]@{
-      Domain                 = $Domain
-      MX_Records_Present     = $hasMXRecords
-      SPF_Present            = [bool](@($spfRecs).Count -gt 0)
-      SPF_Healthy            = [bool]$spfHealthy
-      DKIM_ValidSelector     = if ($hasMXRecords -or $hasSpfWithMechanisms) { [bool]$DKIM_AnySelector_Valid } else { "N/A" }
-      MTA_STS_DNS_Present    = if ($hasMXRecords) { [bool]$mtaStsTxt } else { "N/A" }
-      MTA_STS_Enforced       = if ($hasMXRecords) { [bool]$MtaStsEnforced } else { "N/A" }
-      DMARC_Present          = [bool]$dmarcTxt
-      DMARC_Enforced         = [bool]$dmarcEnforced
-      TLS_RPT_Present        = if ($hasMXRecords) { [bool]$tlsRptTxt } else { "N/A" }
-    }
+# Summary
+$hasMXRecords = [bool]$mxOk
+$summary = [pscustomobject]@{
+  Domain                 = $Domain
+  MX_Records_Present     = $hasMXRecords
+  SPF_Present            = [bool](@($spfRecs).Count -gt 0)
+  SPF_Healthy            = [bool]$spfHealthy
+  DKIM_ValidSelector     = if ($hasMXRecords -or $hasSpfWithMechanisms) { [bool]$DKIM_AnySelector_Valid } else { "N/A" }
+  MTA_STS_DNS_Present    = if ($hasMXRecords) { [bool]$mtaStsTxt } else { "N/A" }
+  MTA_STS_Enforced       = if ($hasMXRecords) { [bool]$MtaStsEnforced } else { "N/A" }
+  DMARC_Present          = [bool]$dmarcTxt
+  DMARC_Enforced         = [bool]$dmarcEnforced
+  TLS_RPT_Present        = if ($hasMXRecords) { [bool]$tlsRptTxt } else { "N/A" }
+}
 
     if (-not $QuietMode) {
         Write-Section "Summary"
         Write-Host "Tested domain: $Domain" -ForegroundColor White
-        
-        # Färgkodad radvis status
-        Write-Host "`nStatus:"
-        Write-BoolLine "MX_Records_Present"     $summary.MX_Records_Present
-        Write-BoolLine "SPF_Present"            $summary.SPF_Present
-        Write-BoolLine "SPF_Healthy"            $summary.SPF_Healthy
-        Write-BoolLine "DKIM_ValidSelector"     $summary.DKIM_ValidSelector
-        Write-BoolLine "MTA_STS_DNS_Present"    $summary.MTA_STS_DNS_Present
-        Write-BoolLine "MTA_STS_Enforced"       $summary.MTA_STS_Enforced
-        Write-BoolLine "DMARC_Present"          $summary.DMARC_Present
-        Write-BoolLine "DMARC_Enforced"         $summary.DMARC_Enforced
-        Write-BoolLine "TLS_RPT_Present"        $summary.TLS_RPT_Present
 
-        Write-Host "`nTip: For DKIM, inspect a real message header to learn the active selector (s=) and re-run with -Selectors 'thatSelector'." -ForegroundColor DarkCyan
+# Färgkodad radvis status
+Write-Host "`nStatus:"
+Write-BoolLine "MX_Records_Present"     $summary.MX_Records_Present
+Write-BoolLine "SPF_Present"            $summary.SPF_Present
+Write-BoolLine "SPF_Healthy"            $summary.SPF_Healthy
+Write-BoolLine "DKIM_ValidSelector"     $summary.DKIM_ValidSelector
+Write-BoolLine "MTA_STS_DNS_Present"    $summary.MTA_STS_DNS_Present
+Write-BoolLine "MTA_STS_Enforced"       $summary.MTA_STS_Enforced
+Write-BoolLine "DMARC_Present"          $summary.DMARC_Present
+Write-BoolLine "DMARC_Enforced"         $summary.DMARC_Enforced
+Write-BoolLine "TLS_RPT_Present"        $summary.TLS_RPT_Present
+
+Write-Host "`nTip: For DKIM, inspect a real message header to learn the active selector (s=) and re-run with -Selectors 'thatSelector'." -ForegroundColor DarkCyan
     }
     
     # Return all results as hashtable
@@ -1264,9 +1281,9 @@ function Invoke-DomainCheck {
 
 if ($BulkFile) {
     # Bulk mode: process multiple domains
-    $domains = Get-Content $BulkFile | 
+    $domains = @(Get-Content $BulkFile | 
                Where-Object { $_ -and $_.Trim() -and -not $_.Trim().StartsWith('#') } |
-               ForEach-Object { $_.Trim().ToLower() }
+               ForEach-Object { $_.Trim().ToLower() })
     
     if ($domains.Count -eq 0) {
         throw "No valid domains found in $BulkFile"
@@ -1289,7 +1306,7 @@ if ($BulkFile) {
     # Export CSV if requested
     if ($Csv) {
         $csvData = $allResults | ForEach-Object { $_.Summary }
-        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+  $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
         $csvPath = "bulk-results-$ts.csv"
         $csvData | Export-Csv -Path $csvPath -NoTypeInformation
         Write-Host "CSV exported to: $csvPath" -ForegroundColor Green
