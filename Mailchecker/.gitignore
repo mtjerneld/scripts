@@ -1,2 +1,5 @@
 *.html
 *.csv
+*.txt
+# But keep the example file
+!domains.txt

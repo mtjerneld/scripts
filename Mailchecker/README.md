@@ -15,6 +15,7 @@ This tool performs a complete email security audit by checking:
 
 ## Recent Improvements
 
+- **Summary HTML Reports**: Added `-SummaryHtml` switch for consolidated HTML tables in bulk mode with overview statistics
 - **Comprehensive Help System**: Added `-Help` switch with Linux man-page style documentation
 - **Bulk Domain Checking**: Added ability to check multiple domains from input files with CSV export
 - **Unified Result Objects**: All security checks now return structured result objects for better consistency
@@ -64,11 +65,17 @@ This tool performs a complete email security audit by checking:
 # Export results to CSV
 .\mailchecker.ps1 -BulkFile domains.txt -Csv
 
-# Generate HTML reports for all domains
+# Generate consolidated summary HTML table (quick overview)
+.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml
+
+# Generate individual HTML reports for all domains
 .\mailchecker.ps1 -BulkFile domains.txt -Html
 
-# Combine CSV export and HTML reports
-.\mailchecker.ps1 -BulkFile domains.txt -Csv -Html
+# Combine summary HTML with individual reports
+.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml -Html
+
+# Full export: CSV + Summary HTML + Individual HTML reports
+.\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html
 ```
 
 ### Parameters
@@ -79,8 +86,9 @@ This tool performs a complete email security audit by checking:
 | `-BulkFile` | String | File containing domains to check (one per line) | - |
 | `-Selectors` | String | Comma-separated DKIM selectors to test | `"default,s1,s2,selector1,selector2,google,mail,k1"` |
 | `-DnsServer` | String[] | DNS server(s) to query first | Falls back to 8.8.8.8 and 1.1.1.1 |
-| `-Html` | Switch | Generate HTML report with auto-generated timestamped filename | - |
-| `-Csv` | Switch | Export bulk results to CSV file | - |
+| `-Html` | Switch | Generate HTML report(s) with auto-generated timestamped filename | - |
+| `-Csv` | Switch | Export bulk results to CSV file (only with `-BulkFile`) | - |
+| `-SummaryHtml` | Switch | Generate consolidated HTML summary table (only with `-BulkFile`) | - |
 | `-Help` | Switch | Show comprehensive help information and exit | - |
 
 ## Output
@@ -95,12 +103,29 @@ The script provides color-coded console output with:
 
 ### HTML Reports
 
-When using `-Html`, the script generates a comprehensive HTML report with an auto-generated filename (format: `domain-yyyyMMdd-HHmmss.html`) including:
+When using `-Html`, the script generates comprehensive HTML reports with auto-generated filenames:
+
+**Individual Reports** (format: `domain-yyyyMMdd-HHmmss.html`):
 - Summary table with all check results
 - Detailed sections for each security component
-- Color-coded status indicators
+- Color-coded status indicators with icons (✅❌⚠️)
 - Warnings and recommendations
 - Timestamp and domain information
+
+**Summary HTML Report** (bulk mode with `-SummaryHtml`, format: `bulk-summary-yyyyMMdd-HHmmss.html`):
+- Overview statistics (all OK, minor issues, major issues)
+- Consolidated table with all domains as rows
+- Color-coded icons for quick visual scanning (✅ Yes / ❌ No / ⚠️ N/A)
+- Sticky table headers for easy scrolling
+- Perfect for quick assessment of multiple domains
+
+### CSV Export
+
+When using `-Csv` with bulk checking, results are exported in CSV format (format: `bulk-results-yyyyMMdd-HHmmss.csv`):
+- One row per domain
+- Boolean columns for each security check
+- N/A values for non-applicable checks
+- Easy to import into Excel or other analysis tools
 
 ## Security Checks Explained
 
@@ -162,9 +187,17 @@ When using `-Html`, the script generates a comprehensive HTML report with an aut
 .\mailchecker.ps1 -BulkFile domains.txt -Csv
 # Creates: bulk-results-20231201-143022.csv
 
-# Generate HTML reports for all domains
+# Generate consolidated summary HTML table
+.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml
+# Creates: bulk-summary-20231201-143022.html
+
+# Generate individual HTML reports for all domains
 .\mailchecker.ps1 -BulkFile domains.txt -Html
 # Creates: domain1-20231201-143022.html, domain2-20231201-143022.html, etc.
+
+# Full export with all formats
+.\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html
+# Creates: CSV + summary HTML + individual HTML files for each domain
 ```
 
 ### Use specific DNS servers
@@ -223,8 +256,9 @@ Mailchecker/
 ├── mailchecker.ps1          # Main PowerShell script
 ├── README.md                # This documentation
 ├── domains.txt              # Example input file for bulk checking
-├── *.html                   # Generated HTML reports (timestamped)
-└── bulk-results-*.csv       # Generated CSV exports (timestamped)
+├── domain-*.html            # Individual HTML reports (timestamped)
+├── bulk-summary-*.html      # Consolidated HTML summary reports (timestamped)
+└── bulk-results-*.csv       # CSV exports (timestamped)
 ```
 
 ## License
