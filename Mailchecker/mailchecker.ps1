@@ -3,7 +3,7 @@
   Quick external mail hygiene checker: MX, DKIM, MTA-STS, DMARC, TLS-RPT, SPF.
 
 .PARAMETER Domain
-  Domain to check (e.g. example.com). If omitted, you’ll be prompted.
+  Domain to check (e.g. example.com). If omitted, you'll be prompted.
 
 .PARAMETER Selectors
   Comma-separated DKIM selectors to test. 
@@ -35,6 +35,9 @@ param(
   
   [Parameter(Mandatory=$false)]
   [switch]$Csv,
+  
+  [Parameter(Mandatory=$false)]
+  [switch]$SummaryHtml,
   
   [Parameter(Mandatory=$false)]
   [switch]$Help
@@ -107,6 +110,10 @@ OPTIONS
        -Csv   Export bulk results to CSV file (only applicable with -BulkFile)
               (format: bulk-results-yyyyMMdd-HHmmss.csv)
 
+       -SummaryHtml
+              Generate consolidated HTML summary table (only applicable with -BulkFile)
+              (format: bulk-summary-yyyyMMdd-HHmmss.html)
+
        -Help  Show this help information and exit
 
 EXAMPLES
@@ -132,6 +139,12 @@ EXAMPLES
 
               .\mailchecker.ps1 -BulkFile domains.txt -Csv -Html
                      Check multiple domains with both CSV export and HTML reports
+
+              .\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml
+                     Check multiple domains and generate consolidated HTML summary table
+
+              .\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html
+                     Full export: CSV, summary HTML, and individual HTML reports
 
        Advanced Usage
               .\mailchecker.ps1 -Domain example.com -DnsServer @("8.8.8.8","1.1.1.1")
@@ -171,6 +184,13 @@ OUTPUT FORMATS
               - Color-coded status indicators with icons
               - Warnings and recommendations
               - Timestamp and domain information
+
+       Summary HTML (Bulk Mode)
+              Consolidated HTML table showing all domains:
+              - One table with all domains as rows
+              - Color-coded icons for quick visual scanning
+              - Overview statistics (all OK, minor issues, major issues)
+              - Sortable and styled for easy analysis
 
        CSV Export (Bulk Mode)
               Structured CSV file containing summary data for all domains:
@@ -216,6 +236,9 @@ FILES
 
        bulk-results-*.csv
               Generated CSV exports (timestamped)
+
+       bulk-summary-*.html
+              Generated summary HTML reports (timestamped)
 
 BUGS
        Report issues and feature requests at the project repository.
@@ -986,6 +1009,146 @@ function Write-HtmlReport {
   }
 }
 
+function Write-SummaryHtmlReport {
+  param(
+    [string]$Path,
+    [array]$AllResults
+  )
+
+  $css = @'
+  body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; color:#222 }
+  h1 { color:#0078D7 }
+  h2 { border-bottom:1px solid #ddd; padding-bottom:4px; margin-top: 30px }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
+  th, td { border:1px solid #ddd; padding:8px 12px; text-align:left }
+  th { background-color: #f5f5f5; font-weight: 600; position: sticky; top: 0; }
+  td.domain { font-weight: 600; font-family: 'Courier New', monospace; }
+  .status-ok { color: green; }
+  .status-fail { color: red; }
+  .status-warn { color: #b58900; }
+  tr:hover { background-color: #f9f9f9; }
+  .summary-stats { background-color: #f0f8ff; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+  .summary-stats p { margin: 5px 0; }
+'@
+
+  $now = (Get-Date).ToString('u')
+  $totalDomains = $AllResults.Count
+  
+  # Calculate statistics
+  $allOK = 0
+  $someIssues = 0
+  $majorIssues = 0
+  
+  foreach ($result in $AllResults) {
+    $summary = $result.Summary
+    $failCount = 0
+    
+    # Count failures (excluding N/A)
+    if ($summary.MX_Records_Present -eq $false) { $failCount++ }
+    if ($summary.SPF_Present -eq $false) { $failCount++ }
+    if ($summary.SPF_Healthy -eq $false) { $failCount++ }
+    if ($summary.DKIM_ValidSelector -is [bool] -and $summary.DKIM_ValidSelector -eq $false) { $failCount++ }
+    if ($summary.MTA_STS_Enforced -is [bool] -and $summary.MTA_STS_Enforced -eq $false) { $failCount++ }
+    if ($summary.DMARC_Present -eq $false) { $failCount++ }
+    if ($summary.DMARC_Enforced -eq $false) { $failCount++ }
+    
+    if ($failCount -eq 0) {
+      $allOK++
+    } elseif ($failCount -le 2) {
+      $someIssues++
+    } else {
+      $majorIssues++
+    }
+  }
+
+  $html = @"
+<html>
+  <head>
+    <meta charset='utf-8' />
+    <title>Bulk Mail Check Summary Report</title>
+    <style>$css</style>
+  </head>
+  <body>
+  <h1>Bulk Mail Check Summary Report</h1>
+  <p>Generated: $now</p>
+  
+  <div class='summary-stats'>
+    <h2>Overview Statistics</h2>
+    <p><strong>Total Domains Checked:</strong> $totalDomains</p>
+    <p><strong>&#x2705; All Checks Passed:</strong> $allOK domains</p>
+    <p><strong>&#x26A0;&#xFE0F; Minor Issues (1-2 failures):</strong> $someIssues domains</p>
+    <p><strong>&#x274C; Major Issues (3+ failures):</strong> $majorIssues domains</p>
+  </div>
+  
+  <h2>Detailed Results</h2>
+  <table>
+    <tr>
+      <th>Domain</th>
+      <th>MX Records</th>
+      <th>SPF Present</th>
+      <th>SPF Healthy</th>
+      <th>DKIM Valid</th>
+      <th>MTA-STS DNS</th>
+      <th>MTA-STS Enforced</th>
+      <th>DMARC Present</th>
+      <th>DMARC Enforced</th>
+      <th>TLS-RPT</th>
+    </tr>
+"@
+
+  foreach ($result in $AllResults) {
+    $summary = $result.Summary
+    $domain = [System.Web.HttpUtility]::HtmlEncode($summary.Domain)
+    
+    $html += "    <tr>`n"
+    $html += "      <td class='domain'>$domain</td>`n"
+    
+    # Helper function to render cell
+    $renderCell = {
+      param($value)
+      if ($value -is [string] -and $value -eq "N/A") {
+        return "<td class='status-warn'>&#x26A0;&#xFE0F; N/A</td>"
+      } elseif ($value -eq $true) {
+        return "<td class='status-ok'>&#x2705; Yes</td>"
+      } else {
+        return "<td class='status-fail'>&#x274C; No</td>"
+      }
+    }
+    
+    $html += (& $renderCell $summary.MX_Records_Present) + "`n"
+    $html += (& $renderCell $summary.SPF_Present) + "`n"
+    $html += (& $renderCell $summary.SPF_Healthy) + "`n"
+    $html += (& $renderCell $summary.DKIM_ValidSelector) + "`n"
+    $html += (& $renderCell $summary.MTA_STS_DNS_Present) + "`n"
+    $html += (& $renderCell $summary.MTA_STS_Enforced) + "`n"
+    $html += (& $renderCell $summary.DMARC_Present) + "`n"
+    $html += (& $renderCell $summary.DMARC_Enforced) + "`n"
+    $html += (& $renderCell $summary.TLS_RPT_Present) + "`n"
+    
+    $html += "    </tr>`n"
+  }
+
+  $html += @"
+  </table>
+  
+  <p style='margin-top: 30px; color: #666; font-size: 12px;'>
+    <strong>Legend:</strong> 
+    &#x2705; Yes = Passed | 
+    &#x274C; No = Failed | 
+    &#x26A0;&#xFE0F; N/A = Not Applicable
+  </p>
+  </body>
+</html>
+"@
+
+  try {
+    $html | Out-File -FilePath $Path -Encoding utf8 -Force
+    Write-Host "Wrote summary HTML report to: $Path" -ForegroundColor Green
+  } catch {
+    Write-Host ("Failed to write summary HTML report to {0}: {1}" -f $Path, $_) -ForegroundColor Red
+  }
+}
+
 function Invoke-DomainCheck {
     param(
         [string]$Domain,
@@ -1132,6 +1295,13 @@ if ($BulkFile) {
         Write-Host "CSV exported to: $csvPath" -ForegroundColor Green
     }
     
+    # Generate summary HTML report if requested
+    if ($SummaryHtml) {
+        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        $summaryHtmlPath = "bulk-summary-$ts.html"
+        Write-SummaryHtmlReport -Path $summaryHtmlPath -AllResults $allResults
+    }
+    
     # Generate HTML reports if requested
     if ($Html) {
         $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
@@ -1163,3 +1333,4 @@ if ($BulkFile) {
                        -dmarcResult $result.DMARCResult -tlsResult $result.TLSResult
     }
 }
+
