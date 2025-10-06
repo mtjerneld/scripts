@@ -375,8 +375,8 @@ function Test-TLSReport {
     if ($tlsRptTxt) {
         $details += "TXT at $($tlsRptHost):"
         $details += $tlsRptTxt
-        $hasV = [bool]($tlsRptTxt -match "(?i)\\bv=TLSRPTv1\\b")
-        $ruaMatch = [regex]::Match($tlsRptTxt, "(?i)\\bru[a]\\s*=\\s*(mailto:[^,;]+|https?://[^,;]+)")
+        $hasV = [bool]($tlsRptTxt -match "(?i)\bv=TLSRPTv1\b")
+        $ruaMatch = [regex]::Match($tlsRptTxt, "(?i)\bru[a]\s*=\s*(mailto:[^,;]+|https?://[^,;]+)")
         if ($hasV) { $details += "- v=TLSRPTv1 present: True" }
         if ($ruaMatch.Success) { $details += ("- rua: {0}" -f $ruaMatch.Groups[1].Value) }
         $status = 'OK'
@@ -870,23 +870,8 @@ if ($HtmlOutput -and $HtmlOutput.Trim() -ne '') {
 }
 
 if ($outPath) {
-  # Ensure we have the pieces to include; variables like $mtaStsBody or $dmarc may be null
-  $mxRecords = $mx
-  $spfRecords = $spfRecs
-  $dkimResults = $dkimResults
-  $mtaStsTxtVal = $mtaStsTxt
-  $mtaStsBodyVal = $mtaStsBody
-  $dmarcMap = $dmarc
-  $tlsRptTxtVal = $tlsRptTxt
-  $mtaStsUrlVal = $mtaStsUrl
-  # Old section building code removed - now using unified result objects
-
-# --- Tvinga booleans så att aldrig "" råkar skickas in ---
-$MtaStsModeTesting = [bool]$MtaStsModeTesting
-$MtaStsEnforced    = [bool]$MtaStsEnforced
-
-# --- Coerce DMARC boolean ---
-$dmarcEnforced = [bool]$dmarcEnforced
-
-  Write-HtmlReport -Path $outPath -Domain $Domain -Summary $summary -mxResult $mxResult -spfResult $spfResult -dkimResult $dkimResult -mtaStsResult $mtaStsResult -dmarcResult $dmarcResult -tlsResult $tlsResult
+  Write-HtmlReport -Path $outPath -Domain $Domain -Summary $summary `
+                   -mxResult $mxResult -spfResult $spfResult `
+                   -dkimResult $dkimResult -mtaStsResult $mtaStsResult `
+                   -dmarcResult $dmarcResult -tlsResult $tlsResult
 }
