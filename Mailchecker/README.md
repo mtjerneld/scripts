@@ -127,41 +127,78 @@ When using `-Csv` with bulk checking, results are exported in CSV format (format
 - N/A values for non-applicable checks
 - Easy to import into Excel or other analysis tools
 
-## Security Checks Explained
+## Strict Profile Severity Policy
 
-### MX Records
-- Verifies mail exchange servers are properly configured
-- Lists all MX records with preferences
-- Ensures domain can receive email
+This tool uses a **strict security profile** by default, providing clear severity ratings for each check:
 
-### SPF (Sender Policy Framework)
-- Checks for `v=spf1` records
-- Validates DNS lookup count (warns if >10)
-- Identifies soft fail (`~all`) vs hard fail (`-all`) policies
-- Analyzes include/redirect mechanisms
+### Severity Levels
 
-### DKIM (DomainKeys Identified Mail)
-- Tests multiple common selectors
-- Validates `v=DKIM1` and `p=` (public key) presence
-- Detects test mode (`t=y`) and strict mode (`t=s`)
-- Identifies revoked keys (`p=;`)
+- ✅ **PASS** (Green): Configuration meets strict security standards
+- ⚠️ **WARN** (Yellow): Configuration exists but is not fully enforced or uses deprecated mechanisms
+- ❌ **FAIL** (Red): Critical configuration is missing or has serious issues
+- ℹ️ **N/A** (Blue): Not applicable (e.g., domain has no MX records for receive-only checks)
 
-### MTA-STS (Mail Transfer Agent Strict Transport Security)
-- Checks `_mta-sts` TXT record for `v=STSv1`
-- Fetches HTTPS policy from `https://mta-sts.domain/.well-known/mta-sts.txt`
-- Validates `mode=enforce` vs `mode=testing`
-- Analyzes MX patterns and max_age settings
+### Security Checks & Severity Ratings
 
-### DMARC (Domain-based Message Authentication)
-- Checks `_dmarc` TXT record for `v=DMARC1`
-- Validates policy enforcement (`p=reject` or `p=quarantine`)
-- Identifies testing mode (`p=none`)
-- Analyzes reporting addresses (`rua`, `ruf`)
+#### DMARC (Domain-based Message Authentication)
+- **Missing record** → ❌ FAIL
+- **`p=none`** (monitoring only) → ⚠️ WARN
+- **`p=quarantine`** → ⚠️ WARN (not fully enforced)
+- **`p=reject`** → ✅ PASS (fully enforced)
 
-### TLS-RPT (TLS Reporting)
-- Checks `_smtp._tls` TXT record for `v=TLSRPTv1`
-- Validates reporting addresses
-- Optional but recommended for TLS monitoring
+*Additional issues shown in "Reason" field:*
+- `pct<100`: Not all messages subject to policy
+- `sp` missing: Subdomain policy not set
+- `rua`/`ruf` missing: No reporting addresses
+- `adkim`/`aspf` relaxed: Consider strict alignment
+
+#### MTA-STS (Mail Transfer Agent Strict Transport Security)
+- **Missing** (for domains with MX) → ❌ FAIL
+- **`mode=testing`** → ⚠️ WARN
+- **`mode=enforce`** with valid policy → ✅ PASS
+- **Missing** (for domains without MX) → ℹ️ N/A
+
+#### TLS-RPT (TLS Reporting)
+- **Missing** → ⚠️ WARN (recommended but optional)
+- **Configured** → ✅ PASS
+- **Missing** (for domains without MX) → ℹ️ N/A
+
+#### SPF (Sender Policy Framework)
+- **Missing** → ❌ FAIL
+- **Multiple SPF records** → ❌ FAIL (RFC violation)
+- **>10 DNS lookups** → ❌ FAIL (exceeds RFC limit)
+- **Uses `ptr` mechanism** → ⚠️ WARN (deprecated)
+- **Uses `~all`** (soft fail) → ⚠️ WARN (not recommended for production)
+- **Valid with `-all`** → ✅ PASS
+
+#### MX Records
+- **Present** → ✅ PASS (shows actual MX records)
+- **Missing** → ℹ️ N/A (domain may be send-only)
+
+#### DKIM (DomainKeys Identified Mail)
+- **No valid selectors found** → ❌ FAIL
+- **At least one valid selector** → ✅ PASS
+- **Not applicable** (no MX and no SPF mechanisms) → ℹ️ N/A
+
+### Overall Status
+
+The script calculates an **overall status** for each domain:
+- **PASS**: All checks passed
+- **WARN**: At least one warning, no failures
+- **FAIL**: At least one critical failure
+
+### Reason Field
+
+Each check includes a **Reason** field with concise details:
+- **Console output**: Shows "Overall Status" and "Reason" in summary
+- **CSV export**: Includes "Status" and "Reason" columns
+- **HTML reports**: Displays Status and Reason in summary table
+
+Example reasons:
+- `DMARC: p=quarantine; pct=100; sp=missing; adkim=r; aspf=s; rua=ok`
+- `SPF: valid (5 lookups)`
+- `MTA-STS: mode=testing`
+- `TLS-RPT: missing`
 
 ## Examples
 
@@ -209,11 +246,12 @@ When using `-Csv` with bulk checking, results are exported in CSV format (format
 
 ### Common Issues
 
-1. **No MX records found**: Domain may not be configured for email
-2. **SPF exceeds 10 DNS lookups**: Simplify SPF record or use redirect
-3. **DKIM no valid selectors**: Check actual selector used in email headers
-4. **MTA-STS in testing mode**: Change policy to `mode: enforce`
-5. **DMARC p=none**: Update policy to `p=quarantine` or `p=reject`
+1. **No MX records found**: Domain may not be configured for email (shown as N/A, not a failure)
+2. **SPF exceeds 10 DNS lookups**: Simplify SPF record or use redirect (❌ FAIL)
+3. **DKIM no valid selectors**: Check actual selector used in email headers (❌ FAIL)
+4. **MTA-STS in testing mode**: Change policy to `mode: enforce` (⚠️ WARN)
+5. **DMARC p=none or p=quarantine**: Update policy to `p=reject` for full enforcement (⚠️ WARN)
+6. **TLS-RPT missing**: Add TLS-RPT record for encryption monitoring (⚠️ WARN)
 
 ### DNS Resolution Issues
 

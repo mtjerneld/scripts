@@ -299,18 +299,25 @@ function Test-MXRecords {
     $details = @()
     $infoMessages = @()
     $status = 'FAIL'
+    $reason = ""
     
     if (@($mx).Count -gt 0) {
         $details = $mx | Sort-Object Preference,NameExchange | 
                    ForEach-Object { "$($_.Preference) $($_.NameExchange)" }
         $status = 'OK'
+        $mxList = ($mx | Sort-Object Preference,NameExchange | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) -join ', '
+        $reason = "MX: $mxList"
     } else {
         $details = @("No MX records found via any configured resolver.")
         $infoMessages = @("Info: No MX records is not necessarily an error - domain may only send email (not receive).")
         $status = 'N/A'
+        $reason = "MX: N/A (send-only domain)"
     }
     
-    return New-CheckResult -Section 'MX Records' -Status $status -Details $details -InfoMessages $infoMessages -Data @{ MXRecords = $mx }
+    return New-CheckResult -Section 'MX Records' -Status $status -Details $details -InfoMessages $infoMessages -Data @{ 
+        MXRecords = $mx
+        Reason = $reason
+    }
 }
 
 function Get-SpfLookups($spf, $checked) {
@@ -346,36 +353,96 @@ function Test-SPFRecords {
     $infoMessages = @()
     $status = 'FAIL'
     $spfHealthy = $true
+    $reason = ""
     
     if (@($spfRecs).Count -gt 0) {
+        # Check for multi-SPF (strict profile: FAIL)
+        if (@($spfRecs).Count -gt 1) {
+            $warnings += "Warning: Multiple SPF records found - this violates RFC and causes unpredictable behavior."
+            $spfHealthy = $false
+            $status = 'FAIL'
+            $reason = "SPF: multiple records (RFC violation)"
+        }
+        
         $i = 1
+        $hasPtr = $false
+        $hasSoftFail = $false
+        $maxLookups = 0
+        
         foreach ($rec in $spfRecs) {
             $details += "SPF #$i`: $rec"
             
-            # Check for soft fail
-            if ($rec -match '(?i)\b~all\b') {
-                $warnings += "Warning: SPF uses soft fail (~all), which is not recommended for production."
-                $spfHealthy = $false
+            # Check for ptr (strict profile: WARN)
+            if ($rec -match '(?i)\bptr\b') {
+                $hasPtr = $true
+            }
+            
+            # Check for soft fail (strict profile: WARN)
+            if ($rec -match '(?i)~all\b') {
+                $hasSoftFail = $true
             }
             
             # Count DNS lookups
             $lookupCount = Get-SpfLookups $rec @()
-            $infoMessages += "Info: DNS lookups (SPF): $lookupCount"
-            
             if ($lookupCount -gt 10) {
-                $warnings += "Warning: SPF exceeds 10 DNS lookups!"
+                $warnings += "Warning: DNS lookups (SPF): $lookupCount (exceeds RFC limit of 10)"
                 $spfHealthy = $false
+                $status = 'FAIL'
+            } else {
+                $infoMessages += "Info: DNS lookups (SPF): $lookupCount (below RFC limit of 10, OK)"
             }
+            if ($lookupCount -gt $maxLookups) { $maxLookups = $lookupCount }
             
             $i++
         }
-        $status = if ($spfHealthy) { 'OK' } else { 'FAIL' }
+        
+        # Add warnings for ptr and soft fail (always show these if present)
+        if ($hasPtr) {
+            $warnings += "Warning: SPF uses ptr mechanism, which is deprecated and inefficient."
+        }
+        if ($hasSoftFail) {
+            $warnings += "Warning: SPF uses soft fail (~all). Consider using -all (hard fail) for production."
+        }
+        
+        # Determine status and reason based on findings (only if not already set to FAIL from multi-SPF)
+        if (-not $reason) {
+            if ($maxLookups -gt 10) {
+                $status = 'FAIL'
+                $spfHealthy = $false
+                # Build reason with additional issues
+                $reasonParts = @(">10 lookups ($maxLookups)")
+                if ($hasSoftFail) { $reasonParts += "~all" }
+                if ($hasPtr) { $reasonParts += "ptr" }
+                $reason = "SPF: " + ($reasonParts -join ", ")
+            } elseif ($hasPtr -or $hasSoftFail) {
+                # ptr OR ~all → WARN
+                $status = 'WARN'
+                $spfHealthy = $false
+                if ($hasPtr -and $hasSoftFail) {
+                    $reason = "SPF: ptr + ~all (not recommended)"
+                } elseif ($hasPtr) {
+                    $reason = "SPF: uses ptr (deprecated)"
+                } else {
+                    $reason = "SPF: ~all (soft fail)"
+                }
+            } else {
+                $status = 'OK'
+                $reason = "SPF: valid ($maxLookups lookups)"
+                $spfHealthy = $true
+            }
+        }
     } else {
         $details = @("No SPF (v=spf1) record found at $Domain")
         $spfHealthy = $false
+        $status = 'FAIL'
+        $reason = "SPF: missing"
     }
     
-    return New-CheckResult -Section 'SPF' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ SPFRecords = $spfRecs; Healthy = $spfHealthy }
+    return New-CheckResult -Section 'SPF' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
+        SPFRecords = $spfRecs
+        Healthy = $spfHealthy
+        Reason = $reason
+    }
 }
 
 function Test-DKIMRecords {
@@ -395,7 +462,7 @@ function Test-DKIMRecords {
     # Skip DKIM test only if domain has no MX AND (no SPF record OR SPF only has -all)
     if (-not $HasMX -and -not $HasSpfWithMechanisms) {
         $infoMessages += "Not applicable - domain has no mail flow (no MX and no SPF mechanisms)"
-        return New-CheckResult -Section 'DKIM' -Status 'N/A' -InfoMessages $infoMessages
+        return New-CheckResult -Section 'DKIM' -Status 'N/A' -InfoMessages $infoMessages -Data @{ Reason = "DKIM: N/A (no mail flow)" }
     }
     
     # Check DKIM selectors
@@ -458,15 +525,23 @@ function Test-DKIMRecords {
         }
     }
 
+    $reason = ""
     if ($anyValid) {
         $infoMessages += "DKIM validation successful - at least one valid selector found with proper public key."
         $status = 'OK'
+        $validSelectorNames = ($validSelectors | ForEach-Object { $_.Selector }) -join ', '
+        $reason = "DKIM: valid selectors ($validSelectorNames)"
     } else {
         $warnings += "DKIM validation failed - no valid selectors found with proper public keys."
         $status = 'FAIL'
+        $reason = "DKIM: no valid selectors"
     }
     
-    return New-CheckResult -Section 'DKIM' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ DKIMResults = $dkimResults; AnyValid = $anyValid }
+    return New-CheckResult -Section 'DKIM' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
+        DKIMResults = $dkimResults
+        AnyValid = $anyValid
+        Reason = $reason
+    }
 }
 
 function Test-MTASts {
@@ -479,10 +554,11 @@ function Test-MTASts {
     $warnings = @()
     $infoMessages = @()
     $status = 'FAIL'
+    $reason = ""
     
     if (-not $HasMX) {
         $infoMessages += "Not applicable - domain cannot receive email"
-        return New-CheckResult -Section 'MTA-STS' -Status 'N/A' -InfoMessages $infoMessages
+        return New-CheckResult -Section 'MTA-STS' -Status 'N/A' -InfoMessages $infoMessages -Data @{ Reason = "N/A: no MX records" }
     }
     
     # MTA-STS logic
@@ -527,29 +603,48 @@ function Test-MTASts {
             
             # Set booleans based on mode
             switch -Regex ($mode) {
-                '^(?i)enforce$' { $MtaStsEnforced = $true;  $MtaStsModeTesting = $false; break }
-                '^(?i)testing$' { $MtaStsEnforced = $false; $MtaStsModeTesting = $true;  break }
-                default         { $MtaStsEnforced = $false; $MtaStsModeTesting = $false; break }
-            }
-            
-            if ($MtaStsModeTesting) {
-                $warnings += "Warning: MTA-STS is in testing mode (mode=testing) and not enforced (HTTPS policy)."
+                '^(?i)enforce$' { 
+                    $MtaStsEnforced = $true
+                    $MtaStsModeTesting = $false
+                    $status = 'OK'
+                    $reason = "MTA-STS: mode=enforce"
+                    $infoMessages += "MTA-STS is properly enforced (mode=enforce)."
+                    break 
+                }
+                '^(?i)testing$' { 
+                    $MtaStsEnforced = $false
+                    $MtaStsModeTesting = $true
+                    $status = 'WARN'
+                    $reason = "MTA-STS: mode=testing"
+                    $warnings += "Warning: MTA-STS is in testing mode (mode=testing). Switch to mode=enforce for full protection."
+                    break 
+                }
+                default { 
+                    $MtaStsEnforced = $false
+                    $MtaStsModeTesting = $false
+                    $status = 'FAIL'
+                    $reason = "MTA-STS: invalid or missing mode"
+                    break 
+                }
             }
         } else {
             $details += "Could not fetch HTTPS policy at $mtaStsUrl"
+            $status = 'FAIL'
+            $reason = "MTA-STS: DNS record exists but policy unreachable"
         }
-        
-        $status = if ($MtaStsEnforced) { 'OK' } else { 'FAIL' }
     } else {
         $details += "No _mta-sts TXT record found."
+        $status = 'FAIL'
+        $reason = "MTA-STS: missing (required for domains with MX)"
     }
     
     return New-CheckResult -Section 'MTA-STS' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
-        MtaStsTxt = $mtaStsTxt; 
-        MtaStsBody = $mtaStsBody; 
-        MtaStsUrl = $mtaStsUrlVal; 
-        MtaStsModeTesting = $MtaStsModeTesting; 
-        MtaStsEnforced = $MtaStsEnforced 
+        MtaStsTxt = $mtaStsTxt
+        MtaStsBody = $mtaStsBody
+        MtaStsUrl = $mtaStsUrlVal
+        MtaStsModeTesting = $MtaStsModeTesting
+        MtaStsEnforced = $MtaStsEnforced
+        Reason = $reason
     }
 }
 
@@ -560,6 +655,7 @@ function Test-DMARC {
     $warnings = @()
     $infoMessages = @()
     $status = 'FAIL'
+    $reason = ""
 
     $dmarcHost = "_dmarc.$Domain"
     $dmarcTxt = Resolve-Txt $dmarcHost
@@ -579,23 +675,59 @@ function Test-DMARC {
                 if ($t -eq 'p') { $pVal = $val }
             }
         }
-        if ($dmarcMap.ContainsKey('v') -and $dmarcMap.ContainsKey('p')) {
-            $infoMessages += "DMARC looks present with required tags (v & p)."
+        
+        # Build reason string
+        $reasonParts = @()
+        if ($pVal) { $reasonParts += "p=$pVal" }
+        if ($dmarcMap.ContainsKey('pct')) { $reasonParts += "pct=$($dmarcMap['pct'])" }
+        if ($dmarcMap.ContainsKey('sp')) { $reasonParts += "sp=$($dmarcMap['sp'])" } else { $reasonParts += "sp=missing" }
+        if ($dmarcMap.ContainsKey('adkim')) { $reasonParts += "adkim=$($dmarcMap['adkim'])" } else { $reasonParts += "adkim=r" }
+        if ($dmarcMap.ContainsKey('aspf')) { $reasonParts += "aspf=$($dmarcMap['aspf'])" } else { $reasonParts += "aspf=r" }
+        if ($dmarcMap.ContainsKey('rua')) { $reasonParts += "rua=ok" } else { $reasonParts += "rua=missing" }
+        $reason = "DMARC: " + ($reasonParts -join "; ")
+        
+        # Check for additional warnings (shown in reason but don't change severity if p=reject)
+        if ($dmarcMap.ContainsKey('pct') -and [int]$dmarcMap['pct'] -lt 100) {
+            $warnings += "Warning: DMARC pct<100 - not all messages are subject to policy."
         }
-        if ($pVal -and $pVal -match '(?i)^none$') {
-            $warnings += "Warning: DMARC is in testing mode only (p=none) and not enforced."
-            $status = 'FAIL'
-        } elseif ($pVal -and $pVal -match '(?i)^(reject|quarantine)$') {
+        if (-not $dmarcMap.ContainsKey('sp')) {
+            $warnings += "Warning: DMARC sp (subdomain policy) not set."
+        }
+        if (-not $dmarcMap.ContainsKey('rua') -and -not $dmarcMap.ContainsKey('ruf')) {
+            $warnings += "Warning: DMARC has no reporting addresses (rua/ruf)."
+        }
+        if (-not $dmarcMap.ContainsKey('adkim') -or $dmarcMap['adkim'] -match '(?i)^r') {
+            $infoMessages += "Info: DMARC adkim=relaxed (default) - consider strict mode for better security."
+        }
+        if (-not $dmarcMap.ContainsKey('aspf') -or $dmarcMap['aspf'] -match '(?i)^r') {
+            $infoMessages += "Info: DMARC aspf=relaxed (default) - consider strict mode for better security."
+        }
+        
+        # Strict profile: p=reject → OK, p=quarantine → WARN, p=none → WARN, missing/other → FAIL
+        if ($pVal -and $pVal -match '(?i)^reject$') {
             $status = 'OK'
+            $infoMessages += "DMARC policy is enforced (p=reject)."
+        } elseif ($pVal -and $pVal -match '(?i)^quarantine$') {
+            $status = 'WARN'
+            $warnings += "Warning: DMARC p=quarantine is not fully enforced. Upgrade to p=reject for strict protection."
+        } elseif ($pVal -and $pVal -match '(?i)^none$') {
+            $status = 'WARN'
+            $warnings += "Warning: DMARC is in monitoring mode only (p=none). Upgrade to p=reject for enforcement."
         } else {
             $status = 'FAIL'
         }
     } else {
         $details += "No DMARC record found at _dmarc.$Domain"
+        $reason = "DMARC: missing"
         $status = 'FAIL'
     }
 
-    return New-CheckResult -Section 'DMARC' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ DmarcMap = $dmarcMap; DmarcTxt = $dmarcTxt; Enforced = ($status -eq 'OK') }
+    return New-CheckResult -Section 'DMARC' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
+        DmarcMap = $dmarcMap
+        DmarcTxt = $dmarcTxt
+        Enforced = ($pVal -match '(?i)^reject$')
+        Reason = $reason
+    }
 }
 
 function Test-TLSReport {
@@ -605,10 +737,11 @@ function Test-TLSReport {
     $warnings = @()
     $infoMessages = @()
     $status = 'FAIL'
+    $reason = ""
 
     if (-not $HasMX) {
         $infoMessages += "Not applicable - domain cannot receive email"
-        return New-CheckResult -Section 'SMTP TLS Reporting (TLS-RPT)' -Status 'N/A' -InfoMessages $infoMessages
+        return New-CheckResult -Section 'SMTP TLS Reporting (TLS-RPT)' -Status 'N/A' -InfoMessages $infoMessages -Data @{ Reason = "N/A: no MX records" }
     }
 
     $tlsRptHost = "_smtp._tls.$Domain"
@@ -622,12 +755,19 @@ function Test-TLSReport {
         if ($hasV) { $details += "- v=TLSRPTv1 present: True" }
         if ($ruaMatch.Success) { $details += ("- rua: {0}" -f $ruaMatch.Groups[1].Value) }
         $status = 'OK'
+        $reason = "TLS-RPT: configured"
+        $infoMessages += "TLS-RPT is configured for encryption monitoring."
     } else {
-        $details += "No TLS-RPT record found (optional but recommended)."
-        $status = 'FAIL'
+        $details += "No TLS-RPT record found (recommended for encryption monitoring)."
+        $status = 'WARN'
+        $reason = "TLS-RPT: missing"
+        $warnings += "Warning: TLS-RPT not configured. Recommended for monitoring TLS encryption issues."
     }
 
-    return New-CheckResult -Section 'SMTP TLS Reporting (TLS-RPT)' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ TlsRptTxt = $tlsRptTxt }
+    return New-CheckResult -Section 'SMTP TLS Reporting (TLS-RPT)' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
+        TlsRptTxt = $tlsRptTxt
+        Reason = $reason
+    }
 }
 
 function Write-CheckResult {
@@ -750,21 +890,32 @@ function Write-Section($title) {
   Write-Host "=== $title ===" -ForegroundColor White
 }
 
-function Write-BoolLine {
-  param([string]$Label, $Value)
-  if ($Value -is [string] -and $Value -eq "N/A") {
-    $color = 'Cyan'
-    $text = 'N/A'
-  } elseif ($Label -eq 'MX_Records_Present' -and -not $Value) {
-    # MX records not present is informational, not an error (domain may only send email)
-    $color = 'Cyan'
-    $text = 'False'
-  } else {
-    $color = if ($Value) { 'Green' } else { 'Red' }
-    $text  = if ($Value) { 'True' }  else { 'False' }
+function Write-StatusLine {
+  param([string]$Label, $Status, $Details = "")
+  
+  # Map status to color
+  $color = switch ($Status) {
+    'OK'   { 'Green' }
+    'PASS' { 'Green' }
+    'WARN' { 'Yellow' }
+    'FAIL' { 'Red' }
+    'N/A'  { 'Cyan' }
+    default { 'White' }
   }
+  
+  # Map status to display text
+  $statusText = switch ($Status) {
+    'OK'   { 'PASS' }
+    default { $Status }
+  }
+  
   Write-Host ("- {0}: " -f $Label) -NoNewline
-  Write-Host $text -ForegroundColor $color
+  Write-Host $statusText -ForegroundColor $color
+  
+  # Show details if provided (e.g., MX records)
+  if ($Details) {
+    Write-Host ("  {0}" -f $Details) -ForegroundColor Gray
+  }
 }
 
 # Build resolver list
@@ -958,44 +1109,68 @@ function Write-HtmlReport {
     <p>Generated: $now</p>
 "@
 
-  # Friendly names mapping for Summary table
-  $friendlyNames = @{
-    'Domain' = 'Domain'
-    'MX_Records_Present' = 'MX records found'
-    'SPF_Present' = 'SPF record present'
-    'SPF_Healthy' = 'SPF configuration valid'
-    'DKIM_ValidSelector' = 'DKIM selector valid'
-    'MTA_STS_DNS_Present' = 'MTA-STS DNS record present'
-    'MTA_STS_Enforced' = 'MTA-STS policy enforced'
-    'DMARC_Present' = 'DMARC record present'
-    'DMARC_Enforced' = 'DMARC policy enforced (reject/quarantine)'
-    'TLS_RPT_Present' = 'TLS-RPT reporting enabled'
-  }
-
   $html += "<h2>Summary</h2>"
   $html += "<p>Tested domain: <strong>$([System.Web.HttpUtility]::HtmlEncode($Summary.Domain))</strong></p>"
-  $html += "<table style='width: 480px; table-layout: fixed;'><tr><th style='width: 360px;'>Test</th><th style='width: 120px;'>Result</th></tr>"
-  foreach ($k in $Summary.PSObject.Properties.Name) {
-    # Skip Domain since it's now shown above the table
-    if ($k -eq 'Domain') { continue }
-    $v = $Summary.$k
-    if ($v -is [string] -and $v -eq "N/A") { 
-      $cls = 'status-info'
-      $valStr = '&#x2139;&#xFE0F; N/A'  # ℹ️ N/A
-    } elseif ($k -eq 'MX_Records_Present' -and $v -eq $false) {
-      # MX records not present is informational, not an error (domain may only send email)
-      $cls = 'status-info'
-      $valStr = '&#x2139;&#xFE0F; False'  # ℹ️ False
-    } elseif ($v -is [bool]) { 
-      $cls = if ($v) { 'status-ok' } else { 'status-fail' }
-      $valStr = if ($v) { '&#x2705; True' } else { '&#x274C; False' }  # ✅ True / ❌ False
-    } else { 
-      $cls = ''
-      $valStr = [System.Web.HttpUtility]::HtmlEncode($v)
-    }
-    $displayName = if ($friendlyNames.ContainsKey($k)) { $friendlyNames[$k] } else { $k }
-    $html += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($displayName) )</td><td class='$cls'>$valStr</td></tr>"
+  
+  # Overall status
+  $statusClass = switch ($Summary.Status) {
+    'PASS' { 'status-ok' }
+    'WARN' { 'status-warn' }
+    'FAIL' { 'status-fail' }
+    default { '' }
   }
+  $statusIcon = switch ($Summary.Status) {
+    'PASS' { '&#x2705; ' }
+    'WARN' { '&#x26A0;&#xFE0F; ' }
+    'FAIL' { '&#x274C; ' }
+    default { '' }
+  }
+  $html += "<p style='font-weight: 600; font-size: 16px;' class='$statusClass'>Overall Status: $statusIcon$([System.Web.HttpUtility]::HtmlEncode($Summary.Status))</p>"
+  
+  # Individual check statuses
+  $html += "<table style='width: 480px; table-layout: fixed;'><tr><th style='width: 180px;'>Check</th><th style='width: 100px;'>Status</th><th style='width: 200px;'>Notes</th></tr>"
+  
+  # Helper to render status
+  $renderStatus = {
+    param($status)
+    $cls = switch ($status) {
+      'OK' { 'status-ok' }
+      'PASS' { 'status-ok' }
+      'WARN' { 'status-warn' }
+      'FAIL' { 'status-fail' }
+      'N/A' { 'status-info' }
+      default { '' }
+    }
+    $icon = switch ($status) {
+      'OK' { '&#x2705; ' }
+      'PASS' { '&#x2705; ' }
+      'WARN' { '&#x26A0;&#xFE0F; ' }
+      'FAIL' { '&#x274C; ' }
+      'N/A' { '&#x2139;&#xFE0F; ' }
+      default { '' }
+    }
+    $text = switch ($status) {
+      'OK' { 'PASS' }
+      default { $status }
+    }
+    return "<td class='$cls'>$icon$text</td>"
+  }
+  
+  # Add rows for each check
+  # MX Records - show actual records instead of just status
+  if ($mxResult.Status -eq 'OK') {
+    $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
+    $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
+  } else {
+    $html += "<tr><td>MX Records</td>" + (& $renderStatus $mxResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+  }
+  
+  $html += "<tr><td>SPF</td>" + (& $renderStatus $spfResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
+  $html += "<tr><td>DKIM</td>" + (& $renderStatus $dkimResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
+  $html += "<tr><td>MTA-STS</td>" + (& $renderStatus $mtaStsResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
+  $html += "<tr><td>DMARC</td>" + (& $renderStatus $dmarcResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
+  $html += "<tr><td>TLS-RPT</td>" + (& $renderStatus $tlsResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
+  
   $html += "</table>"
 
   # Old helper functions removed - now using ConvertTo-HtmlSection
@@ -1046,32 +1221,18 @@ function Write-SummaryHtmlReport {
   $now = (Get-Date).ToString('u')
   $totalDomains = $AllResults.Count
   
-  # Calculate statistics
-  $allOK = 0
-  $someIssues = 0
-  $majorIssues = 0
+  # Calculate statistics based on overall status
+  $allPass = 0
+  $hasWarnings = 0
+  $hasFails = 0
   
   foreach ($result in $AllResults) {
     $summary = $result.Summary
-    $failCount = 0
     
-    # Count failures (excluding N/A and MX_Records_Present which is informational)
-    # Note: MX_Records_Present = False is not a failure (domain may only send email)
-    if ($summary.SPF_Present -eq $false) { $failCount++ }
-    if ($summary.SPF_Healthy -eq $false) { $failCount++ }
-    if ($summary.DKIM_ValidSelector -is [bool] -and $summary.DKIM_ValidSelector -eq $false) { $failCount++ }
-    if ($summary.MTA_STS_DNS_Present -is [bool] -and $summary.MTA_STS_DNS_Present -eq $false) { $failCount++ }
-    if ($summary.MTA_STS_Enforced -is [bool] -and $summary.MTA_STS_Enforced -eq $false) { $failCount++ }
-    if ($summary.DMARC_Present -eq $false) { $failCount++ }
-    if ($summary.DMARC_Enforced -eq $false) { $failCount++ }
-    if ($summary.TLS_RPT_Present -is [bool] -and $summary.TLS_RPT_Present -eq $false) { $failCount++ }
-    
-    if ($failCount -eq 0) {
-      $allOK++
-    } elseif ($failCount -le 2) {
-      $someIssues++
-    } else {
-      $majorIssues++
+    switch ($summary.Status) {
+      'PASS' { $allPass++ }
+      'WARN' { $hasWarnings++ }
+      'FAIL' { $hasFails++ }
     }
   }
 
@@ -1089,23 +1250,21 @@ function Write-SummaryHtmlReport {
   <div class='summary-stats'>
     <h2>Overview Statistics</h2>
     <p><strong>Total Domains Checked:</strong> $totalDomains</p>
-    <p><strong>&#x2705; All Checks Passed:</strong> $allOK domains</p>
-    <p><strong>&#x26A0;&#xFE0F; Minor Issues (1-2 failures):</strong> $someIssues domains</p>
-    <p><strong>&#x274C; Major Issues (3+ failures):</strong> $majorIssues domains</p>
+    <p><strong>&#x2705; PASS (All checks passed):</strong> $allPass domains</p>
+    <p><strong>&#x26A0;&#xFE0F; WARN (Has warnings, no failures):</strong> $hasWarnings domains</p>
+    <p><strong>&#x274C; FAIL (Has critical failures):</strong> $hasFails domains</p>
   </div>
   
   <h2>Detailed Results</h2>
   <table>
     <tr>
       <th>Domain</th>
+      <th>Status</th>
       <th>MX Records</th>
-      <th>SPF Present</th>
-      <th>SPF Healthy</th>
-      <th>DKIM Valid</th>
-      <th>MTA-STS DNS</th>
-      <th>MTA-STS Enforced</th>
-      <th>DMARC Present</th>
-      <th>DMARC Enforced</th>
+      <th>SPF</th>
+      <th>DKIM</th>
+      <th>MTA-STS</th>
+      <th>DMARC</th>
       <th>TLS-RPT</th>
     </tr>
 "@
@@ -1117,30 +1276,68 @@ function Write-SummaryHtmlReport {
     $html += "    <tr>`n"
     $html += "      <td class='domain'>$domain</td>`n"
     
-    # Helper function to render cell
-    $renderCell = {
-      param($value, $fieldName)
-      if ($value -is [string] -and $value -eq "N/A") {
-        return "<td class='status-info'>&#x2139;&#xFE0F; N/A</td>"
-      } elseif ($fieldName -eq 'MX_Records_Present' -and $value -eq $false) {
-        # MX records not present is informational, not an error (domain may only send email)
-        return "<td class='status-info'>&#x2139;&#xFE0F; No</td>"
-      } elseif ($value -eq $true) {
-        return "<td class='status-ok'>&#x2705; Yes</td>"
-      } else {
-        return "<td class='status-fail'>&#x274C; No</td>"
+    # Add overall status cell
+    $statusClass = switch ($summary.Status) {
+        'PASS' { 'status-ok' }
+        'WARN' { 'status-warn' }
+        'FAIL' { 'status-fail' }
+        default { '' }
+    }
+    $statusIcon = switch ($summary.Status) {
+        'PASS' { '&#x2705; ' }
+        'WARN' { '&#x26A0;&#xFE0F; ' }
+        'FAIL' { '&#x274C; ' }
+        default { '' }
+    }
+    $html += "      <td class='$statusClass'>$statusIcon$([System.Web.HttpUtility]::HtmlEncode($summary.Status))</td>`n"
+    
+    # Helper function to render status cell
+    $renderStatusCell = {
+      param($status)
+      $cls = switch ($status) {
+        'OK' { 'status-ok' }
+        'PASS' { 'status-ok' }
+        'WARN' { 'status-warn' }
+        'FAIL' { 'status-fail' }
+        'N/A' { 'status-info' }
+        default { '' }
       }
+      $icon = switch ($status) {
+        'OK' { '&#x2705; ' }
+        'PASS' { '&#x2705; ' }
+        'WARN' { '&#x26A0;&#xFE0F; ' }
+        'FAIL' { '&#x274C; ' }
+        'N/A' { '&#x2139;&#xFE0F; ' }
+        default { '' }
+      }
+      $text = switch ($status) {
+        'OK' { 'PASS' }
+        default { $status }
+      }
+      return "<td class='$cls'>$icon$([System.Web.HttpUtility]::HtmlEncode($text))</td>"
     }
     
-    $html += (& $renderCell $summary.MX_Records_Present 'MX_Records_Present') + "`n"
-    $html += (& $renderCell $summary.SPF_Present) + "`n"
-    $html += (& $renderCell $summary.SPF_Healthy) + "`n"
-    $html += (& $renderCell $summary.DKIM_ValidSelector) + "`n"
-    $html += (& $renderCell $summary.MTA_STS_DNS_Present) + "`n"
-    $html += (& $renderCell $summary.MTA_STS_Enforced) + "`n"
-    $html += (& $renderCell $summary.DMARC_Present) + "`n"
-    $html += (& $renderCell $summary.DMARC_Enforced) + "`n"
-    $html += (& $renderCell $summary.TLS_RPT_Present) + "`n"
+    # Get individual check statuses from result objects
+    $mxStatus = $result.MXResult.Status
+    $spfStatus = $result.SPFResult.Status
+    $dkimStatus = $result.DKIMResult.Status
+    $mtaStsStatus = $result.MTAStsResult.Status
+    $dmarcStatus = $result.DMARCResult.Status
+    $tlsStatus = $result.TLSResult.Status
+    
+    # MX Records - show actual records instead of just status
+    if ($mxStatus -eq 'OK') {
+      $mxRecords = ($result.MXResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
+      $html += "<td class='status-ok'>$mxRecords</td>`n"
+    } else {
+      $html += (& $renderStatusCell $mxStatus) + "`n"
+    }
+    
+    $html += (& $renderStatusCell $spfStatus) + "`n"
+    $html += (& $renderStatusCell $dkimStatus) + "`n"
+    $html += (& $renderStatusCell $mtaStsStatus) + "`n"
+    $html += (& $renderStatusCell $dmarcStatus) + "`n"
+    $html += (& $renderStatusCell $tlsStatus) + "`n"
     
     $html += "    </tr>`n"
   }
@@ -1150,9 +1347,10 @@ function Write-SummaryHtmlReport {
   
   <p style='margin-top: 30px; color: #666; font-size: 12px;'>
     <strong>Legend:</strong> 
-    <span style='color: green;'>&#x2705; Yes</span> = Passed | 
-    <span style='color: red;'>&#x274C; No</span> = Failed | 
-    <span style='color: #0078D7;'>&#x2139;&#xFE0F; N/A / No MX</span> = Informational (not a failure)
+    <span style='color: green;'>&#x2705; PASS</span> = Configuration meets strict security standards | 
+    <span style='color: #b58900;'>&#x26A0;&#xFE0F; WARN</span> = Configuration exists but not fully enforced | 
+    <span style='color: red;'>&#x274C; FAIL</span> = Critical configuration missing or has serious issues | 
+    <span style='color: #0078D7;'>&#x2139;&#xFE0F; N/A</span> = Not applicable
   </p>
   </body>
 </html>
@@ -1207,7 +1405,6 @@ if (@($spfRecs).Count -gt 0) {
 
 $selectorList = ($Selectors -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 $dkimResult = Test-DKIMRecords -Domain $Domain -Selectors $selectorList -HasMX $mxOk -HasSpfWithMechanisms $hasSpfWithMechanisms
-$dkimResults = $dkimResult.Data.DKIMResults
 $DKIM_AnySelector_Valid = $dkimResult.Data.AnyValid
     if (-not $QuietMode) { Write-CheckResult $dkimResult }
 
@@ -1215,12 +1412,10 @@ $DKIM_AnySelector_Valid = $dkimResult.Data.AnyValid
 $mtaStsResult = Test-MTASts -Domain $Domain -HasMX $mxOk
 $mtaStsTxt = $mtaStsResult.Data.MtaStsTxt
 $MtaStsEnforced = $mtaStsResult.Data.MtaStsEnforced
-$MtaStsModeTesting = $mtaStsResult.Data.MtaStsModeTesting
     if (-not $QuietMode) { Write-CheckResult $mtaStsResult }
 
 # 5) DMARC
 $dmarcResult = Test-DMARC -Domain $Domain
-$dmarc = $dmarcResult.Data.DmarcMap
 $dmarcTxt = $dmarcResult.Data.DmarcTxt
 $dmarcEnforced = [bool]$dmarcResult.Data.Enforced
     if (-not $QuietMode) { Write-CheckResult $dmarcResult }
@@ -1232,9 +1427,37 @@ $tlsRptTxt = $tlsResult.Data.TlsRptTxt
 
 # Summary
 $hasMXRecords = [bool]$mxOk
+$mxRecordsDisplay = if ($hasMXRecords) { 
+    ($mx | Sort-Object Preference,NameExchange | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) -join ', '
+} else { 
+    "N/A" 
+}
+
+# Collect all reasons for detailed explanation
+$allReasons = @()
+if ($mxResult.Data.Reason) { $allReasons += $mxResult.Data.Reason }
+if ($spfResult.Data.Reason) { $allReasons += $spfResult.Data.Reason }
+if ($dkimResult.Data.Reason) { $allReasons += $dkimResult.Data.Reason }
+if ($mtaStsResult.Data.Reason) { $allReasons += $mtaStsResult.Data.Reason }
+if ($dmarcResult.Data.Reason) { $allReasons += $dmarcResult.Data.Reason }
+if ($tlsResult.Data.Reason) { $allReasons += $tlsResult.Data.Reason }
+$reasonText = $allReasons -join ' | '
+
+# Determine overall status
+$overallStatus = "PASS"
+if ($mxResult.Status -eq 'FAIL' -or $spfResult.Status -eq 'FAIL' -or $dkimResult.Status -eq 'FAIL' -or 
+    $mtaStsResult.Status -eq 'FAIL' -or $dmarcResult.Status -eq 'FAIL' -or $tlsResult.Status -eq 'FAIL') {
+    $overallStatus = "FAIL"
+} elseif ($mxResult.Status -eq 'WARN' -or $spfResult.Status -eq 'WARN' -or $dkimResult.Status -eq 'WARN' -or 
+          $mtaStsResult.Status -eq 'WARN' -or $dmarcResult.Status -eq 'WARN' -or $tlsResult.Status -eq 'WARN') {
+    $overallStatus = "WARN"
+}
+
 $summary = [pscustomobject]@{
   Domain                 = $Domain
-  MX_Records_Present     = $hasMXRecords
+  Status                 = $overallStatus
+  Reason                 = $reasonText
+  MX_Records_Present     = $mxRecordsDisplay
   SPF_Present            = [bool](@($spfRecs).Count -gt 0)
   SPF_Healthy            = [bool]$spfHealthy
   DKIM_ValidSelector     = if ($hasMXRecords -or $hasSpfWithMechanisms) { [bool]$DKIM_AnySelector_Valid } else { "N/A" }
@@ -1249,17 +1472,24 @@ $summary = [pscustomobject]@{
         Write-Section "Summary"
         Write-Host "Tested domain: $Domain" -ForegroundColor White
 
-# Färgkodad radvis status
-Write-Host "`nStatus:"
-Write-BoolLine "MX_Records_Present"     $summary.MX_Records_Present
-Write-BoolLine "SPF_Present"            $summary.SPF_Present
-Write-BoolLine "SPF_Healthy"            $summary.SPF_Healthy
-Write-BoolLine "DKIM_ValidSelector"     $summary.DKIM_ValidSelector
-Write-BoolLine "MTA_STS_DNS_Present"    $summary.MTA_STS_DNS_Present
-Write-BoolLine "MTA_STS_Enforced"       $summary.MTA_STS_Enforced
-Write-BoolLine "DMARC_Present"          $summary.DMARC_Present
-Write-BoolLine "DMARC_Enforced"         $summary.DMARC_Enforced
-Write-BoolLine "TLS_RPT_Present"        $summary.TLS_RPT_Present
+# Overall status
+Write-Host "`nOverall Status: " -NoNewline
+$statusColor = switch ($summary.Status) {
+    'PASS' { 'Green' }
+    'WARN' { 'Yellow' }
+    'FAIL' { 'Red' }
+    default { 'White' }
+}
+Write-Host $summary.Status -ForegroundColor $statusColor
+
+# Status per check
+Write-Host "`nDetailed Status:"
+Write-StatusLine "MX Records"   $mxResult.Status    $(if ($mxResult.Status -eq 'OK') { $mxRecordsDisplay })
+Write-StatusLine "SPF"          $spfResult.Status
+Write-StatusLine "DKIM"         $dkimResult.Status
+Write-StatusLine "MTA-STS"      $mtaStsResult.Status
+Write-StatusLine "DMARC"        $dmarcResult.Status
+Write-StatusLine "TLS-RPT"      $tlsResult.Status
 
 Write-Host "`nTip: For DKIM, inspect a real message header to learn the active selector (s=) and re-run with -Selectors 'thatSelector'." -ForegroundColor DarkCyan
     }
@@ -1281,12 +1511,27 @@ Write-Host "`nTip: For DKIM, inspect a real message header to learn the active s
 
 if ($BulkFile) {
     # Bulk mode: process multiple domains
+    if (-not (Test-Path $BulkFile)) {
+        Write-Host "Error: File not found: $BulkFile" -ForegroundColor Red
+        Write-Host "Please check the file path and try again." -ForegroundColor Yellow
+        exit 1
+    }
+    
     $domains = @(Get-Content $BulkFile | 
                Where-Object { $_ -and $_.Trim() -and -not $_.Trim().StartsWith('#') } |
                ForEach-Object { $_.Trim().ToLower() })
     
     if ($domains.Count -eq 0) {
-        throw "No valid domains found in $BulkFile"
+        Write-Host "Error: No valid domains found in $BulkFile" -ForegroundColor Red
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host "The file appears to be empty or contains only comments/whitespace." -ForegroundColor Yellow
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host "Expected format (one domain per line):" -ForegroundColor Cyan
+        Write-Host "  example.com" -ForegroundColor Gray
+        Write-Host "  test.org" -ForegroundColor Gray
+        Write-Host "  # This is a comment" -ForegroundColor Gray
+        Write-Host "  another-domain.com" -ForegroundColor Gray
+        exit 1
     }
     
     Write-Host "Checking $($domains.Count) domains (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
@@ -1296,8 +1541,20 @@ if ($BulkFile) {
     $total = $domains.Count
     
     for ($i = 0; $i -lt $total; $i++) {
-        Write-Host "Processing domain $($i + 1) of ${total}: $($domains[$i])" -ForegroundColor Yellow
+        Write-Host "Processing domain $($i + 1) of ${total}: $($domains[$i])" -ForegroundColor Yellow -NoNewline
         $result = Invoke-DomainCheck -Domain $domains[$i] -Selectors $Selectors -QuietMode $true
+        
+        # Show overall status on same line
+        $statusColor = switch ($result.Summary.Status) {
+            'PASS' { 'Green' }
+            'WARN' { 'Yellow' }
+            'FAIL' { 'Red' }
+            default { 'White' }
+        }
+        Write-Host " (Overall status: " -NoNewline
+        Write-Host $result.Summary.Status -ForegroundColor $statusColor -NoNewline
+        Write-Host ")"
+        
         $allResults += $result
     }
     
