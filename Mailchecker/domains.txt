@@ -1,0 +1,17 @@
+# Sample domains file for bulk checking
+# Lines starting with # are comments and will be ignored
+# Empty lines are also ignored
+
+# Popular domains for testing
+google.com
+microsoft.com
+github.com
+
+# Example domains with different TLDs
+example.com
+test.org
+sample.net
+
+# Add your own domains here
+# mycompany.com
+# partner-domain.co.uk

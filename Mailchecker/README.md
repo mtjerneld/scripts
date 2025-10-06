@@ -15,11 +15,14 @@ This tool performs a complete email security audit by checking:
 
 ## Recent Improvements
 
+- **Comprehensive Help System**: Added `-Help` switch with Linux man-page style documentation
+- **Bulk Domain Checking**: Added ability to check multiple domains from input files with CSV export
 - **Unified Result Objects**: All security checks now return structured result objects for better consistency
 - **Simplified HTML Generation**: Clean, maintainable HTML report generation using unified result objects
 - **Streamlined Parameters**: Removed redundant `-HtmlOutput` parameter - use `-Html` for auto-generated timestamped reports
-- **Enhanced Code Structure**: Eliminated duplicate code and improved maintainability
+- **Enhanced Code Structure**: Eliminated duplicate code and improved maintainability with modular `Invoke-DomainCheck` function
 - **Better Error Handling**: More robust DNS resolution with automatic fallback between multiple servers
+- **CSV Export**: Bulk results can be exported to CSV for further analysis and reporting
 
 ## Requirements
 
@@ -32,6 +35,10 @@ This tool performs a complete email security audit by checking:
 ### Basic Usage
 
 ```powershell
+# Show comprehensive help information
+.\mailchecker.ps1 -Help
+
+# Check a single domain
 .\mailchecker.ps1 -Domain example.com
 ```
 
@@ -48,14 +55,33 @@ This tool performs a complete email security audit by checking:
 .\mailchecker.ps1 -Domain example.com -Html
 ```
 
+### Bulk Domain Checking
+
+```powershell
+# Check multiple domains from a file
+.\mailchecker.ps1 -BulkFile domains.txt
+
+# Export results to CSV
+.\mailchecker.ps1 -BulkFile domains.txt -Csv
+
+# Generate HTML reports for all domains
+.\mailchecker.ps1 -BulkFile domains.txt -Html
+
+# Combine CSV export and HTML reports
+.\mailchecker.ps1 -BulkFile domains.txt -Csv -Html
+```
+
 ### Parameters
 
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
 | `-Domain` | String | Domain to check (e.g., example.com) | Prompted if not provided |
+| `-BulkFile` | String | File containing domains to check (one per line) | - |
 | `-Selectors` | String | Comma-separated DKIM selectors to test | `"default,s1,s2,selector1,selector2,google,mail,k1"` |
 | `-DnsServer` | String[] | DNS server(s) to query first | Falls back to 8.8.8.8 and 1.1.1.1 |
 | `-Html` | Switch | Generate HTML report with auto-generated timestamped filename | - |
+| `-Csv` | Switch | Export bulk results to CSV file | - |
+| `-Help` | Switch | Show comprehensive help information and exit | - |
 
 ## Output
 
@@ -130,6 +156,17 @@ When using `-Html`, the script generates a comprehensive HTML report with an aut
 # Creates: example.com-20231201-143022.html
 ```
 
+### Bulk checking examples
+```powershell
+# Check domains from file with CSV export
+.\mailchecker.ps1 -BulkFile domains.txt -Csv
+# Creates: bulk-results-20231201-143022.csv
+
+# Generate HTML reports for all domains
+.\mailchecker.ps1 -BulkFile domains.txt -Html
+# Creates: domain1-20231201-143022.html, domain2-20231201-143022.html, etc.
+```
+
 ### Use specific DNS servers
 ```powershell
 .\mailchecker.ps1 -Domain example.com -DnsServer @("208.67.222.222", "208.67.220.220")
@@ -160,13 +197,34 @@ To find the correct DKIM selector for a domain:
 3. Look for the `s=` parameter (e.g., `s=selector1`)
 4. Use that selector with the `-Selectors` parameter
 
+## Input File Format (domains.txt)
+
+For bulk checking, create a text file with one domain per line:
+
+```
+example.com
+test.org
+# This is a comment
+another-domain.se
+
+domain-with-whitespace.com
+```
+
+**Notes:**
+- Empty lines are ignored
+- Lines starting with `#` are treated as comments
+- Leading/trailing whitespace is automatically trimmed
+- Domains are converted to lowercase
+
 ## File Structure
 
 ```
 Mailchecker/
 ├── mailchecker.ps1          # Main PowerShell script
 ├── README.md                # This documentation
-└── *.html                   # Generated HTML reports (timestamped)
+├── domains.txt              # Example input file for bulk checking
+├── *.html                   # Generated HTML reports (timestamped)
+└── bulk-results-*.csv       # Generated CSV exports (timestamped)
 ```
 
 ## License

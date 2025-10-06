@@ -22,14 +22,232 @@ param(
   [string]$Domain,
 
   [Parameter(Mandatory=$false)]
+  [string]$BulkFile,
+
+  [Parameter(Mandatory=$false)]
   [string]$Selectors = "default,s1,s2,selector1,selector2,google,mail,k1",
 
   [Parameter(Mandatory=$false)]
   [string[]]$DnsServer,
   
   [Parameter(Mandatory=$false)]
-  [switch]$Html
+  [switch]$Html,
+  
+  [Parameter(Mandatory=$false)]
+  [switch]$Csv,
+  
+  [Parameter(Mandatory=$false)]
+  [switch]$Help
 )
+
+# Show help if requested
+if ($Help) {
+    $helpText = @"
+MAILCHECKER(1)                    User Commands                    MAILCHECKER(1)
+
+NAME
+       mailchecker - Comprehensive email security configuration checker
+
+SYNOPSIS
+       .\mailchecker.ps1 [OPTIONS]
+
+DESCRIPTION
+       Mailchecker is a PowerShell script that performs comprehensive email security
+       audits by checking multiple email authentication and security standards for
+       any domain. It supports both single-domain analysis and bulk domain checking
+       with CSV export capabilities.
+
+       The tool validates the following email security components:
+
+       MX Records
+              Mail Exchange records that define which servers are authorized to
+              receive email for the domain.
+
+       SPF (Sender Policy Framework)
+              Email authentication mechanism that specifies which mail servers are
+              allowed to send messages on behalf of the domain.
+
+       DKIM (DomainKeys Identified Mail)
+              Digital signature verification system that proves message authenticity
+              and integrity using cryptographic signatures.
+
+       MTA-STS (Mail Transfer Agent - Strict Transport Security)
+              Policy mechanism that enforces encrypted mail delivery (TLS) between
+              servers, protecting messages from interception.
+
+       DMARC (Domain-based Message Authentication, Reporting and Conformance)
+              Email authentication policy that ties SPF and DKIM together and
+              instructs receiving servers how to handle authentication failures.
+
+       TLS-RPT (TLS Reporting)
+              Reporting mechanism that provides feedback about encryption issues
+              in mail delivery for monitoring and troubleshooting.
+
+OPTIONS
+       -Domain <domain>
+              Single domain to check (e.g., example.com). If neither -Domain nor
+              -BulkFile is specified, you will be prompted to enter a domain.
+
+       -BulkFile <file>
+              Text file containing domains to check (one per line). Supports
+              comments (lines starting with #) and empty lines. Cannot be used
+              together with -Domain.
+
+       -Selectors <list>
+              Comma-separated list of DKIM selectors to test. Defaults to:
+              "default,s1,s2,selector1,selector2,google,mail,k1"
+
+       -DnsServer <servers>
+              Array of DNS servers to query first. Falls back to 8.8.8.8 and
+              1.1.1.1 automatically if not specified.
+
+       -Html  Generate HTML report with auto-generated timestamped filename
+              (format: domain-yyyyMMdd-HHmmss.html)
+
+       -Csv   Export bulk results to CSV file (only applicable with -BulkFile)
+              (format: bulk-results-yyyyMMdd-HHmmss.csv)
+
+       -Help  Show this help information and exit
+
+EXAMPLES
+       Single Domain Analysis
+              .\mailchecker.ps1 -Domain example.com
+                     Check a single domain with full console output
+
+              .\mailchecker.ps1 -Domain example.com -Html
+                     Check a single domain and generate HTML report
+
+              .\mailchecker.ps1 -Domain example.com -Selectors "google,mail"
+                     Check domain with custom DKIM selectors
+
+       Bulk Domain Checking
+              .\mailchecker.ps1 -BulkFile domains.txt
+                     Check multiple domains from file
+
+              .\mailchecker.ps1 -BulkFile domains.txt -Csv
+                     Check multiple domains and export results to CSV
+
+              .\mailchecker.ps1 -BulkFile domains.txt -Html
+                     Check multiple domains and generate HTML reports for each
+
+              .\mailchecker.ps1 -BulkFile domains.txt -Csv -Html
+                     Check multiple domains with both CSV export and HTML reports
+
+       Advanced Usage
+              .\mailchecker.ps1 -Domain example.com -DnsServer @("8.8.8.8","1.1.1.1")
+                     Use specific DNS servers for queries
+
+              .\mailchecker.ps1 -BulkFile domains.txt -Selectors "custom1,custom2" -Csv
+                     Bulk check with custom DKIM selectors and CSV export
+
+INPUT FILE FORMAT (domains.txt)
+       Create a text file with one domain per line:
+
+              example.com
+              test.org
+              # This is a comment (ignored)
+              another-domain.se
+
+              domain-with-whitespace.com
+
+       Notes:
+       - Empty lines are ignored
+       - Lines starting with # are treated as comments
+       - Leading/trailing whitespace is automatically trimmed
+       - Domains are converted to lowercase
+
+OUTPUT FORMATS
+       Console Output
+              Color-coded console output with:
+              [OK]   Green: Successful configurations
+              [FAIL] Red: Failed or missing configurations
+              [WARN] Yellow: Warnings and recommendations
+              [INFO] Blue: Informational messages
+
+       HTML Reports
+              Comprehensive HTML reports including:
+              - Summary table with all check results
+              - Detailed sections for each security component
+              - Color-coded status indicators with icons
+              - Warnings and recommendations
+              - Timestamp and domain information
+
+       CSV Export (Bulk Mode)
+              Structured CSV file containing summary data for all domains:
+              - Domain name
+              - Boolean results for each security check
+              - N/A values for non-applicable checks
+              - Suitable for data analysis and reporting
+
+TROUBLESHOOTING
+       Common Issues
+              1. No MX records found: Domain may not be configured for email
+              2. SPF exceeds 10 DNS lookups: Simplify SPF record or use redirect
+              3. DKIM no valid selectors: Check actual selector used in email headers
+              4. MTA-STS in testing mode: Change policy to mode: enforce
+              5. DMARC p=none: Update policy to p=quarantine or p=reject
+
+       DNS Resolution
+              The script automatically falls back between multiple DNS servers:
+              1. User-specified servers (-DnsServer)
+              2. Google DNS (8.8.8.8)
+              3. Cloudflare DNS (1.1.1.1)
+
+       Finding DKIM Selectors
+              1. Send a test email from the domain
+              2. Check the email headers for DKIM-Signature
+              3. Look for the s= parameter (e.g., s=selector1)
+              4. Use that selector with the -Selectors parameter
+
+REQUIREMENTS
+       - Windows PowerShell 5.1 or PowerShell Core 6+
+       - Internet connectivity for DNS queries and HTTPS requests
+       - Optional: Resolve-DnsName cmdlet (falls back to nslookup if unavailable)
+
+FILES
+       mailchecker.ps1
+              Main PowerShell script
+
+       domains.txt
+              Example input file for bulk checking
+
+       *.html
+              Generated HTML reports (timestamped)
+
+       bulk-results-*.csv
+              Generated CSV exports (timestamped)
+
+BUGS
+       Report issues and feature requests at the project repository.
+
+AUTHOR
+       Written for educational and administrative purposes.
+
+COPYRIGHT
+       This script is provided as-is for educational and administrative purposes.
+       Use responsibly and in accordance with your organization's policies.
+
+SEE ALSO
+       For more information about email security standards:
+       - SPF: https://tools.ietf.org/html/rfc7208
+       - DKIM: https://tools.ietf.org/html/rfc6376
+       - DMARC: https://tools.ietf.org/html/rfc7489
+       - MTA-STS: https://tools.ietf.org/html/rfc8461
+       - TLS-RPT: https://tools.ietf.org/html/rfc8460
+
+MAILCHECKER(1)                         $(Get-Date -Format 'yyyy-MM-dd')                        MAILCHECKER(1)
+"@
+    Write-Host $helpText
+    exit 0
+}
+
+# Validate input parameters
+if ($Domain -and $BulkFile) {
+    throw "Cannot specify both -Domain and -BulkFile"
+}
+if (-not $Domain -and -not $BulkFile) {
+    $Domain = Read-Host "Enter domain (e.g. example.com)"
+}
 
 function New-CheckResult {
     param(
@@ -128,6 +346,7 @@ function Test-SPFRecords {
         $status = if ($spfHealthy) { 'OK' } else { 'FAIL' }
     } else {
         $details = @("No SPF (v=spf1) record found at $Domain")
+        $spfHealthy = $false
     }
     
     return New-CheckResult -Section 'SPF' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ SPFRecords = $spfRecs; Healthy = $spfHealthy }
@@ -767,117 +986,180 @@ function Write-HtmlReport {
   }
 }
 
+function Invoke-DomainCheck {
+    param(
+        [string]$Domain,
+        [string]$Selectors = "default,s1,s2,selector1,selector2,google,mail,k1",
+        [bool]$QuietMode = $false
+    )
+    
+    $Domain = $Domain.Trim().ToLower()
+    
+    if (-not $QuietMode) {
+        Write-Host "Checking domain: $Domain (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
+    }
+
+    # 1) MX Records
+    $mxResult = Test-MXRecords -Domain $Domain
+    $mx = $mxResult.Data.MXRecords
+    $mxOk = @($mx).Count -gt 0
+    if (-not $QuietMode) { Write-CheckResult $mxResult }
+
+    # 2) SPF
+    $spfResult = Test-SPFRecords -Domain $Domain
+    $spfRecs = $spfResult.Data.SPFRecords
+    $spfHealthy = $spfResult.Data.Healthy
+    if (-not $QuietMode) { Write-CheckResult $spfResult }
+
+    # 3) DKIM (by selectors)
+    # Check if SPF has any mechanisms other than just v=spf1 and -all
+    $hasSpfWithMechanisms = $false
+    if (@($spfRecs).Count -gt 0) {
+      foreach ($spf in $spfRecs) {
+        $cleanSpf = $spf -replace '(?i)\bv=spf1\s*', '' -replace '(?i)\s*[~+\-?]?all\s*$', '' -replace '^\s+|\s+$', ''
+        $hasMechanisms = $cleanSpf.Length -gt 0 -and $cleanSpf -match '(?i)(include:|a:|mx:|ptr:|exists:|redirect=)'
+        if ($hasMechanisms) {
+          $hasSpfWithMechanisms = $true
+          break
+        }
+      }
+    }
+
+    $selectorList = ($Selectors -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    $dkimResult = Test-DKIMRecords -Domain $Domain -Selectors $selectorList -HasMX $mxOk -HasSpfWithMechanisms $hasSpfWithMechanisms
+    $dkimResults = $dkimResult.Data.DKIMResults
+    $DKIM_AnySelector_Valid = $dkimResult.Data.AnyValid
+    if (-not $QuietMode) { Write-CheckResult $dkimResult }
+
+    # 4) MTA-STS
+    $mtaStsResult = Test-MTASts -Domain $Domain -HasMX $mxOk
+    $mtaStsTxt = $mtaStsResult.Data.MtaStsTxt
+    $MtaStsEnforced = $mtaStsResult.Data.MtaStsEnforced
+    $MtaStsModeTesting = $mtaStsResult.Data.MtaStsModeTesting
+    if (-not $QuietMode) { Write-CheckResult $mtaStsResult }
+
+    # 5) DMARC
+    $dmarcResult = Test-DMARC -Domain $Domain
+    $dmarc = $dmarcResult.Data.DmarcMap
+    $dmarcTxt = $dmarcResult.Data.DmarcTxt
+    $dmarcEnforced = [bool]$dmarcResult.Data.Enforced
+    if (-not $QuietMode) { Write-CheckResult $dmarcResult }
+
+    # 6) TLS-RPT
+    $tlsResult = Test-TLSReport -Domain $Domain -HasMX $mxOk
+    $tlsRptTxt = $tlsResult.Data.TlsRptTxt
+    if (-not $QuietMode) { Write-CheckResult $tlsResult }
+
+    # Summary
+    $hasMXRecords = [bool]$mxOk
+    $summary = [pscustomobject]@{
+      Domain                 = $Domain
+      MX_Records_Present     = $hasMXRecords
+      SPF_Present            = [bool](@($spfRecs).Count -gt 0)
+      SPF_Healthy            = [bool]$spfHealthy
+      DKIM_ValidSelector     = if ($hasMXRecords -or $hasSpfWithMechanisms) { [bool]$DKIM_AnySelector_Valid } else { "N/A" }
+      MTA_STS_DNS_Present    = if ($hasMXRecords) { [bool]$mtaStsTxt } else { "N/A" }
+      MTA_STS_Enforced       = if ($hasMXRecords) { [bool]$MtaStsEnforced } else { "N/A" }
+      DMARC_Present          = [bool]$dmarcTxt
+      DMARC_Enforced         = [bool]$dmarcEnforced
+      TLS_RPT_Present        = if ($hasMXRecords) { [bool]$tlsRptTxt } else { "N/A" }
+    }
+
+    if (-not $QuietMode) {
+        Write-Section "Summary"
+        Write-Host "Tested domain: $Domain" -ForegroundColor White
+        
+        # Färgkodad radvis status
+        Write-Host "`nStatus:"
+        Write-BoolLine "MX_Records_Present"     $summary.MX_Records_Present
+        Write-BoolLine "SPF_Present"            $summary.SPF_Present
+        Write-BoolLine "SPF_Healthy"            $summary.SPF_Healthy
+        Write-BoolLine "DKIM_ValidSelector"     $summary.DKIM_ValidSelector
+        Write-BoolLine "MTA_STS_DNS_Present"    $summary.MTA_STS_DNS_Present
+        Write-BoolLine "MTA_STS_Enforced"       $summary.MTA_STS_Enforced
+        Write-BoolLine "DMARC_Present"          $summary.DMARC_Present
+        Write-BoolLine "DMARC_Enforced"         $summary.DMARC_Enforced
+        Write-BoolLine "TLS_RPT_Present"        $summary.TLS_RPT_Present
+
+        Write-Host "`nTip: For DKIM, inspect a real message header to learn the active selector (s=) and re-run with -Selectors 'thatSelector'." -ForegroundColor DarkCyan
+    }
+    
+    # Return all results as hashtable
+    return @{
+        Domain = $Domain
+        MXResult = $mxResult
+        SPFResult = $spfResult
+        DKIMResult = $dkimResult
+        MTAStsResult = $mtaStsResult
+        DMARCResult = $dmarcResult
+        TLSResult = $tlsResult
+        Summary = $summary
+    }
+}
+
 # --- Main ---
 
-if (-not $Domain -or $Domain.Trim() -eq '') {
-  $Domain = Read-Host "Enter domain (e.g. example.com)"
-}
-$Domain = $Domain.Trim().ToLower()
-
-Write-Host "Checking domain: $Domain (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
-
-# 1) MX
-# 1) MX Records
-$mxResult = Test-MXRecords -Domain $Domain
-$mx = $mxResult.Data.MXRecords
-$mxOk = @($mx).Count -gt 0
-Write-CheckResult $mxResult
-
-# 2) SPF
-$spfResult = Test-SPFRecords -Domain $Domain
-$spfRecs = $spfResult.Data.SPFRecords
-$spfHealthy = $spfResult.Data.Healthy
-Write-CheckResult $spfResult
-
-# 3) DKIM (by selectors)
-# Check if SPF has any mechanisms other than just v=spf1 and -all
-$hasSpfWithMechanisms = $false
-if (@($spfRecs).Count -gt 0) {
-  foreach ($spf in $spfRecs) {
-    $cleanSpf = $spf -replace '(?i)\bv=spf1\s*', '' -replace '(?i)\s*[~+\-?]?all\s*$', '' -replace '^\s+|\s+$', ''
-    $hasMechanisms = $cleanSpf.Length -gt 0 -and $cleanSpf -match '(?i)(include:|a:|mx:|ptr:|exists:|redirect=)'
-    if ($hasMechanisms) {
-      $hasSpfWithMechanisms = $true
-      break
+if ($BulkFile) {
+    # Bulk mode: process multiple domains
+    $domains = Get-Content $BulkFile | 
+               Where-Object { $_ -and $_.Trim() -and -not $_.Trim().StartsWith('#') } |
+               ForEach-Object { $_.Trim().ToLower() }
+    
+    if ($domains.Count -eq 0) {
+        throw "No valid domains found in $BulkFile"
     }
-  }
-}
-
-$selectorList = ($Selectors -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$dkimResult = Test-DKIMRecords -Domain $Domain -Selectors $selectorList -HasMX $mxOk -HasSpfWithMechanisms $hasSpfWithMechanisms
-$dkimResults = $dkimResult.Data.DKIMResults
-$DKIM_AnySelector_Valid = $dkimResult.Data.AnyValid
-Write-CheckResult $dkimResult
-
-
-# 4) MTA-STS
-$mtaStsResult = Test-MTASts -Domain $Domain -HasMX $mxOk
-$mtaStsTxt = $mtaStsResult.Data.MtaStsTxt
-$MtaStsEnforced = $mtaStsResult.Data.MtaStsEnforced
-$MtaStsModeTesting = $mtaStsResult.Data.MtaStsModeTesting
-Write-CheckResult $mtaStsResult
-
-# 5) DMARC
-# Replace legacy DMARC console block with unified result object
-$dmarcResult = Test-DMARC -Domain $Domain
-$dmarc = $dmarcResult.Data.DmarcMap
-$dmarcTxt = $dmarcResult.Data.DmarcTxt
-$dmarcEnforced = [bool]$dmarcResult.Data.Enforced
-Write-CheckResult $dmarcResult
-
-# 6) TLS-RPT
-# Replace legacy TLS-RPT console block with unified result object
-$tlsResult = Test-TLSReport -Domain $Domain -HasMX $mxOk
-$tlsRptTxt = $tlsResult.Data.TlsRptTxt
-Write-CheckResult $tlsResult
-
-# Summary
-Write-Section "Summary"
-Write-Host "Tested domain: $Domain" -ForegroundColor White
-
-# If no MX records, only validate outbound features (SPF, DMARC)
-$hasMXRecords = [bool]$mxOk
-$summary = [pscustomobject]@{
-  Domain                 = $Domain
-  MX_Records_Present     = $hasMXRecords
-  SPF_Present            = [bool](@($spfRecs).Count -gt 0)
-  SPF_Healthy            = [bool]$spfHealthy
-  DKIM_ValidSelector     = if ($hasMXRecords -or $hasSpfWithMechanisms) { [bool]$DKIM_AnySelector_Valid } else { "N/A" }
-  MTA_STS_DNS_Present    = if ($hasMXRecords) { [bool]$mtaStsTxt } else { "N/A" }
-  MTA_STS_Enforced       = if ($hasMXRecords) { [bool]$MtaStsEnforced } else { "N/A" }
-  DMARC_Present          = [bool]$dmarcTxt
-  DMARC_Enforced         = [bool]$dmarcEnforced
-  TLS_RPT_Present        = if ($hasMXRecords) { [bool]$tlsRptTxt } else { "N/A" }
-}
-
-
-# Färgkodad radvis status
-Write-Host "`nStatus:"
-Write-BoolLine "MX_Records_Present"     $summary.MX_Records_Present
-Write-BoolLine "SPF_Present"            $summary.SPF_Present
-Write-BoolLine "SPF_Healthy"            $summary.SPF_Healthy
-Write-BoolLine "DKIM_ValidSelector"     $summary.DKIM_ValidSelector
-Write-BoolLine "MTA_STS_DNS_Present"    $summary.MTA_STS_DNS_Present
-Write-BoolLine "MTA_STS_Enforced"       $summary.MTA_STS_Enforced
-## MTA_STS_Reason line removed to restore summary to only show booleans
-Write-BoolLine "DMARC_Present"          $summary.DMARC_Present
-Write-BoolLine "DMARC_Enforced"         $summary.DMARC_Enforced
-Write-BoolLine "TLS_RPT_Present"        $summary.TLS_RPT_Present
-
-Write-Host "`nTip: For DKIM, inspect a real message header to learn the active selector (s=) and re-run with -Selectors 'thatSelector'." -ForegroundColor DarkCyan
-
-# If requested, write an HTML report
-if ($Html) {
-  $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
-  $safeDomain = $Domain -replace '[^a-z0-9.-]','-'
-  $outPath = "$safeDomain-$ts.html"
+    
+    Write-Host "Checking $($domains.Count) domains (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
+    Write-Host ""
+    
+    $allResults = @()
+    $total = $domains.Count
+    
+    for ($i = 0; $i -lt $total; $i++) {
+        Write-Host "Processing domain $($i + 1) of ${total}: $($domains[$i])" -ForegroundColor Yellow
+        $result = Invoke-DomainCheck -Domain $domains[$i] -Selectors $Selectors -QuietMode $true
+        $allResults += $result
+    }
+    
+    Write-Host "`nAll domains processed." -ForegroundColor Green
+    
+    # Export CSV if requested
+    if ($Csv) {
+        $csvData = $allResults | ForEach-Object { $_.Summary }
+        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        $csvPath = "bulk-results-$ts.csv"
+        $csvData | Export-Csv -Path $csvPath -NoTypeInformation
+        Write-Host "CSV exported to: $csvPath" -ForegroundColor Green
+    }
+    
+    # Generate HTML reports if requested
+    if ($Html) {
+        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        $htmlCount = 0
+        foreach ($result in $allResults) {
+            $safeDomain = $result.Domain -replace '[^a-z0-9.-]','-'
+            $htmlPath = "$safeDomain-$ts.html"
+            Write-HtmlReport -Path $htmlPath -Domain $result.Domain -Summary $result.Summary `
+                           -mxResult $result.MXResult -spfResult $result.SPFResult `
+                           -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult `
+                           -dmarcResult $result.DMARCResult -tlsResult $result.TLSResult
+            $htmlCount++
+        }
+        Write-Host "Generated $htmlCount HTML reports." -ForegroundColor Green
+    }
+    
 } else {
-  $outPath = $null
-}
-
-if ($outPath) {
-  Write-HtmlReport -Path $outPath -Domain $Domain -Summary $summary `
-                   -mxResult $mxResult -spfResult $spfResult `
-                   -dkimResult $dkimResult -mtaStsResult $mtaStsResult `
-                   -dmarcResult $dmarcResult -tlsResult $tlsResult
+    # Single domain mode: existing behavior with full console output
+    $result = Invoke-DomainCheck -Domain $Domain -Selectors $Selectors -QuietMode $false
+    
+    # Generate HTML report if requested
+    if ($Html) {
+        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        $safeDomain = $Domain -replace '[^a-z0-9.-]','-'
+        $outPath = "$safeDomain-$ts.html"
+        Write-HtmlReport -Path $outPath -Domain $Domain -Summary $result.Summary `
+                       -mxResult $result.MXResult -spfResult $result.SPFResult `
+                       -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult `
+                       -dmarcResult $result.DMARCResult -tlsResult $result.TLSResult
+    }
 }
