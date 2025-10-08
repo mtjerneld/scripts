@@ -672,25 +672,47 @@ function Test-SPFRecords {
             $lookupResult = Get-SpfLookupsDetailed $rec @()
             $lookupCount = $lookupResult.Total
             
+            # Determine status based on lookup count
             if ($lookupCount -gt 10) {
                 $warnings += "Warning: DNS lookups (SPF): $lookupCount (exceeds RFC limit of 10)"
                 $spfHealthy = $false
                 $status = 'FAIL'
+            } elseif ($lookupCount -eq 10) {
+                $warnings += "Warning: DNS lookups (SPF): $lookupCount (at RFC limit - any change will break SPF)"
+                if ($status -ne 'FAIL') { $status = 'WARN' }
+            } elseif ($lookupCount -eq 9) {
+                $warnings += "Warning: DNS lookups (SPF): $lookupCount (near RFC limit - only 1 lookup remaining)"
+                if ($status -ne 'FAIL') { $status = 'WARN' }
             } else {
-                $infoMessages += "Info: DNS lookups (SPF): $lookupCount (below RFC limit of 10, OK)"
+                $infoMessages += "Info: DNS lookups (SPF): $lookupCount (RFC limit: 10, remaining: $(10 - $lookupCount))"
             }
             
-            # Show breakdown of expensive includes (>5 lookups) at top level
+            # Show breakdown including direct lookups and includes
+            $details += ""
+            $details += "SPF Lookup Breakdown (recursive):"
+            
+            # Count direct lookups (mechanisms in the main SPF record)
+            $directLookups = 0
+            $directLookups += ([regex]::Matches($rec, '(?i)\ba(?=\s|:|$)')).Count
+            $directLookups += ([regex]::Matches($rec, '(?i)\bmx(?=\s|:|$)')).Count
+            $directLookups += ([regex]::Matches($rec, '(?i)\bptr(?=\s|:|$)')).Count
+            $directLookups += ([regex]::Matches($rec, '(?i)\bexists:')).Count
+            
+            if ($directLookups -gt 0) {
+                $details += "  - Direct mechanisms (mx, a, ptr, exists): $directLookups lookup(s)"
+            }
+            
+            # Show include/redirect breakdown
             $topLevelIncludes = @($lookupResult.Details | Where-Object { $_.Depth -eq 0 })
-            if ($topLevelIncludes.Count -gt 0) {
-                $details += ""
-                $details += "SPF Lookup Breakdown (recursive):"
-                foreach ($inc in $topLevelIncludes) {
-                    $details += "  - $($inc.Include): $($inc.Lookups) lookup(s)"
-                    if ($inc.Lookups -gt 5) {
-                        $infoMessages += "Info: SPF include '$($inc.Include)' uses $($inc.Lookups) DNS lookups (consider optimizing if total is near the 10-lookup limit)"
-                    }
+            foreach ($inc in $topLevelIncludes) {
+                $details += "  - $($inc.Include): $($inc.Lookups) lookup(s)"
+                if ($inc.Lookups -gt 5) {
+                    $infoMessages += "Info: SPF include '$($inc.Include)' uses $($inc.Lookups) DNS lookups (consider optimizing)"
                 }
+            }
+            
+            if ($directLookups + $topLevelIncludes.Count -gt 0) {
+                $details += "  TOTAL: $lookupCount lookup(s)"
             }
             
             if ($lookupCount -gt $maxLookups) { $maxLookups = $lookupCount }
@@ -716,16 +738,23 @@ function Test-SPFRecords {
                 if ($hasSoftFail) { $reasonParts += "~all" }
                 if ($hasPtr) { $reasonParts += "ptr" }
                 $reason = "SPF: " + ($reasonParts -join ", ")
-            } elseif ($hasPtr -or $hasSoftFail) {
-                # ptr OR ~all → WARN
+            } elseif ($maxLookups -ge 9 -or $hasPtr -or $hasSoftFail) {
+                # 9-10 lookups OR ptr OR ~all → WARN
                 $status = 'WARN'
                 $spfHealthy = $false
-                if ($hasPtr -and $hasSoftFail) {
-                    $reason = "SPF: ptr + ~all (not recommended)"
-                } elseif ($hasPtr) {
-                    $reason = "SPF: uses ptr (deprecated)"
+                $reasonParts = @()
+                if ($maxLookups -eq 10) {
+                    $reasonParts += "at limit (10 lookups)"
+                } elseif ($maxLookups -eq 9) {
+                    $reasonParts += "near limit (9 lookups)"
+                }
+                if ($hasSoftFail) { $reasonParts += "~all (soft fail)" }
+                if ($hasPtr) { $reasonParts += "ptr (deprecated)" }
+                
+                if ($reasonParts.Count -gt 0) {
+                    $reason = "SPF: " + ($reasonParts -join ", ")
                 } else {
-                    $reason = "SPF: ~all (soft fail)"
+                    $reason = "SPF: valid ($maxLookups lookups)"
                 }
             } else {
                 $status = 'PASS'
