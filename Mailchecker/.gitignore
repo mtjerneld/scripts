@@ -1,5 +1,11 @@
 *.html
 *.csv
 *.txt
+*.json
+
+# Ignore all subdirectories (output folders, test folders, etc.)
+*/
+!.vscode/
+
 # But keep the example file
 !domains.txt

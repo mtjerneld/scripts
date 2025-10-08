@@ -34,13 +34,16 @@ param(
   [switch]$Html,
   
   [Parameter(Mandatory=$false)]
-  [switch]$Csv,
+  [string]$OutputPath,
   
   [Parameter(Mandatory=$false)]
-  [switch]$SummaryHtml,
+  [switch]$FullHtmlExport,
   
   [Parameter(Mandatory=$false)]
-  [string]$OutputPath = ".",
+  [switch]$OpenReport,
+  
+  [Parameter(Mandatory=$false)]
+  [switch]$Json,
   
   [Parameter(Mandatory=$false)]
   [switch]$Help
@@ -49,227 +52,79 @@ param(
 # Show help if requested
 if ($Help) {
     $helpText = @"
-MAILCHECKER(1)                    User Commands                    MAILCHECKER(1)
-
-NAME
-       mailchecker - Comprehensive email security configuration checker
+MAILCHECKER - Email Security Configuration Checker
+===================================================
 
 SYNOPSIS
-       .\mailchecker.ps1 [OPTIONS]
+    .\mailchecker.ps1 -Domain <domain> [-Selectors <list>] [-Html]
+    .\mailchecker.ps1 -BulkFile <file> [-FullHtmlExport] [-OpenReport] [-Json]
 
 DESCRIPTION
-       Mailchecker is a PowerShell script that performs comprehensive email security
-       audits by checking multiple email authentication and security standards for
-       any domain. It supports both single-domain analysis and bulk domain checking
-       with CSV export capabilities.
+    Checks email security: MX, SPF, DKIM, MTA-STS, DMARC, TLS-RPT
+    See README.md for detailed documentation and security standards.
 
-       The tool validates the following email security components:
+KEY PARAMETERS
+    -Domain <domain>         Single domain to check
+    -BulkFile <file>         File with domains (one per line)
+    -Selectors <list>        DKIM selectors (default: default,s1,s2,selector1,selector2,google,mail,k1)
+    -DnsServer <servers>     DNS servers to use (default: 8.8.8.8, 1.1.1.1)
+    
+OUTPUT OPTIONS
+    -Html                    Generate HTML report for single domain
+    -FullHtmlExport         [RECOMMENDED] Complete export: index, domain reports, CSV, assets
+    -Json                    Add JSON export (with -FullHtmlExport)
+    -OutputPath <path>       Output directory (auto-generated if not specified)
+    -OpenReport              Auto-open report in browser (with -FullHtmlExport)
 
-       MX Records
-              Mail Exchange records that define which servers are authorized to
-              receive email for the domain.
+QUICK EXAMPLES
 
-       SPF (Sender Policy Framework)
-              Email authentication mechanism that specifies which mail servers are
-              allowed to send messages on behalf of the domain.
+  Single Domain:
+    .\mailchecker.ps1 -Domain example.com
+    .\mailchecker.ps1 -Domain example.com -Html
 
-       DKIM (DomainKeys Identified Mail)
-              Digital signature verification system that proves message authenticity
-              and integrity using cryptographic signatures.
+  Bulk Checking:
+    .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport
+    .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OpenReport
+    .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -OutputPath ./reports
 
-       MTA-STS (Mail Transfer Agent - Strict Transport Security)
-              Policy mechanism that enforces encrypted mail delivery (TLS) between
-              servers, protecting messages from interception.
-
-       DMARC (Domain-based Message Authentication, Reporting and Conformance)
-              Email authentication policy that ties SPF and DKIM together and
-              instructs receiving servers how to handle authentication failures.
-
-       TLS-RPT (TLS Reporting)
-              Reporting mechanism that provides feedback about encryption issues
-              in mail delivery for monitoring and troubleshooting.
-
-OPTIONS
-       -Domain <domain>
-              Single domain to check (e.g., example.com). If neither -Domain nor
-              -BulkFile is specified, you will be prompted to enter a domain.
-
-       -BulkFile <file>
-              Text file containing domains to check (one per line). Supports
-              comments (lines starting with #) and empty lines. Cannot be used
-              together with -Domain.
-
-       -Selectors <list>
-              Comma-separated list of DKIM selectors to test. Defaults to:
-              "default,s1,s2,selector1,selector2,google,mail,k1"
-
-       -DnsServer <servers>
-              Array of DNS servers to query first. Falls back to 8.8.8.8 and
-              1.1.1.1 automatically if not specified.
-
-       -Html  Generate HTML report with auto-generated timestamped filename
-              (format: domain-yyyyMMdd-HHmmss.html)
-
-       -Csv   Export bulk results to CSV file (only applicable with -BulkFile)
-              (format: bulk-results-yyyyMMdd-HHmmss.csv)
-
-       -SummaryHtml
-              Generate consolidated HTML summary table (only applicable with -BulkFile)
-              (format: bulk-summary-yyyyMMdd-HHmmss.html)
-
-       -OutputPath <path>
-              Directory where output files (CSV, HTML) will be saved.
-              Defaults to current directory if not specified.
-              Directory will be created if it doesn't exist.
-
-       -Help  Show this help information and exit
-
-EXAMPLES
-       Single Domain Analysis
-              .\mailchecker.ps1 -Domain example.com
-                     Check a single domain with full console output
-
-              .\mailchecker.ps1 -Domain example.com -Html
-                     Check a single domain and generate HTML report
-
-              .\mailchecker.ps1 -Domain example.com -Selectors "google,mail"
-                     Check domain with custom DKIM selectors
-
-       Bulk Domain Checking
-              .\mailchecker.ps1 -BulkFile domains.txt
-                     Check multiple domains from file
-
-              .\mailchecker.ps1 -BulkFile domains.txt -Csv
-                     Check multiple domains and export results to CSV
-
-              .\mailchecker.ps1 -BulkFile domains.txt -Html
-                     Check multiple domains and generate HTML reports for each
-
-              .\mailchecker.ps1 -BulkFile domains.txt -Csv -Html
-                     Check multiple domains with both CSV export and HTML reports
-
-              .\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml
-                     Check multiple domains and generate consolidated HTML summary table
-
-              .\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html
-                     Full export: CSV, summary HTML, and individual HTML reports
-
-              .\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml -OutputPath ./reports
-                     Save all output files to ./reports directory
-
-       Advanced Usage
-              .\mailchecker.ps1 -Domain example.com -DnsServer @("8.8.8.8","1.1.1.1")
-                     Use specific DNS servers for queries
-
-              .\mailchecker.ps1 -BulkFile domains.txt -Selectors "custom1,custom2" -Csv
-                     Bulk check with custom DKIM selectors and CSV export
+FULL HTML EXPORT STRUCTURE
+    domains-20251008-142315/
+      index.html              Main summary with links
+      bulk-results-*.csv      CSV export
+      results.json            JSON export (if -Json)
+      assets/
+        style.css             Modern responsive styles
+        app.js                Interactive features
+      domains/
+        example.com.html      Individual reports
+        ...
 
 INPUT FILE FORMAT (domains.txt)
-       Create a text file with one domain per line:
+    example.com
+    test.org
+    # Comments start with #
+    another-domain.com
 
-              example.com
-              test.org
-              # This is a comment (ignored)
-              another-domain.se
+SEVERITY LEVELS
+    [PASS] - Meets strict security standards
+    [WARN] - Needs improvement (not fully enforced)
+    [FAIL] - Critical issue or missing
+    [N/A]  - Not applicable
 
-              domain-with-whitespace.com
+COMMON ISSUES
+    - DKIM no valid selectors -> Check email headers for s= parameter
+    - SPF >10 lookups -> Simplify or use redirect
+    - MTA-STS testing mode -> Change to mode: enforce
+    - DMARC p=none -> Upgrade to p=reject
 
-       Notes:
-       - Empty lines are ignored
-       - Lines starting with # are treated as comments
-       - Leading/trailing whitespace is automatically trimmed
-       - Domains are converted to lowercase
+MORE INFORMATION
+    See README.md for:
+    - Detailed security check descriptions
+    - Complete parameter reference
+    - Troubleshooting guide
+    - RFC references and best practices
 
-OUTPUT FORMATS
-       Console Output
-              Color-coded console output with:
-              [OK]   Green: Successful configurations
-              [FAIL] Red: Failed or missing configurations
-              [WARN] Yellow: Warnings and recommendations
-              [INFO] Blue: Informational messages
-
-       HTML Reports
-              Comprehensive HTML reports including:
-              - Summary table with all check results
-              - Detailed sections for each security component
-              - Color-coded status indicators with icons
-              - Warnings and recommendations
-              - Timestamp and domain information
-
-       Summary HTML (Bulk Mode)
-              Consolidated HTML table showing all domains:
-              - One table with all domains as rows
-              - Color-coded icons for quick visual scanning
-              - Overview statistics (all OK, minor issues, major issues)
-              - Sortable and styled for easy analysis
-
-       CSV Export (Bulk Mode)
-              Structured CSV file containing summary data for all domains:
-              - Domain name
-              - Boolean results for each security check
-              - N/A values for non-applicable checks
-              - Suitable for data analysis and reporting
-
-TROUBLESHOOTING
-       Common Issues
-              1. No MX records found: Domain may not be configured for email
-              2. SPF exceeds 10 DNS lookups: Simplify SPF record or use redirect
-              3. DKIM no valid selectors: Check actual selector used in email headers
-              4. MTA-STS in testing mode: Change policy to mode: enforce
-              5. DMARC p=none: Update policy to p=quarantine or p=reject
-
-       DNS Resolution
-              The script automatically falls back between multiple DNS servers:
-              1. User-specified servers (-DnsServer)
-              2. Google DNS (8.8.8.8)
-              3. Cloudflare DNS (1.1.1.1)
-
-       Finding DKIM Selectors
-              1. Send a test email from the domain
-              2. Check the email headers for DKIM-Signature
-              3. Look for the s= parameter (e.g., s=selector1)
-              4. Use that selector with the -Selectors parameter
-
-REQUIREMENTS
-       - Windows PowerShell 5.1 or PowerShell Core 6+
-       - Internet connectivity for DNS queries and HTTPS requests
-       - Optional: Resolve-DnsName cmdlet (falls back to nslookup if unavailable)
-
-FILES
-       mailchecker.ps1
-              Main PowerShell script
-
-       domains.txt
-              Example input file for bulk checking
-
-       *.html
-              Generated HTML reports (timestamped)
-
-       bulk-results-*.csv
-              Generated CSV exports (timestamped)
-
-       bulk-summary-*.html
-              Generated summary HTML reports (timestamped)
-
-BUGS
-       Report issues and feature requests at the project repository.
-
-AUTHOR
-       Written for educational and administrative purposes.
-
-COPYRIGHT
-       This script is provided as-is for educational and administrative purposes.
-       Use responsibly and in accordance with your organization's policies.
-
-SEE ALSO
-       For more information about email security standards:
-       - SPF: https://tools.ietf.org/html/rfc7208
-       - DKIM: https://tools.ietf.org/html/rfc6376
-       - DMARC: https://tools.ietf.org/html/rfc7489
-       - MTA-STS: https://tools.ietf.org/html/rfc8461
-       - TLS-RPT: https://tools.ietf.org/html/rfc8460
-
-MAILCHECKER(1)                         $(Get-Date -Format 'yyyy-MM-dd')                        MAILCHECKER(1)
+Version: mailchecker.ps1 v2.0
 "@
     Write-Host $helpText
     exit 0
@@ -301,6 +156,362 @@ function New-CheckResult {
         InfoMessages = $InfoMessages
         Data = $Data
     }
+}
+
+function New-OutputStructure {
+    param(
+        [string]$InputFile,
+        [string]$OutputPath
+    )
+    
+    # Determine final output path
+    $resolvedPath = $null
+    
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        # Auto-generate path based on input file
+        if ([string]::IsNullOrWhiteSpace($InputFile)) {
+            # Single domain mode - use generic name
+            $baseName = "mailcheck-report"
+        } else {
+            # Bulk mode - use input filename without extension
+            $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
+        }
+        
+        $timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        $resolvedPath = Join-Path (Get-Location) "$baseName-$timestamp"
+    } else {
+        # Use provided path
+        $resolvedPath = $OutputPath
+    }
+    
+    # Create main directory
+    if (-not (Test-Path $resolvedPath)) {
+        try {
+            New-Item -ItemType Directory -Path $resolvedPath -Force | Out-Null
+            Write-Host "Created output directory: $resolvedPath" -ForegroundColor Cyan
+        } catch {
+            Write-Host "Error: Could not create output directory: $resolvedPath" -ForegroundColor Red
+            Write-Host $_.Exception.Message -ForegroundColor Red
+            throw
+        }
+    }
+    
+    # Create subdirectories for FullHtmlExport
+    $domainsPath = Join-Path $resolvedPath "domains"
+    $assetsPath = Join-Path $resolvedPath "assets"
+    
+    if (-not (Test-Path $domainsPath)) {
+        New-Item -ItemType Directory -Path $domainsPath -Force | Out-Null
+    }
+    
+    if (-not (Test-Path $assetsPath)) {
+        New-Item -ItemType Directory -Path $assetsPath -Force | Out-Null
+    }
+    
+    return @{
+        RootPath = $resolvedPath
+        DomainsPath = $domainsPath
+        AssetsPath = $assetsPath
+    }
+}
+
+function Write-AssetsFiles {
+    param([string]$AssetsPath)
+    
+    # Create style.css
+    $css = @'
+/* Global styles */
+body { 
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+    margin: 0;
+    padding: 20px;
+    background-color: #f5f5f5;
+    color: #222;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    background-color: white;
+    padding: 30px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+h1 { 
+    color: #0078D7;
+    border-bottom: 3px solid #0078D7;
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+}
+
+h2 { 
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 8px;
+    margin-top: 30px;
+    color: #333;
+}
+
+/* Navigation */
+.nav-link {
+    display: inline-block;
+    margin: 10px 0;
+    padding: 8px 16px;
+    background-color: #0078D7;
+    color: white;
+    text-decoration: none;
+    border-radius: 4px;
+    transition: background-color 0.3s;
+}
+
+.nav-link:hover {
+    background-color: #005a9e;
+}
+
+/* Summary statistics */
+.summary-stats {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 30px;
+}
+
+.summary-stats h2 {
+    color: white;
+    border-bottom: 2px solid rgba(255,255,255,0.3);
+    margin-top: 0;
+}
+
+.summary-stats p {
+    margin: 8px 0;
+    font-size: 16px;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.stat-card {
+    background-color: rgba(255,255,255,0.15);
+    padding: 15px;
+    border-radius: 6px;
+    text-align: center;
+}
+
+.stat-number {
+    font-size: 32px;
+    font-weight: bold;
+    margin: 10px 0;
+}
+
+/* Table styles */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 20px;
+    background-color: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+th, td {
+    border: 1px solid #ddd;
+    padding: 12px;
+    text-align: left;
+}
+
+th {
+    background-color: #f8f9fa;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+tr:hover {
+    background-color: #f9f9f9;
+}
+
+td.domain {
+    font-weight: 600;
+    font-family: 'Courier New', monospace;
+}
+
+/* Status badges */
+.status-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.status-ok {
+    color: #28a745;
+}
+
+.status-fail {
+    color: #dc3545;
+}
+
+.status-warn {
+    color: #ffc107;
+}
+
+.status-info {
+    color: #0078D7;
+}
+
+/* Info blocks */
+.info-block {
+    margin: 12px 0;
+    padding: 10px;
+    border-left: 4px solid #0078D7;
+    background-color: #f0f8ff;
+}
+
+.info-block p {
+    margin: 6px 0;
+}
+
+/* Issue box */
+.issues-box {
+    background-color: #fff3cd;
+    border-left: 4px solid #ffc107;
+    padding: 15px;
+    margin: 20px 0;
+    border-radius: 4px;
+}
+
+.issues-box h3 {
+    margin-top: 0;
+    color: #856404;
+}
+
+/* Section styles */
+.section {
+    margin: 30px 0;
+    padding: 20px;
+    background-color: #fafafa;
+    border-radius: 6px;
+}
+
+pre {
+    background-color: #f4f4f4;
+    padding: 12px;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+}
+
+/* Footer */
+.footer {
+    margin-top: 40px;
+    padding-top: 20px;
+    border-top: 1px solid #ddd;
+    text-align: center;
+    color: #666;
+    font-size: 13px;
+}
+
+/* Links */
+a {
+    color: #0078D7;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* Download links */
+.download-links {
+    margin: 20px 0;
+    padding: 15px;
+    background-color: #e7f3ff;
+    border-radius: 6px;
+}
+
+.download-links a {
+    display: inline-block;
+    margin: 5px 10px 5px 0;
+    padding: 8px 16px;
+    background-color: #0078D7;
+    color: white;
+    border-radius: 4px;
+    text-decoration: none;
+}
+
+.download-links a:hover {
+    background-color: #005a9e;
+    text-decoration: none;
+}
+
+/* Metadata */
+.metadata {
+    color: #666;
+    font-size: 14px;
+    margin: 10px 0;
+}
+'@
+
+    $cssPath = Join-Path $AssetsPath "style.css"
+    $css | Out-File -FilePath $cssPath -Encoding utf8 -Force
+    
+    # Create app.js with sorting and filtering functionality
+    $js = @'
+// Simple table sorting and filtering
+document.addEventListener('DOMContentLoaded', function() {
+    // Add sorting to index table if it exists
+    const table = document.querySelector('table');
+    if (!table) return;
+    
+    const headers = table.querySelectorAll('th');
+    headers.forEach((header, index) => {
+        header.style.cursor = 'pointer';
+        header.addEventListener('click', () => sortTable(index));
+    });
+});
+
+function sortTable(columnIndex) {
+    const table = document.querySelector('table');
+    const tbody = table.querySelector('tbody') || table;
+    const rows = Array.from(tbody.querySelectorAll('tr')).slice(1); // Skip header
+    
+    const sorted = rows.sort((a, b) => {
+        const aText = a.cells[columnIndex]?.textContent.trim() || '';
+        const bText = b.cells[columnIndex]?.textContent.trim() || '';
+        return aText.localeCompare(bText);
+    });
+    
+    sorted.forEach(row => tbody.appendChild(row));
+}
+
+function filterTable(status) {
+    const table = document.querySelector('table');
+    const rows = table.querySelectorAll('tr');
+    
+    rows.forEach((row, index) => {
+        if (index === 0) return; // Skip header
+        
+        if (status === 'all') {
+            row.style.display = '';
+        } else {
+            const statusCell = row.cells[1]?.textContent.trim();
+            row.style.display = statusCell.includes(status.toUpperCase()) ? '' : 'none';
+        }
+    });
+}
+'@
+
+    $jsPath = Join-Path $AssetsPath "app.js"
+    $js | Out-File -FilePath $jsPath -Encoding utf8 -Force
 }
 
 function Test-MXRecords {
@@ -355,6 +566,70 @@ function Get-SpfLookups($spf, $checked) {
   return $count
 }
 
+# Enhanced version that returns detailed lookup breakdown per include
+function Get-SpfLookupsDetailed($spf, $checked, $depth = 0) {
+  if ($checked -contains $spf) { 
+    return @{ Total = 0; Details = @() }
+  }
+  $checked += $spf
+  
+  # Count direct lookups (mechanisms that trigger DNS lookups)
+  $directCount = 0
+  $directCount += ([regex]::Matches($spf, '(?i)include:')).Count
+  $directCount += ([regex]::Matches($spf, '(?i)a(?=\s|:|$)')).Count
+  $directCount += ([regex]::Matches($spf, '(?i)mx(?=\s|:|$)')).Count
+  $directCount += ([regex]::Matches($spf, '(?i)ptr(?=\s|:|$)')).Count
+  $directCount += ([regex]::Matches($spf, '(?i)exists:')).Count
+  $directCount += ([regex]::Matches($spf, '(?i)redirect=')).Count
+  
+  $totalCount = $directCount
+  $details = @()
+  
+  # Recursive check for includes
+  foreach ($inc in ([regex]::Matches($spf, '(?i)include:([^\s]+)'))) {
+    $incDom = $inc.Groups[1].Value
+    $incSpf = Resolve-SPF $incDom
+    if ($incSpf) {
+      $incResult = Get-SpfLookupsDetailed $incSpf $checked ($depth + 1)
+      $incTotal = 1 + $incResult.Total  # 1 for the include itself + recursive lookups
+      $totalCount += $incResult.Total
+      
+      $details += [PSCustomObject]@{
+        Include = $incDom
+        Lookups = $incTotal
+        Depth = $depth
+      }
+      
+      # Add nested details
+      $details += $incResult.Details
+    }
+  }
+  
+  # Recursive check for redirects
+  foreach ($red in ([regex]::Matches($spf, '(?i)redirect=([^\s]+)'))) {
+    $redDom = $red.Groups[1].Value
+    $redSpf = Resolve-SPF $redDom
+    if ($redSpf) {
+      $redResult = Get-SpfLookupsDetailed $redSpf $checked ($depth + 1)
+      $redTotal = 1 + $redResult.Total
+      $totalCount += $redResult.Total
+      
+      $details += [PSCustomObject]@{
+        Include = "redirect=$redDom"
+        Lookups = $redTotal
+        Depth = $depth
+      }
+      
+      $details += $redResult.Details
+    }
+  }
+  
+  return @{
+    Total = $totalCount
+    Details = $details
+  }
+}
+
 function Test-SPFRecords {
     param([string]$Domain)
     
@@ -393,8 +668,10 @@ function Test-SPFRecords {
                 $hasSoftFail = $true
             }
             
-            # Count DNS lookups
-            $lookupCount = Get-SpfLookups $rec @()
+            # Count DNS lookups with detailed breakdown
+            $lookupResult = Get-SpfLookupsDetailed $rec @()
+            $lookupCount = $lookupResult.Total
+            
             if ($lookupCount -gt 10) {
                 $warnings += "Warning: DNS lookups (SPF): $lookupCount (exceeds RFC limit of 10)"
                 $spfHealthy = $false
@@ -402,6 +679,20 @@ function Test-SPFRecords {
             } else {
                 $infoMessages += "Info: DNS lookups (SPF): $lookupCount (below RFC limit of 10, OK)"
             }
+            
+            # Show breakdown of expensive includes (>5 lookups) at top level
+            $topLevelIncludes = @($lookupResult.Details | Where-Object { $_.Depth -eq 0 })
+            if ($topLevelIncludes.Count -gt 0) {
+                $details += ""
+                $details += "SPF Lookup Breakdown (recursive):"
+                foreach ($inc in $topLevelIncludes) {
+                    $details += "  - $($inc.Include): $($inc.Lookups) lookup(s)"
+                    if ($inc.Lookups -gt 5) {
+                        $infoMessages += "Info: SPF include '$($inc.Include)' uses $($inc.Lookups) DNS lookups (consider optimizing if total is near the 10-lookup limit)"
+                    }
+                }
+            }
+            
             if ($lookupCount -gt $maxLookups) { $maxLookups = $lookupCount }
             
             $i++
@@ -1156,6 +1447,142 @@ function Get-HttpText($url){
   }
 }
 
+function Write-DomainReportPage {
+  param(
+    [string]$OutputPath,
+    [string]$Domain,
+    [pscustomobject]$Summary,
+    $mxResult,
+    $spfResult,
+    $dkimResult,
+    $mtaStsResult,
+    $dmarcResult,
+    $tlsResult
+  )
+  
+  # Sanitize domain name for filename
+  $safeDomain = $Domain -replace '[^a-z0-9.-]', '_'
+  $domainPath = Join-Path $OutputPath "$safeDomain.html"
+  
+  $now = (Get-Date).ToString('u')
+  
+  $html = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mail Security Report - $([System.Web.HttpUtility]::HtmlEncode($Domain))</title>
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="container">
+    <a href="../index.html" class="nav-link">&#8592; Back to Summary</a>
+    
+    <h1>Mail Security Report</h1>
+    <p class="metadata"><strong>Domain:</strong> $([System.Web.HttpUtility]::HtmlEncode($Domain))</p>
+    <p class="metadata"><strong>Generated:</strong> $now</p>
+"@
+
+  # Issues box - collect all warnings and failures
+  $issues = @()
+  foreach ($result in @($mxResult, $spfResult, $dkimResult, $mtaStsResult, $dmarcResult, $tlsResult)) {
+    if ($result.Status -eq 'FAIL' -or $result.Status -eq 'WARN') {
+      $issues += "$($result.Section): $($result.Data.Reason)"
+    }
+  }
+  
+  if ($issues.Count -gt 0) {
+    $html += @"
+    <div class="issues-box">
+        <h3>&#9888;&#65039; Issues Found</h3>
+        <ul>
+$(($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlEncode($_))</li>" }) -join "`n")
+        </ul>
+    </div>
+"@
+  } else {
+    $html += @"
+    <div style="background-color: #d4edda; border-left: 4px solid #28a745; padding: 15px; margin: 20px 0; border-radius: 4px;">
+        <h3 style="color: #155724; margin-top: 0;">&#9989; All Checks Passed</h3>
+        <p style="color: #155724; margin-bottom: 0;">No issues detected in the email security configuration.</p>
+    </div>
+"@
+  }
+
+  # Summary table
+  $html += "<h2>Summary</h2>"
+  $html += "<table><tr><th style='width: 200px;'>Check</th><th style='width: 120px;'>Status</th><th>Details</th></tr>"
+  
+  # Helper to render status cell
+  $renderStatusCell = {
+    param($status)
+    $cls = switch ($status) {
+      'PASS' { 'status-ok' }
+      'OK' { 'status-ok' }
+      'WARN' { 'status-warn' }
+      'FAIL' { 'status-fail' }
+      'N/A' { 'status-info' }
+      default { '' }
+    }
+    $icon = switch ($status) {
+      'PASS' { '&#x2705; ' }
+      'OK' { '&#x2705; ' }
+      'WARN' { '&#x26A0;&#xFE0F; ' }
+      'FAIL' { '&#x274C; ' }
+      'N/A' { '&#x2139;&#xFE0F; ' }
+      default { '' }
+    }
+    $text = switch ($status) {
+      'OK' { 'PASS' }
+      default { $status }
+    }
+    return "<td class='$cls'>$icon$text</td>"
+  }
+  
+  # MX Records
+  if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
+    $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
+    $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
+  } else {
+    $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+  }
+  
+  $html += "<tr><td>SPF</td>" + (& $renderStatusCell $spfResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
+  $html += "<tr><td>DKIM</td>" + (& $renderStatusCell $dkimResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
+  $html += "<tr><td>DMARC</td>" + (& $renderStatusCell $dmarcResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
+  $html += "<tr><td>MTA-STS</td>" + (& $renderStatusCell $mtaStsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
+  $html += "<tr><td>TLS-RPT</td>" + (& $renderStatusCell $tlsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
+  
+  $html += "</table>"
+
+  # Detailed sections (reuse existing ConvertTo-HtmlSection)
+  $html += ConvertTo-HtmlSection $mxResult
+  $html += ConvertTo-HtmlSection $spfResult
+  $html += ConvertTo-HtmlSection $dkimResult
+  $html += ConvertTo-HtmlSection $dmarcResult
+  $html += ConvertTo-HtmlSection $mtaStsResult
+  $html += ConvertTo-HtmlSection $tlsResult
+
+  # Footer
+  $html += @"
+    <div class="footer">
+        <p>Generated by <strong>mailchecker.ps1</strong> on $now</p>
+        <p><a href="../index.html">&#8592; Back to Summary</a></p>
+    </div>
+</div>
+<script src="../assets/app.js"></script>
+</body>
+</html>
+"@
+
+  try {
+    $html | Out-File -FilePath $domainPath -Encoding utf8 -Force
+  } catch {
+    Write-Host ("Failed to write domain report for {0}: {1}" -f $Domain, $_) -ForegroundColor Red
+  }
+}
+
 function Write-HtmlReport {
   param(
     [string]$Path,
@@ -1302,172 +1729,255 @@ function Write-HtmlReport {
   }
 }
 
-function Write-SummaryHtmlReport {
+function Write-IndexPage {
   param(
-    [string]$Path,
-    [array]$AllResults
+    [string]$RootPath,
+    [array]$AllResults,
+    [string]$CsvFileName = $null,
+    [string]$JsonFileName = $null
   )
-
-  $css = @'
-  body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; color:#222 }
-  h1 { color:#0078D7 }
-  h2 { border-bottom:1px solid #ddd; padding-bottom:4px; margin-top: 30px }
-  table { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
-  th, td { border:1px solid #ddd; padding:8px 12px; text-align:left }
-  th { background-color: #f5f5f5; font-weight: 600; position: sticky; top: 0; }
-  td.domain { font-weight: 600; font-family: 'Courier New', monospace; }
-  .status-ok { color: green; }
-  .status-fail { color: red; }
-  .status-warn { color: #b58900; }
-  .status-info { color: #0078D7; }
-  tr:hover { background-color: #f9f9f9; }
-  .summary-stats { background-color: #f0f8ff; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
-  .summary-stats p { margin: 5px 0; }
-'@
-
+  
+  $indexPath = Join-Path $RootPath "index.html"
   $now = (Get-Date).ToString('u')
   $totalDomains = $AllResults.Count
   
-  # Calculate statistics based on overall status
-  $allPass = 0
-  $hasWarnings = 0
-  $hasFails = 0
+  # Calculate statistics - domain level (based on overall status)
+  $passResults = @($AllResults | Where-Object { $_.Summary.Status -eq 'PASS' })
+  $warnResults = @($AllResults | Where-Object { $_.Summary.Status -eq 'WARN' })
+  $failResults = @($AllResults | Where-Object { $_.Summary.Status -eq 'FAIL' })
   
-  foreach ($result in $AllResults) {
-    $summary = $result.Summary
-    
-    switch ($summary.Status) {
-      'PASS' { $allPass++ }
-      'WARN' { $hasWarnings++ }
-      'FAIL' { $hasFails++ }
-    }
-  }
+  $passCount = $passResults.Count
+  $warnCount = $warnResults.Count
+  $failCount = $failResults.Count
+  
+  # Count status per check type
+  $mxPass = @($AllResults | Where-Object { $_.MXResult.Status -eq 'PASS' -or $_.MXResult.Status -eq 'OK' }).Count
+  $spfPass = @($AllResults | Where-Object { $_.SPFResult.Status -eq 'PASS' }).Count
+  $dkimPass = @($AllResults | Where-Object { $_.DKIMResult.Status -eq 'PASS' }).Count
+  $mtaStsPass = @($AllResults | Where-Object { $_.MTAStsResult.Status -eq 'PASS' }).Count
+  $dmarcPass = @($AllResults | Where-Object { $_.DMARCResult.Status -eq 'PASS' }).Count
+  $tlsPass = @($AllResults | Where-Object { $_.TLSResult.Status -eq 'PASS' }).Count
 
   $html = @"
-<html>
+<!DOCTYPE html>
+<html lang="en">
   <head>
-    <meta charset='utf-8' />
-    <title>Bulk Mail Check Summary Report</title>
-    <style>$css</style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mail Security Check - Summary Report</title>
+    <link rel="stylesheet" href="assets/style.css">
   </head>
   <body>
-  <h1>Bulk Mail Check Summary Report</h1>
-  <p>Generated: $now</p>
-  
-  <div class='summary-stats'>
-    <h2>Overview Statistics</h2>
-    <p><strong>Total Domains Checked:</strong> $totalDomains</p>
-    <p><strong>&#x2705; PASS (All checks passed):</strong> $allPass domains</p>
-    <p><strong>&#x26A0;&#xFE0F; WARN (Has warnings, no failures):</strong> $hasWarnings domains</p>
-    <p><strong>&#x274C; FAIL (Has critical failures):</strong> $hasFails domains</p>
+<div class="container">
+    <h1>&#128231; Mail Security Check - Summary Report</h1>
+    <p class="metadata"><strong>Generated:</strong> $now</p>
+    <p class="metadata"><strong>Total Domains Checked:</strong> $totalDomains</p>
+    
+    <div class="summary-stats">
+        <h2>Domain Overview</h2>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div>Total Domains</div>
+                <div class="stat-number">$totalDomains</div>
   </div>
-  
-  <h2>Detailed Results</h2>
-  <table>
-    <tr>
-      <th>Domain</th>
-      <th>Status</th>
-      <th>MX Records</th>
-      <th>SPF</th>
-      <th>DKIM</th>
-      <th>MTA-STS</th>
-      <th>DMARC</th>
-      <th>TLS-RPT</th>
-    </tr>
+            <div class="stat-card">
+                <div>&#9989; Fully Compliant</div>
+                <div class="stat-number">$passCount</div>
+                <div style="font-size: 12px; margin-top: 5px;">All checks passed</div>
+            </div>
+            <div class="stat-card">
+                <div>&#9888;&#65039; Needs Improvement</div>
+                <div class="stat-number">$warnCount</div>
+                <div style="font-size: 12px; margin-top: 5px;">Has warnings</div>
+            </div>
+            <div class="stat-card">
+                <div>&#10060; Critical Issues</div>
+                <div class="stat-number">$failCount</div>
+                <div style="font-size: 12px; margin-top: 5px;">Has failures</div>
+            </div>
+        </div>
+        <h3 style="margin-top: 20px;">Individual Check Summary</h3>
+        <p style="font-size: 14px;">&#9989; MX Records: $mxPass/$totalDomains | SPF: $spfPass/$totalDomains | DKIM: $dkimPass/$totalDomains</p>
+        <p style="font-size: 14px;">&#9989; DMARC: $dmarcPass/$totalDomains | MTA-STS: $mtaStsPass/$totalDomains | TLS-RPT: $tlsPass/$totalDomains</p>
+    </div>
 "@
 
-  foreach ($result in $AllResults) {
-    $summary = $result.Summary
-    $domain = [System.Web.HttpUtility]::HtmlEncode($summary.Domain)
-    
-    $html += "    <tr>`n"
-    $html += "      <td class='domain'>$domain</td>`n"
-    
-    # Add overall status cell
-    $statusClass = switch ($summary.Status) {
-        'PASS' { 'status-ok' }
-        'WARN' { 'status-warn' }
-        'FAIL' { 'status-fail' }
-        default { '' }
+  # Download links if CSV or JSON available
+  if ($CsvFileName -or $JsonFileName) {
+    $html += "    <div class='download-links'>`n"
+    $html += "        <strong>Download:</strong>`n"
+    if ($CsvFileName) {
+      $encodedCsvName = [System.Web.HttpUtility]::HtmlEncode($CsvFileName)
+      $html += "        <a href='" + $encodedCsvName + "'>&#128202; CSV Report</a>`n"
     }
-    $statusIcon = switch ($summary.Status) {
-        'PASS' { '&#x2705; ' }
-        'WARN' { '&#x26A0;&#xFE0F; ' }
-        'FAIL' { '&#x274C; ' }
-        default { '' }
+    if ($JsonFileName) {
+      $encodedJsonName = [System.Web.HttpUtility]::HtmlEncode($JsonFileName)
+      $html += "        <a href='" + $encodedJsonName + "'>&#128196; JSON Export</a>`n"
     }
-    $html += "      <td class='$statusClass'>$statusIcon$([System.Web.HttpUtility]::HtmlEncode($summary.Status))</td>`n"
-    
-    # Helper function to render status cell
-    $renderStatusCell = {
-      param($status)
-      $cls = switch ($status) {
-        'PASS' { 'status-ok' }
-        'OK' { 'status-ok' }  # Legacy support
-        'WARN' { 'status-warn' }
-        'FAIL' { 'status-fail' }
-        'N/A' { 'status-info' }
-        default { '' }
-      }
-      $icon = switch ($status) {
-        'PASS' { '&#x2705; ' }
-        'OK' { '&#x2705; ' }  # Legacy support
-        'WARN' { '&#x26A0;&#xFE0F; ' }
-        'FAIL' { '&#x274C; ' }
-        'N/A' { '&#x2139;&#xFE0F; ' }
-        default { '' }
-      }
-      $text = switch ($status) {
-        'OK' { 'PASS' }  # Normalize OK to PASS
-        default { $status }
-      }
-      return "<td class='$cls'>$icon$([System.Web.HttpUtility]::HtmlEncode($text))</td>"
-    }
-    
-    # Get individual check statuses from result objects
-    $mxStatus = $result.MXResult.Status
-    $spfStatus = $result.SPFResult.Status
-    $dkimStatus = $result.DKIMResult.Status
-    $mtaStsStatus = $result.MTAStsResult.Status
-    $dmarcStatus = $result.DMARCResult.Status
-    $tlsStatus = $result.TLSResult.Status
-    
-    # MX Records - show actual records instead of just status
-    if ($mxStatus -eq 'PASS' -or $mxStatus -eq 'OK') {
-      $mxRecords = ($result.MXResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
-      $html += "<td class='status-ok'>$mxRecords</td>`n"
-    } else {
-      $html += (& $renderStatusCell $mxStatus) + "`n"
-    }
-    
-    $html += (& $renderStatusCell $spfStatus) + "`n"
-    $html += (& $renderStatusCell $dkimStatus) + "`n"
-    $html += (& $renderStatusCell $mtaStsStatus) + "`n"
-    $html += (& $renderStatusCell $dmarcStatus) + "`n"
-    $html += (& $renderStatusCell $tlsStatus) + "`n"
-    
-    $html += "    </tr>`n"
+    $html += "    </div>`n"
   }
 
   $html += @"
+  <h2>Detailed Results</h2>
+  <table>
+        <thead>
+            <tr>
+                <th style="width: 200px;">Domain</th>
+                <th style="width: 200px;">MX Records</th>
+                <th style="width: 90px;">Status</th>
+                <th style="width: 70px;">SPF</th>
+                <th style="width: 70px;">DKIM</th>
+                <th style="width: 90px;">DMARC</th>
+                <th style="width: 90px;">MTA-STS</th>
+                <th style="width: 90px;">TLS-RPT</th>
+                <th>Issues</th>
+    </tr>
+        </thead>
+        <tbody>
+"@
+
+  # Helper to render status badge - build strings without nested expansion
+  function Get-StatusBadgeHtml {
+    param([string]$status)
+    
+    $cls = 'status-info'
+    $icon = '&#x2139;&#xFE0F;'
+    $text = $status
+    
+    if ($status -eq 'PASS' -or $status -eq 'OK') {
+      $cls = 'status-ok'
+      $icon = '&#9989;'
+      $text = 'PASS'
+    } elseif ($status -eq 'WARN') {
+      $cls = 'status-warn'
+      $icon = '&#9888;&#65039;'
+      $text = 'WARN'
+    } elseif ($status -eq 'FAIL') {
+      $cls = 'status-fail'
+      $icon = '&#10060;'
+      $text = 'FAIL'
+    } elseif ($status -eq 'N/A') {
+      $cls = 'status-info'
+      $icon = '&#8505;&#65039;'
+      $text = 'N/A'
+    }
+    
+    return "<span class='" + $cls + "' title='" + $text + "'>" + $icon + "</span>"
+  }
+
+  foreach ($result in $AllResults) {
+    $domain = $result.Domain
+    $safeDomain = $domain -replace '[^a-z0-9.-]', '_'
+    $domainLink = "domains/$safeDomain.html"
+    $encodedDomain = [System.Web.HttpUtility]::HtmlEncode($domain)
+    
+    $overallStatus = $result.Summary.Status
+    $statusClass = switch ($overallStatus) {
+        'PASS' { 'status-ok' }
+        'WARN' { 'status-warn' }
+        'FAIL' { 'status-fail' }
+        default { '' }
+      }
+    $statusIcon = switch ($overallStatus) {
+      'PASS' { '&#9989; ' }
+      'WARN' { '&#9888;&#65039; ' }
+      'FAIL' { '&#10060; ' }
+        default { '' }
+      }
+    
+    # Collect condensed issues with line breaks
+    $issues = @()
+    if ($result.SPFResult.Status -eq 'FAIL' -or $result.SPFResult.Status -eq 'WARN') {
+      $issues += "SPF: " + ($result.SPFResult.Data.Reason -replace '^SPF: ', '')
+    }
+    if ($result.DKIMResult.Status -eq 'FAIL') {
+      $issues += "DKIM: " + ($result.DKIMResult.Data.Reason -replace '^DKIM: ', '')
+    }
+    if ($result.MTAStsResult.Status -eq 'FAIL' -or $result.MTAStsResult.Status -eq 'WARN') {
+      $issues += "MTA-STS: " + ($result.MTAStsResult.Data.Reason -replace '^MTA-STS: ', '')
+    }
+    if ($result.DMARCResult.Status -eq 'FAIL' -or $result.DMARCResult.Status -eq 'WARN') {
+      # Simplify DMARC - only show actual issues, not informational fields
+      $dmarcReason = $result.DMARCResult.Data.Reason -replace '^DMARC: ', ''
+      # Extract only the problematic parts
+      $dmarcIssues = @()
+      if ($dmarcReason -match 'p=none') { $dmarcIssues += 'p=none (monitoring only)' }
+      elseif ($dmarcReason -match 'p=quarantine') { $dmarcIssues += 'p=quarantine (not fully enforced)' }
+      if ($dmarcReason -match 'pct=(\d+)' -and [int]$Matches[1] -lt 100) { $dmarcIssues += "pct=$($Matches[1])" }
+      if ($dmarcReason -match 'sp=missing') { $dmarcIssues += 'sp=missing' }
+      if ($dmarcReason -match 'rua=missing') { $dmarcIssues += 'rua=missing' }
+      
+      if ($dmarcIssues.Count -gt 0) {
+        $issues += "DMARC: " + ($dmarcIssues -join ', ')
+      }
+    }
+    if ($result.TLSResult.Status -eq 'WARN') {
+      $issues += "TLS-RPT: " + ($result.TLSResult.Data.Reason -replace '^TLS-RPT: ', '')
+    }
+    
+    $issuesText = if ($issues.Count -gt 0) { 
+      ($issues | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode($_) }) -join '<br>'
+    } else {
+      '<span style="color: #28a745;">No issues</span>' 
+    }
+    
+    # Get MX records for display
+    $mxRecordsText = if ($result.MXResult.Status -eq 'PASS' -or $result.MXResult.Status -eq 'OK') {
+      ($result.MXResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { 
+        [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") 
+      }) -join '<br>'
+    } elseif ($result.MXResult.Status -eq 'N/A') {
+      '<span style="color: #666;">N/A</span>'
+    } else {
+      '<span style="color: #dc3545;">No MX records</span>'
+    }
+    
+    $encodedDomainLink = [System.Web.HttpUtility]::HtmlAttributeEncode($domainLink)
+    
+    # Get badge HTML for each status
+    $spfBadge = Get-StatusBadgeHtml $result.SPFResult.Status
+    $dkimBadge = Get-StatusBadgeHtml $result.DKIMResult.Status
+    $mtastsBadge = Get-StatusBadgeHtml $result.MTAStsResult.Status
+    $dmarcBadge = Get-StatusBadgeHtml $result.DMARCResult.Status
+    $tlsBadge = Get-StatusBadgeHtml $result.TLSResult.Status
+    
+    $html += "            <tr>`n"
+    $html += "                <td class='domain'><a href='" + $encodedDomainLink + "'>" + $encodedDomain + "</a></td>`n"
+    $html += "                <td style='font-size: 12px;'>" + $mxRecordsText + "</td>`n"
+    $html += "                <td class='" + $statusClass + "'>" + $statusIcon + $overallStatus + "</td>`n"
+    $html += "                <td style='text-align: center;'>" + $spfBadge + "</td>`n"
+    $html += "                <td style='text-align: center;'>" + $dkimBadge + "</td>`n"
+    $html += "                <td style='text-align: center;'>" + $dmarcBadge + "</td>`n"
+    $html += "                <td style='text-align: center;'>" + $mtastsBadge + "</td>`n"
+    $html += "                <td style='text-align: center;'>" + $tlsBadge + "</td>`n"
+    $html += "                <td style='font-size: 12px;'>" + $issuesText + "</td>`n"
+    $html += "            </tr>`n"
+  }
+
+  $html += @"
+        </tbody>
   </table>
   
-  <p style='margin-top: 30px; color: #666; font-size: 12px;'>
-    <strong>Legend:</strong> 
-    <span style='color: green;'>&#x2705; PASS</span> = Configuration meets strict security standards | 
-    <span style='color: #b58900;'>&#x26A0;&#xFE0F; WARN</span> = Configuration exists but not fully enforced | 
-    <span style='color: red;'>&#x274C; FAIL</span> = Critical configuration missing or has serious issues | 
-    <span style='color: #0078D7;'>&#x2139;&#xFE0F; N/A</span> = Not applicable
-  </p>
+    <div class="footer">
+        <p><strong>Legend:</strong> 
+        <span style='color: #28a745;'>&#9989; PASS</span> = Meets security standards | 
+        <span style='color: #ffc107;'>&#9888;&#65039; WARN</span> = Needs improvement | 
+        <span style='color: #dc3545;'>&#10060; FAIL</span> = Critical issue | 
+        <span style='color: #0078D7;'>&#8505;&#65039; N/A</span> = Not applicable
+        </p>
+        <p>Generated by <strong>mailchecker.ps1</strong> on $now</p>
+    </div>
+</div>
+<script src="assets/app.js"></script>
   </body>
 </html>
 "@
 
   try {
-    $html | Out-File -FilePath $Path -Encoding utf8 -Force
-    Write-Host "Wrote summary HTML report to: $Path" -ForegroundColor Green
+    $html | Out-File -FilePath $indexPath -Encoding utf8 -Force
+    Write-Host "Wrote index report to: $indexPath" -ForegroundColor Green
   } catch {
-    Write-Host ("Failed to write summary HTML report to {0}: {1}" -f $Path, $_) -ForegroundColor Red
+    Write-Host ("Failed to write index report: {0}" -f $_) -ForegroundColor Red
   }
 }
 
@@ -1624,21 +2134,48 @@ if ($BulkFile) {
         exit 1
     }
     
+    # Determine output structure
+    $outputStructure = $null
+    if ($FullHtmlExport) {
+        # Create full structure with assets and domains folders
+        $outputStructure = New-OutputStructure -InputFile $BulkFile -OutputPath $OutputPath
+        $resolvedOutputPath = $outputStructure.RootPath
+        
+        # Write assets (CSS and JS)
+        Write-AssetsFiles -AssetsPath $outputStructure.AssetsPath
+        Write-Host "Created assets (CSS, JS) in: $($outputStructure.AssetsPath)" -ForegroundColor Cyan
+    } else {
+        # Legacy mode - simple output path
+        if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+            $resolvedOutputPath = "."
+        } else {
+            $resolvedOutputPath = $OutputPath
+    }
+    
     # Ensure output directory exists
-    if (-not (Test-Path $OutputPath)) {
+        if (-not (Test-Path $resolvedOutputPath)) {
         try {
-            New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
-            Write-Host "Created output directory: $OutputPath" -ForegroundColor Cyan
+                New-Item -ItemType Directory -Path $resolvedOutputPath -Force | Out-Null
+                Write-Host "Created output directory: $resolvedOutputPath" -ForegroundColor Cyan
         } catch {
-            Write-Host "Error: Could not create output directory: $OutputPath" -ForegroundColor Red
+                Write-Host "Error: Could not create output directory: $resolvedOutputPath" -ForegroundColor Red
             Write-Host $_.Exception.Message -ForegroundColor Red
             exit 1
+            }
         }
     }
     
-    $domains = @(Get-Content $BulkFile | 
+    $rawDomains = @(Get-Content $BulkFile | 
                Where-Object { $_ -and $_.Trim() -and -not $_.Trim().StartsWith('#') } |
                ForEach-Object { $_.Trim().ToLower() })
+    
+    # Remove duplicates and sort alphabetically
+    $domains = @($rawDomains | Select-Object -Unique | Sort-Object)
+    
+    $duplicateCount = $rawDomains.Count - $domains.Count
+    if ($duplicateCount -gt 0) {
+        Write-Host "Removed $duplicateCount duplicate domain(s)" -ForegroundColor Yellow
+    }
     
     if ($domains.Count -eq 0) {
         Write-Host "Error: No valid domains found in $BulkFile" -ForegroundColor Red
@@ -1679,36 +2216,167 @@ if ($BulkFile) {
     
     Write-Host "`nAll domains processed." -ForegroundColor Green
     
-    # Export CSV if requested
-    if ($Csv) {
-        $csvData = $allResults | ForEach-Object { $_.Summary }
+    # Track filenames for index page
+    $csvFileName = $null
+    $jsonFileName = $null
         $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
-        $csvPath = Join-Path $OutputPath "bulk-results-$ts.csv"
-        $csvData | Export-Csv -Path $csvPath -NoTypeInformation
+    
+    # Export CSV (always with FullHtmlExport)
+    if ($FullHtmlExport) {
+        # Create enhanced CSV with individual reason columns
+        # Sanitize function to remove tabs, newlines, and other problematic characters
+        function Sanitize-CsvField($value) {
+            if ($null -eq $value) { return "" }
+            # Replace tabs with spaces, remove newlines, replace semicolons with commas, and trim
+            return $value.ToString() -replace "`t", " " -replace "`r`n", " " -replace "`n", " " -replace "`r", " " -replace ";", ","
+        }
+        
+        $csvData = $allResults | ForEach-Object {
+            [PSCustomObject]@{
+                Domain = Sanitize-CsvField $_.Domain
+                Status = Sanitize-CsvField $_.Summary.Status
+                MX_Records = Sanitize-CsvField $_.Summary.MX_Records_Present
+                SPF_Status = Sanitize-CsvField $_.SPFResult.Status
+                SPF_Reason = Sanitize-CsvField $_.SPFResult.Data.Reason
+                DKIM_Status = Sanitize-CsvField $_.DKIMResult.Status
+                DKIM_Reason = Sanitize-CsvField $_.DKIMResult.Data.Reason
+                DMARC_Status = Sanitize-CsvField $_.DMARCResult.Status
+                DMARC_Reason = Sanitize-CsvField $_.DMARCResult.Data.Reason
+                MTA_STS_Status = Sanitize-CsvField $_.MTAStsResult.Status
+                MTA_STS_Reason = Sanitize-CsvField $_.MTAStsResult.Data.Reason
+                TLS_RPT_Status = Sanitize-CsvField $_.TLSResult.Status
+                TLS_RPT_Reason = Sanitize-CsvField $_.TLSResult.Data.Reason
+                SPF_Present = Sanitize-CsvField $_.Summary.SPF_Present
+                SPF_Healthy = Sanitize-CsvField $_.Summary.SPF_Healthy
+                DKIM_ValidSelector = Sanitize-CsvField $_.Summary.DKIM_ValidSelector
+                MTA_STS_DNS_Present = Sanitize-CsvField $_.Summary.MTA_STS_DNS_Present
+                MTA_STS_Enforced = Sanitize-CsvField $_.Summary.MTA_STS_Enforced
+                DMARC_Present = Sanitize-CsvField $_.Summary.DMARC_Present
+                DMARC_Enforced = Sanitize-CsvField $_.Summary.DMARC_Enforced
+                TLS_RPT_Present = Sanitize-CsvField $_.Summary.TLS_RPT_Present
+            }
+        }
+        $csvFileName = "bulk-results-$ts.csv"
+        $csvPath = Join-Path $resolvedOutputPath $csvFileName
+        $csvData | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 -Delimiter ','
         Write-Host "CSV exported to: $csvPath" -ForegroundColor Green
     }
     
-    # Generate summary HTML report if requested
-    if ($SummaryHtml) {
-        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
-        $summaryHtmlPath = Join-Path $OutputPath "bulk-summary-$ts.html"
-        Write-SummaryHtmlReport -Path $summaryHtmlPath -AllResults $allResults
+    # Export JSON if requested
+    if ($Json) {
+        $jsonFileName = "results.json"
+        $jsonPath = Join-Path $resolvedOutputPath $jsonFileName
+        
+        # Convert all results to JSON-friendly format
+        $jsonData = @{
+            GeneratedDate = (Get-Date).ToString('u')
+            TotalDomains = $allResults.Count
+            ScriptVersion = "mailchecker.ps1 v2.0"
+            Results = @($allResults | ForEach-Object {
+                @{
+                    Domain = $_.Domain
+                    OverallStatus = $_.Summary.Status
+                    Checks = @{
+                        MX = @{
+                            Status = $_.MXResult.Status
+                            Reason = $_.MXResult.Data.Reason
+                            Records = @($_.MXResult.Data.MXRecords | ForEach-Object { 
+                                @{ Preference = $_.Preference; NameExchange = $_.NameExchange } 
+                            })
+                        }
+                        SPF = @{
+                            Status = $_.SPFResult.Status
+                            Reason = $_.SPFResult.Data.Reason
+                            Records = $_.SPFResult.Data.SPFRecords
+                            Healthy = $_.SPFResult.Data.Healthy
+                        }
+                        DKIM = @{
+                            Status = $_.DKIMResult.Status
+                            Reason = $_.DKIMResult.Data.Reason
+                            AnyValid = $_.DKIMResult.Data.AnyValid
+                        }
+                        MTASTS = @{
+                            Status = $_.MTAStsResult.Status
+                            Reason = $_.MTAStsResult.Data.Reason
+                            Enforced = $_.MTAStsResult.Data.MtaStsEnforced
+                        }
+                        DMARC = @{
+                            Status = $_.DMARCResult.Status
+                            Reason = $_.DMARCResult.Data.Reason
+                            Enforced = $_.DMARCResult.Data.Enforced
+                            Record = $_.DMARCResult.Data.DmarcTxt
+                        }
+                        TLSRPT = @{
+                            Status = $_.TLSResult.Status
+                            Reason = $_.TLSResult.Data.Reason
+                            Record = $_.TLSResult.Data.TlsRptTxt
+                        }
+                    }
+                }
+            })
+        }
+        
+        $jsonData | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding utf8 -Force
+        Write-Host "JSON exported to: $jsonPath" -ForegroundColor Green
     }
     
-    # Generate HTML reports if requested
-    if ($Html) {
-        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
-        $htmlCount = 0
+    # FullHtmlExport mode: create index + individual domain pages
+    if ($FullHtmlExport) {
+        # Generate individual domain pages
+        Write-Host "`nGenerating individual domain reports..." -ForegroundColor Yellow
+        $domainCount = 0
         foreach ($result in $allResults) {
-            $safeDomain = $result.Domain -replace '[^a-z0-9.-]','-'
-            $htmlPath = Join-Path $OutputPath "$safeDomain-$ts.html"
-            Write-HtmlReport -Path $htmlPath -Domain $result.Domain -Summary $result.Summary `
+            Write-DomainReportPage -OutputPath $outputStructure.DomainsPath `
+                                 -Domain $result.Domain -Summary $result.Summary `
                            -mxResult $result.MXResult -spfResult $result.SPFResult `
                            -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult `
                            -dmarcResult $result.DMARCResult -tlsResult $result.TLSResult
-            $htmlCount++
+            $domainCount++
         }
-        Write-Host "Generated $htmlCount HTML reports in: $OutputPath" -ForegroundColor Green
+        Write-Host "Generated $domainCount domain reports in: $($outputStructure.DomainsPath)" -ForegroundColor Green
+        
+        # Generate index page
+        Write-IndexPage -RootPath $outputStructure.RootPath -AllResults $allResults `
+                        -CsvFileName $csvFileName -JsonFileName $jsonFileName
+        
+        # Create clickable file link for modern terminals
+        $indexPath = Join-Path $outputStructure.RootPath "index.html"
+        $indexPathFull = (Resolve-Path $indexPath).Path
+        
+        # Open report if requested
+        if ($OpenReport) {
+            try {
+                if ($IsWindows -or $PSVersionTable.PSVersion.Major -le 5) {
+                    Start-Process $indexPath
+                    Write-Host "Opened report in default browser." -ForegroundColor Green
+                } elseif ($IsMacOS) {
+                    & open $indexPath
+                    Write-Host "Opened report in default browser." -ForegroundColor Green
+                } elseif ($IsLinux) {
+                    & xdg-open $indexPath
+                    Write-Host "Opened report in default browser." -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "Could not automatically open report: $_" -ForegroundColor Yellow
+                Write-Host "Please open manually: $indexPath" -ForegroundColor Cyan
+            }
+        }
+        
+        Write-Host "`n[OK] Full HTML export complete! Click link to open:" -ForegroundColor Green
+        
+        # Use PSStyle.FormatHyperlink in PS 7.2+ or fallback to file:// URI
+        if ($PSVersionTable.PSVersion.Major -ge 7 -and $PSVersionTable.PSVersion.Minor -ge 2) {
+            # PowerShell 7.2+ has built-in hyperlink support
+            $clickableLink = $PSStyle.FormatHyperlink($indexPathFull, $indexPathFull)
+            Write-Host "   $clickableLink" -ForegroundColor Cyan
+        } else {
+            # Fallback: use file:// URI (clickable in most modern terminals)
+            $fileUri = "file:///$($indexPathFull -replace '\\', '/')"
+            Write-Host "   $fileUri" -ForegroundColor Cyan
+        }
+    } else {
+        # No FullHtmlExport - just console output
+        Write-Host "`nProcessing complete. Use -FullHtmlExport for HTML reports." -ForegroundColor Cyan
     }
     
 } else {
@@ -1717,12 +2385,19 @@ if ($BulkFile) {
     
     # Generate HTML report if requested
     if ($Html) {
+        # Determine output path
+        if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+            $resolvedOutputPath = "."
+        } else {
+            $resolvedOutputPath = $OutputPath
+        }
+        
         # Ensure output directory exists
-        if (-not (Test-Path $OutputPath)) {
+        if (-not (Test-Path $resolvedOutputPath)) {
             try {
-                New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+                New-Item -ItemType Directory -Path $resolvedOutputPath -Force | Out-Null
             } catch {
-                Write-Host "Error: Could not create output directory: $OutputPath" -ForegroundColor Red
+                Write-Host "Error: Could not create output directory: $resolvedOutputPath" -ForegroundColor Red
                 Write-Host $_.Exception.Message -ForegroundColor Red
                 exit 1
             }
@@ -1730,7 +2405,7 @@ if ($BulkFile) {
         
         $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
         $safeDomain = $Domain -replace '[^a-z0-9.-]','-'
-        $outPath = Join-Path $OutputPath "$safeDomain-$ts.html"
+        $outPath = Join-Path $resolvedOutputPath "$safeDomain-$ts.html"
         Write-HtmlReport -Path $outPath -Domain $Domain -Summary $result.Summary `
                        -mxResult $result.MXResult -spfResult $result.SPFResult `
                        -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult `

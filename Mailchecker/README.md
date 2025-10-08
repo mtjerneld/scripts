@@ -15,17 +15,19 @@ This tool performs a complete email security audit by checking:
 
 ## Recent Improvements
 
-- **Output Path Control**: Added `-OutputPath` parameter for organized file management and custom directory structure
-- **Strict Security Profile**: Implemented PASS/WARN/FAIL severity ratings with comprehensive reason fields
-- **Summary HTML Reports**: Added `-SummaryHtml` switch for consolidated HTML tables in bulk mode with overview statistics
-- **Comprehensive Help System**: Added `-Help` switch with Linux man-page style documentation
-- **Bulk Domain Checking**: Added ability to check multiple domains from input files with CSV export
-- **Unified Result Objects**: All security checks now return structured result objects for better consistency
-- **Simplified HTML Generation**: Clean, maintainable HTML report generation using unified result objects
-- **Streamlined Parameters**: Removed redundant `-HtmlOutput` parameter - use `-Html` for auto-generated timestamped reports
-- **Enhanced Code Structure**: Eliminated duplicate code and improved maintainability with modular `Invoke-DomainCheck` function
-- **Better Error Handling**: More robust DNS resolution with automatic fallback between multiple servers
-- **CSV Export**: Bulk results can be exported to CSV for further analysis and reporting
+- **Full HTML Export**: Complete report structure with index page, individual domain reports, CSV, and assets - all in one command
+- **Smart MX Display**: MX records shown inline in summary table with line breaks for easy reading
+- **Concise Issues**: Streamlined issue descriptions focusing only on actual problems (no informational noise)
+- **Auto-Open Reports**: `-OpenReport` switch automatically opens generated reports in default browser
+- **JSON Export**: Optional `-Json` switch for structured JSON export of all results
+- **Smart Output Path**: Automatic directory naming based on input file if `-OutputPath` not specified
+- **Simplified Workflow**: Replaced `-Csv` and `-SummaryHtml` with unified `-FullHtmlExport` for cleaner usage
+- **Strict Security Profile**: PASS/WARN/FAIL severity ratings with comprehensive reason fields
+- **Comprehensive Help System**: Concise `-Help` output with quick examples and reference to README
+- **Bulk Domain Checking**: Process multiple domains from input files with full reporting
+- **Unified Result Objects**: All security checks return structured result objects for consistency
+- **Enhanced Code Structure**: Modular `Invoke-DomainCheck` function with improved maintainability
+- **Better Error Handling**: Robust DNS resolution with automatic fallback between multiple servers
 
 ## Requirements
 
@@ -60,28 +62,46 @@ This tool performs a complete email security audit by checking:
 
 ### Bulk Domain Checking
 
+The `-FullHtmlExport` mode creates a complete, professional report structure with an index page linking to individual domain reports:
+
 ```powershell
-# Check multiple domains from a file
+# Basic usage - console output only
 .\mailchecker.ps1 -BulkFile domains.txt
 
-# Export results to CSV
-.\mailchecker.ps1 -BulkFile domains.txt -Csv
+# Full HTML export with auto-generated folder (includes CSV automatically)
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport
 
-# Generate consolidated summary HTML table (quick overview)
-.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml
+# Full HTML export to specific directory
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OutputPath ./reports
 
-# Generate individual HTML reports for all domains
-.\mailchecker.ps1 -BulkFile domains.txt -Html
+# Full HTML export with auto-open in browser
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OpenReport
 
-# Combine summary HTML with individual reports
-.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml -Html
-
-# Full export: CSV + Summary HTML + Individual HTML reports
-.\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html
-
-# Save all output files to a custom directory
-.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml -OutputPath ./reports
+# Complete export with JSON
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -OpenReport
 ```
+
+**Output structure:**
+```
+domains-20251008-142315/
+├─ index.html              ← Summary with MX records and concise issues
+├─ bulk-results-*.csv      ← CSV export (always included)
+├─ results.json            ← JSON export (if -Json specified)
+├─ assets/
+│  ├─ style.css            ← Modern responsive styles
+│  └─ app.js               ← Interactive features (sorting)
+└─ domains/
+   ├─ example.com.html     ← Individual domain reports
+   ├─ google.com.html
+   └─ ...
+```
+
+**Summary table includes:**
+- Domain name (clickable link to detailed report)
+- MX records (inline with line breaks)
+- Overall status (PASS/WARN/FAIL)
+- Individual check badges (SPF, DKIM, MTA-STS, DMARC, TLS-RPT)
+- Concise issues (only actual problems, line-separated)
 
 ### Parameters
 
@@ -91,11 +111,12 @@ This tool performs a complete email security audit by checking:
 | `-BulkFile` | String | File containing domains to check (one per line) | - |
 | `-Selectors` | String | Comma-separated DKIM selectors to test | `"default,s1,s2,selector1,selector2,google,mail,k1"` |
 | `-DnsServer` | String[] | DNS server(s) to query first | Falls back to 8.8.8.8 and 1.1.1.1 |
-| `-Html` | Switch | Generate HTML report(s) with auto-generated timestamped filename | - |
-| `-Csv` | Switch | Export bulk results to CSV file (only with `-BulkFile`) | - |
-| `-SummaryHtml` | Switch | Generate consolidated HTML summary table (only with `-BulkFile`) | - |
-| `-OutputPath` | String | Directory where output files (CSV, HTML) will be saved | Current directory (`.`) |
-| `-Help` | Switch | Show comprehensive help information and exit | - |
+| `-Html` | Switch | Generate HTML report for single domain | - |
+| `-OutputPath` | String | Directory where output files will be saved. Auto-generates timestamped folder if not specified. | Auto-generated based on input file |
+| `-FullHtmlExport` | Switch | Create complete HTML export: index, domain reports, CSV, assets | - |
+| `-OpenReport` | Switch | Automatically open generated index.html in default browser (requires `-FullHtmlExport`) | - |
+| `-Json` | Switch | Export results to JSON format (with `-FullHtmlExport`) | - |
+| `-Help` | Switch | Show concise help information and exit | - |
 
 ## Output
 
@@ -109,29 +130,25 @@ The script provides color-coded console output with:
 
 ### HTML Reports
 
-When using `-Html`, the script generates comprehensive HTML reports with auto-generated filenames:
-
-**Individual Reports** (format: `domain-yyyyMMdd-HHmmss.html`):
+**Single Domain** (with `-Html`):
+- Individual HTML report with detailed analysis
 - Summary table with all check results
 - Detailed sections for each security component
-- Color-coded status indicators with icons (✅❌⚠️)
+- Color-coded status indicators with icons
 - Warnings and recommendations
-- Timestamp and domain information
 
-**Summary HTML Report** (bulk mode with `-SummaryHtml`, format: `bulk-summary-yyyyMMdd-HHmmss.html`):
-- Overview statistics (all OK, minor issues, major issues)
-- Consolidated table with all domains as rows
-- Color-coded icons for quick visual scanning (✅ Yes / ❌ No / ⚠️ N/A)
-- Sticky table headers for easy scrolling
-- Perfect for quick assessment of multiple domains
-
-### CSV Export
-
-When using `-Csv` with bulk checking, results are exported in CSV format (format: `bulk-results-yyyyMMdd-HHmmss.csv`):
-- One row per domain
-- Boolean columns for each security check
-- N/A values for non-applicable checks
-- Easy to import into Excel or other analysis tools
+**Bulk Domains** (with `-FullHtmlExport`):
+- **index.html**: Summary table with all domains
+  - MX records displayed inline with line breaks
+  - Overall status per domain (PASS/WARN/FAIL)
+  - Individual check badges (✅/⚠️/❌)
+  - Concise issues (only actual problems, line-separated)
+  - Domain overview statistics
+  - Clickable links to detailed reports
+- **domains/**: Individual HTML report for each domain
+- **CSV**: Automatically included (bulk-results-*.csv)
+- **JSON**: Optional structured export (results.json)
+- **Assets**: Modern CSS and interactive JavaScript
 
 ## Strict Profile Severity Policy
 
@@ -226,29 +243,29 @@ Example reasons:
 
 ### Bulk checking examples
 ```powershell
-# Check domains from file with CSV export
-.\mailchecker.ps1 -BulkFile domains.txt -Csv
-# Creates: bulk-results-20231201-143022.csv
+# Basic full HTML export (auto-creates timestamped folder)
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport
+# Creates: .\domains-20251008-142315\
+#   ├─ index.html (summary with MX records and issues)
+#   ├─ domains\*.html (individual detailed reports)
+#   ├─ assets\style.css & app.js
+#   └─ bulk-results-*.csv (always included)
 
-# Generate consolidated summary HTML table
-.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml
-# Creates: bulk-summary-20231201-143022.html
+# Full export with automatic browser open
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OpenReport
+# Opens index.html in your default browser automatically
 
-# Generate individual HTML reports for all domains
-.\mailchecker.ps1 -BulkFile domains.txt -Html
-# Creates: domain1-20231201-143022.html, domain2-20231201-143022.html, etc.
+# Full export to specific directory
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OutputPath "./reports"
+# Creates: ./reports/index.html with all reports
 
-# Full export with all formats
-.\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html
-# Creates: CSV + summary HTML + individual HTML files for each domain
+# Complete export with JSON
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -OpenReport
+# Creates full HTML structure + results.json + opens in browser
 
-# Save all output files to a specific directory
-.\mailchecker.ps1 -BulkFile domains.txt -SummaryHtml -OutputPath ./reports
-# Creates: ./reports/bulk-summary-20231201-143022.html
-
-# Organize reports by date
-.\mailchecker.ps1 -BulkFile domains.txt -Csv -SummaryHtml -Html -OutputPath ".\reports\2024-01"
-# Creates directory if needed and saves all files there
+# Console output only (no HTML/CSV)
+.\mailchecker.ps1 -BulkFile domains.txt
+# Displays results in console, suggests using -FullHtmlExport for reports
 ```
 
 ### Use specific DNS servers
@@ -303,18 +320,32 @@ domain-with-whitespace.com
 
 ## File Structure
 
+### Single Domain Mode (using `-Html`)
 ```
 Mailchecker/
 ├── mailchecker.ps1          # Main PowerShell script
 ├── README.md                # This documentation
-├── domains.txt              # Example input file for bulk checking
-├── domain-*.html            # Individual HTML reports (timestamped, default location)
-├── bulk-summary-*.html      # Consolidated HTML summary reports (timestamped, default location)
-├── bulk-results-*.csv       # CSV exports (timestamped, default location)
-└── reports/                 # Optional custom output directory (via -OutputPath)
-    ├── domain-*.html
-    ├── bulk-summary-*.html
-    └── bulk-results-*.csv
+└── example.com-*.html       # Individual HTML report (timestamped)
+```
+
+### Bulk Mode (using `-FullHtmlExport`)
+```
+Mailchecker/
+├── mailchecker.ps1          # Main PowerShell script
+├── README.md                # This documentation
+├── domains.txt              # Example input file
+└── domains-20251008-142315/ # Auto-generated output folder
+    ├── index.html           # Summary: MX records, status badges, concise issues
+    ├── bulk-results-*.csv   # CSV export (always included)
+    ├── results.json         # JSON export (if -Json specified)
+    ├── assets/              # Styling and interactive features
+    │   ├── style.css        # Modern responsive CSS
+    │   └── app.js           # Table sorting functionality
+    └── domains/             # Individual detailed reports
+        ├── example.com.html
+        ├── google.com.html
+        ├── microsoft.com.html
+        └── ...
 ```
 
 ## License
