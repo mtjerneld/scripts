@@ -2,6 +2,8 @@
 *.csv
 *.txt
 *.json
+*.zip
+*.ps1
 
 # Ignore all subdirectories (output folders, test folders, etc.)
 */
@@ -9,3 +11,4 @@
 
 # But keep the example file
 !domains.txt
+!mailchecker.ps1
