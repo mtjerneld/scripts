@@ -218,64 +218,144 @@ function New-OutputStructure {
 function Write-AssetsFiles {
     param([string]$AssetsPath)
     
-    # Create style.css
+    # Create style.css with professional color palette
     $css = @'
+/* CSS Variables - Professional Email Security Palette */
+:root {
+  /* Brand */
+  --pri-800:#0B3A5B; --pri-700:#11527F; --pri-600:#1670B0; --pri-500:#1C86D1;
+  --pri-100:#D6E9F7; --pri-50:#F2F8FD;
+
+  /* Neutrals */
+  --ink:#0F1720; --n900:#1C2430; --n800:#2A3442; --n700:#3B4757; --n600:#5A6676;
+  --n500:#7F8A98; --n400:#AAB3BD; --n300:#D3D9E0; --n200:#E7ECF1; --n100:#F5F7FA; --white:#FFFFFF;
+
+  /* Status */
+  --ok:#156A3A;       --ok-50:#E5F5EC;
+  --warn:#8A6A00;     --warn-50:#FFF7DA;
+  --err:#8F1D1D;      --err-50:#FDEAEA;
+  --info:#0F766E;     --info-50:#E0F2F1;
+
+  /* Semantic surfaces */
+  --bg: var(--n100);
+  --surface: var(--white);
+  --surface-muted: var(--n200);
+  --text: var(--ink);
+  --text-muted: var(--n600);
+  --border: var(--n300);
+  --link: var(--pri-600);
+  --link-hover: var(--pri-700);
+
+  /* Focus ring */
+  --focus: #66A9E8;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(16,24,40,.06);
+  --shadow-md: 0 4px 12px rgba(16,24,40,.10);
+
+  /* Radii & spacing */
+  --radius: 12px;
+  --radius-sm: 8px;
+  --space-1: .5rem; --space-2: .75rem; --space-3: 1rem; --space-4: 1.25rem; --space-6: 1.75rem;
+
+  /* Typography */
+  --font-sans: ui-sans-serif, 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'Menlo', Monaco, 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0A0F16;
+    --surface:#0F1520;
+    --surface-muted:#111827;
+    --text:#E9EEF5;
+    --text-muted:#A6B1BF;
+    --border:#243042;
+    --link:#59B4FF;
+    --link-hover:#86CBFF;
+
+    /* Status on dark */
+    --ok:#66E3A1;   --ok-50:#0E2A1C;
+    --warn:#FFD166; --warn-50:#231A06;
+    --err:#FF7A7A;  --err-50:#2A0E0E;
+    --info:#7AD6CF; --info-50:#0E2221;
+
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.35);
+    --shadow-md: 0 8px 24px rgba(0,0,0,.45);
+  }
+}
+
 /* Global styles */
+* { box-sizing: border-box; }
+
 body { 
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+    font-family: var(--font-sans);
     margin: 0;
     padding: 20px;
-    background-color: #f5f5f5;
-    color: #222;
+    background-color: var(--bg);
+    color: var(--text);
     line-height: 1.6;
 }
 
 .container {
     max-width: 1400px;
     margin: 0 auto;
-    background-color: white;
-    padding: 30px;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    background-color: var(--surface);
+    padding: var(--space-6);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    border: 1px solid var(--border);
 }
 
 h1 { 
-    color: #0078D7;
-    border-bottom: 3px solid #0078D7;
-    padding-bottom: 10px;
-    margin-bottom: 20px;
+    color: var(--n900);
+    border-bottom: 3px solid var(--pri-600);
+    padding-bottom: var(--space-2);
+    margin: 0 0 var(--space-4) 0;
+    font-weight: 700;
 }
 
 h2 { 
-    border-bottom: 1px solid #ddd;
-    padding-bottom: 8px;
-    margin-top: 30px;
-    color: #333;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: var(--space-2);
+    margin-top: var(--space-6);
+    color: var(--n900);
+    font-weight: 600;
+}
+
+h3 {
+    color: var(--n800);
+    margin-top: var(--space-4);
+    font-weight: 600;
 }
 
 /* Navigation */
 .nav-link {
     display: inline-block;
-    margin: 10px 0;
-    padding: 8px 16px;
-    background-color: #0078D7;
+    margin: var(--space-2) 0;
+    padding: .6rem 1rem;
+    background-color: var(--pri-600);
     color: white;
     text-decoration: none;
-    border-radius: 4px;
-    transition: background-color 0.3s;
+    border-radius: var(--radius-sm);
+    transition: background-color 0.2s, box-shadow 0.2s;
+    font-weight: 600;
 }
 
 .nav-link:hover {
-    background-color: #005a9e;
+    background-color: var(--pri-700);
+    box-shadow: var(--shadow-sm);
+    text-decoration: none;
 }
 
 /* Summary statistics */
 .summary-stats {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, var(--pri-600) 0%, var(--pri-800) 100%);
     color: white;
-    padding: 20px;
-    border-radius: 8px;
-    margin-bottom: 30px;
+    padding: var(--space-4);
+    border-radius: var(--radius);
+    margin-bottom: var(--space-6);
+    box-shadow: var(--shadow-md);
 }
 
 .summary-stats h2 {
@@ -285,179 +365,267 @@ h2 {
 }
 
 .summary-stats p {
-    margin: 8px 0;
+    margin: var(--space-2) 0;
     font-size: 16px;
+    opacity: 0.95;
 }
 
 .stats-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 15px;
-    margin-top: 15px;
+    gap: var(--space-3);
+    margin-top: var(--space-3);
 }
 
 .stat-card {
     background-color: rgba(255,255,255,0.15);
-    padding: 15px;
-    border-radius: 6px;
+    padding: var(--space-3);
+    border-radius: var(--radius-sm);
     text-align: center;
+    backdrop-filter: blur(10px);
 }
 
 .stat-number {
     font-size: 32px;
-    font-weight: bold;
-    margin: 10px 0;
+    font-weight: 700;
+    margin: var(--space-2) 0;
 }
 
 /* Table styles */
 table {
     border-collapse: collapse;
     width: 100%;
-    margin-bottom: 20px;
-    background-color: white;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    margin-bottom: var(--space-4);
+    background-color: var(--surface);
+    box-shadow: var(--shadow-sm);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
 }
 
 th, td {
-    border: 1px solid #ddd;
-    padding: 12px;
+    border: 1px solid var(--border);
+    padding: var(--space-2) var(--space-3);
     text-align: left;
 }
 
 th {
-    background-color: #f8f9fa;
+    background-color: var(--surface-muted);
     font-weight: 600;
     position: sticky;
     top: 0;
     z-index: 10;
+    color: var(--n800);
 }
 
 tr:hover {
-    background-color: #f9f9f9;
+    background-color: var(--n100);
 }
 
 td.domain {
     font-weight: 600;
-    font-family: 'Courier New', monospace;
+    font-family: var(--font-mono);
+    color: var(--pri-700);
 }
 
 /* Status badges */
 .status-badge {
-    display: inline-block;
-    padding: 4px 10px;
-    border-radius: 12px;
-    font-size: 13px;
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    padding: .2rem .5rem;
+    border-radius: 999px;
+    font-size: .825rem;
     font-weight: 600;
-    text-transform: uppercase;
 }
 
-.status-ok {
-    color: #28a745;
+/* Status cells (for Status column with background) */
+td.status-ok {
+    background: var(--ok-50);
+    color: var(--ok);
 }
 
-.status-fail {
-    color: #dc3545;
+td.status-fail {
+    background: var(--err-50);
+    color: var(--err);
 }
 
-.status-warn {
-    color: #ffc107;
+td.status-warn {
+    background: var(--warn-50);
+    color: var(--warn);
 }
 
-.status-info {
-    color: #0078D7;
+td.status-info {
+    background: var(--info-50);
+    color: var(--info);
+}
+
+/* Status badges (for individual check columns without background) */
+span.status-ok {
+    color: var(--ok);
+}
+
+span.status-fail {
+    color: var(--err);
+}
+
+span.status-warn {
+    color: var(--warn);
+}
+
+span.status-info {
+    color: var(--info);
 }
 
 /* Info blocks */
 .info-block {
-    margin: 12px 0;
-    padding: 10px;
-    border-left: 4px solid #0078D7;
-    background-color: #f0f8ff;
+    margin: var(--space-3) 0;
+    padding: var(--space-3);
+    border-left: 4px solid var(--info);
+    background-color: var(--info-50);
+    border-radius: var(--radius-sm);
 }
 
 .info-block p {
-    margin: 6px 0;
+    margin: var(--space-1) 0;
+    color: var(--text);
+    background: none !important;
+    padding: 0;
 }
+
+.info-block .status-info { color: var(--info); }
+.info-block .status-warn { color: var(--warn); }
+.info-block .status-fail { color: var(--err); }
 
 /* Issue box */
 .issues-box {
-    background-color: #fff3cd;
-    border-left: 4px solid #ffc107;
-    padding: 15px;
-    margin: 20px 0;
-    border-radius: 4px;
+    background-color: var(--warn-50);
+    border-left: 4px solid var(--warn);
+    padding: var(--space-3) var(--space-4);
+    margin: var(--space-4) 0;
+    border-radius: var(--radius-sm);
 }
 
 .issues-box h3 {
     margin-top: 0;
-    color: #856404;
+    color: var(--warn);
+}
+
+.issues-box ul {
+    margin: var(--space-2) 0;
+    color: var(--text);
+}
+
+/* Issue box - failure variant */
+.issues-box-fail {
+    background-color: var(--err-50);
+    border-left: 4px solid var(--err);
+    padding: var(--space-3) var(--space-4);
+    margin: var(--space-4) 0;
+    border-radius: var(--radius-sm);
+}
+
+.issues-box-fail h3 {
+    margin-top: 0;
+    color: var(--err);
+}
+
+.issues-box-fail ul {
+    margin: var(--space-2) 0;
+    color: var(--text);
+}
+
+/* Check summary section */
+.check-summary {
+    background-color: var(--surface);
+    padding: var(--space-4);
+    border-radius: var(--radius-sm);
+    margin-top: var(--space-4);
+    border: 1px solid var(--border);
 }
 
 /* Section styles */
 .section {
-    margin: 30px 0;
-    padding: 20px;
-    background-color: #fafafa;
-    border-radius: 6px;
+    margin: var(--space-6) 0;
+    padding: var(--space-4);
+    background-color: var(--surface-muted);
+    border-radius: var(--radius-sm);
 }
 
 pre {
-    background-color: #f4f4f4;
-    padding: 12px;
-    border-radius: 4px;
+    background-color: var(--n100);
+    padding: var(--space-3);
+    border-radius: var(--radius-sm);
     overflow-x: auto;
-    font-family: 'Courier New', monospace;
+    font-family: var(--font-mono);
     font-size: 13px;
+    border: 1px solid var(--border);
+    color: var(--n800);
 }
 
 /* Footer */
 .footer {
-    margin-top: 40px;
-    padding-top: 20px;
-    border-top: 1px solid #ddd;
+    margin-top: var(--space-6);
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--border);
     text-align: center;
-    color: #666;
+    color: var(--text-muted);
     font-size: 13px;
 }
 
 /* Links */
 a {
-    color: #0078D7;
+    color: var(--link);
     text-decoration: none;
+    transition: color 0.2s;
 }
 
 a:hover {
+    color: var(--link-hover);
     text-decoration: underline;
+}
+
+:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 6px;
 }
 
 /* Download links */
 .download-links {
-    margin: 20px 0;
-    padding: 15px;
-    background-color: #e7f3ff;
-    border-radius: 6px;
+    margin: var(--space-4) 0;
+    padding: var(--space-3) var(--space-4);
+    background-color: var(--pri-50);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--pri-100);
+}
+
+.download-links strong {
+    color: var(--n800);
 }
 
 .download-links a {
     display: inline-block;
-    margin: 5px 10px 5px 0;
-    padding: 8px 16px;
-    background-color: #0078D7;
+    margin: var(--space-1) var(--space-2) var(--space-1) 0;
+    padding: .6rem 1rem;
+    background-color: var(--pri-600);
     color: white;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     text-decoration: none;
+    font-weight: 600;
+    transition: background-color 0.2s, box-shadow 0.2s;
 }
 
 .download-links a:hover {
-    background-color: #005a9e;
+    background-color: var(--pri-700);
+    box-shadow: var(--shadow-sm);
     text-decoration: none;
 }
 
 /* Metadata */
 .metadata {
-    color: #666;
+    color: var(--text-muted);
     font-size: 14px;
-    margin: 10px 0;
+    margin: var(--space-2) 0;
 }
 '@
 
@@ -520,8 +688,11 @@ function Test-MXRecords {
     $mx = Resolve-MX $Domain
     $details = @()
     $infoMessages = @()
+    $warnings = @()
     $status = 'FAIL'
     $reason = ""
+    $domainExists = $true
+    $nsRecords = @()
     
     if (@($mx).Count -gt 0) {
         $details = $mx | Sort-Object Preference,NameExchange | 
@@ -530,14 +701,57 @@ function Test-MXRecords {
         $mxList = ($mx | Sort-Object Preference,NameExchange | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) -join ', '
         $reason = "MX: $mxList"
     } else {
-        $details = @("No MX records found via any configured resolver.")
-        $infoMessages = @("Info: No MX records is not necessarily an error - domain may only send email (not receive).")
-        $status = 'N/A'
-        $reason = "MX: N/A (send-only domain)"
+        # No MX records - check if domain exists by looking for NS records
+        $nsResult = Resolve-NS $Domain
+        $nsRecords = $nsResult.NSRecords
+        $nsStatus = $nsResult.Status
+        
+        if ($nsStatus -eq 'NXDOMAIN') {
+            # Domain does not exist (NXDOMAIN response)
+            $details = @("Domain does not exist - DNS returned NXDOMAIN (Non-Existent Domain).")
+            $warnings = @("Warning: Domain '$Domain' does not exist in DNS.")
+            $status = 'FAIL'
+            $reason = "Domain: does not exist (NXDOMAIN)"
+            $domainExists = $false
+        } elseif ($nsStatus -eq 'SERVFAIL') {
+            # DNS server failed - domain might exist but DNS is misconfigured
+            # Still run email security checks as domain may have SPF/DMARC records
+            $details = @("DNS resolution failed - DNS query error (SERVFAIL/No response/Timeout).")
+            $details += "This typically indicates:"
+            $details += "  - Domain exists but nameservers are misconfigured"
+            $details += "  - Nameservers are not responding"
+            $details += "  - Network connectivity issues or timeouts"
+            $details += "  - Lame delegation (nameservers don't accept queries for this domain)"
+            $details += ""
+            $details += "Email security checks will still be performed as records may exist."
+            $warnings = @("Warning: Domain '$Domain' has DNS issues but security checks will be attempted.")
+            $status = 'WARN'  # WARN instead of FAIL since we'll still check email security
+            $reason = "MX: N/A (DNS misconfigured)"
+            $domainExists = $true  # Treat as existing so email checks are performed
+        } elseif (@($nsRecords).Count -gt 0) {
+            # Domain exists but has no MX records (send-only domain)
+            $details = @("No MX records found via any configured resolver.")
+            $details += "NS records present: " + (($nsRecords | Select-Object -First 3) -join ', ')
+            if (@($nsRecords).Count -gt 3) {
+                $details += "  ... and $(@($nsRecords).Count - 3) more"
+            }
+            $infoMessages = @("Info: No MX records is not necessarily an error - domain may only send email (not receive).")
+            $status = 'N/A'
+            $reason = "MX: N/A (send-only domain)"
+        } else {
+            # Unknown error
+            $details = @("Could not determine domain status - DNS query failed without specific error.")
+            $warnings = @("Warning: Unable to verify if domain '$Domain' exists.")
+            $status = 'FAIL'
+            $reason = "Domain: DNS query failed"
+            $domainExists = $false
+        }
     }
     
-    return New-CheckResult -Section 'MX Records' -Status $status -Details $details -InfoMessages $infoMessages -Data @{ 
+    return New-CheckResult -Section 'MX Records' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
         MXRecords = $mx
+        NSRecords = $nsRecords
+        DomainExists = $domainExists
         Reason = $reason
     }
 }
@@ -631,7 +845,19 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0) {
 }
 
 function Test-SPFRecords {
-    param([string]$Domain)
+    param(
+        [string]$Domain,
+        [bool]$DomainExists = $true
+    )
+    
+    # If domain doesn't exist, mark as N/A
+    if (-not $DomainExists) {
+        return New-CheckResult -Section 'SPF' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
+            SPFRecords = @()
+            Healthy = $false
+            Reason = "SPF: N/A (domain does not exist)"
+        }
+    }
     
     $spfRecs = Resolve-SPF $Domain
     $details = @()
@@ -781,7 +1007,8 @@ function Test-DKIMRecords {
         [string]$Domain,
         [string[]]$Selectors,
         [bool]$HasMX,
-        [bool]$HasSpfWithMechanisms
+        [bool]$HasSpfWithMechanisms,
+        [bool]$DomainExists = $true
     )
     
     $details = @()
@@ -789,6 +1016,15 @@ function Test-DKIMRecords {
     $infoMessages = @()
     $status = 'FAIL'
     $dkimResults = @()
+    
+    # If domain doesn't exist, mark as N/A
+    if (-not $DomainExists) {
+        return New-CheckResult -Section 'DKIM' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
+            DKIMResults = @()
+            AnyValid = $false
+            Reason = "DKIM: N/A (domain does not exist)"
+        }
+    }
     
     # Skip DKIM test only if domain has no MX AND (no SPF record OR SPF only has -all)
     if (-not $HasMX -and -not $HasSpfWithMechanisms) {
@@ -878,7 +1114,8 @@ function Test-DKIMRecords {
 function Test-MTASts {
     param(
         [string]$Domain,
-        [bool]$HasMX
+        [bool]$HasMX,
+        [bool]$DomainExists = $true
     )
     
     $details = @()
@@ -886,6 +1123,18 @@ function Test-MTASts {
     $infoMessages = @()
     $status = 'FAIL'
     $reason = ""
+    
+    # If domain doesn't exist, mark as N/A
+    if (-not $DomainExists) {
+        return New-CheckResult -Section 'MTA-STS' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
+            MtaStsTxt = $null
+            MtaStsBody = $null
+            MtaStsUrl = $null
+            MtaStsModeTesting = $false
+            MtaStsEnforced = $false
+            Reason = "MTA-STS: N/A (domain does not exist)"
+        }
+    }
     
     if (-not $HasMX) {
         $infoMessages += "Not applicable - domain cannot receive email"
@@ -980,13 +1229,26 @@ function Test-MTASts {
 }
 
 function Test-DMARC {
-    param([string]$Domain)
+    param(
+        [string]$Domain,
+        [bool]$DomainExists = $true
+    )
 
     $details = @()
     $warnings = @()
     $infoMessages = @()
     $status = 'FAIL'
     $reason = ""
+    
+    # If domain doesn't exist, mark as N/A
+    if (-not $DomainExists) {
+        return New-CheckResult -Section 'DMARC' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
+            DmarcMap = @{}
+            DmarcTxt = $null
+            Enforced = $false
+            Reason = "DMARC: N/A (domain does not exist)"
+        }
+    }
 
     $dmarcHost = "_dmarc.$Domain"
     
@@ -1122,13 +1384,25 @@ function Test-DMARC {
 }
 
 function Test-TLSReport {
-    param([string]$Domain, [bool]$HasMX)
+    param(
+        [string]$Domain,
+        [bool]$HasMX,
+        [bool]$DomainExists = $true
+    )
 
     $details = @()
     $warnings = @()
     $infoMessages = @()
     $status = 'FAIL'
     $reason = ""
+    
+    # If domain doesn't exist, mark as N/A
+    if (-not $DomainExists) {
+        return New-CheckResult -Section 'SMTP TLS Reporting (TLS-RPT)' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
+            TlsRptTxt = $null
+            Reason = "TLS-RPT: N/A (domain does not exist)"
+        }
+    }
 
     if (-not $HasMX) {
         $infoMessages += "Not applicable - domain cannot receive email"
@@ -1385,6 +1659,85 @@ function Resolve-Txt {
   return $null
 }
 
+function Resolve-NS {
+  param([string]$Domain)
+
+  $result = @{
+    NSRecords = @()
+    Status = 'Unknown'  # 'Success', 'NXDOMAIN', 'SERVFAIL', 'Unknown'
+  }
+
+  foreach ($srv in $Resolvers) {
+    try {
+      if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+        try {
+          $ans = Resolve-DnsName -Name $Domain -Type NS -Server $srv -ErrorAction Stop
+          $nsRecs = $ans | Where-Object { $_.Type -eq 'NS' } | Select-Object -ExpandProperty NameHost
+          if (@($nsRecs).Count -gt 0) { 
+            $result.NSRecords = $nsRecs
+            $result.Status = 'Success'
+            return $result
+          }
+        } catch {
+          # Check error message to determine type of failure
+          $errMsg = $_.Exception.Message
+          if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain') {
+            $result.Status = 'NXDOMAIN'
+          } else {
+            # Any other DNS error (SERVFAIL, timeout, no response, etc.) = DNS misconfigured
+            $result.Status = 'SERVFAIL'
+          }
+        }
+      }
+      else {
+        # Fallback: nslookup
+        $out = nslookup -type=ns $Domain $srv 2>&1 | Out-String
+        
+        # Check for specific error messages
+        if ($out -match 'Non-existent domain') {
+          $result.Status = 'NXDOMAIN'
+        } elseif ($out -match 'nameserver\s*=\s*(\S+)') {
+          # Found NS records
+          $lines = $out -split "`n" | Where-Object { $_ -match 'nameserver\s*=\s*(\S+)' }
+          $nsResult = @()
+          foreach ($line in $lines) {
+            if ($line -match 'nameserver\s*=\s*(\S+)') {
+              $nsResult += $Matches[1]
+            }
+          }
+          if (@($nsResult).Count -gt 0) {
+            $result.NSRecords = $nsResult
+            $result.Status = 'Success'
+            return $result
+          }
+        } else {
+          # Any error that's not NXDOMAIN (Server failed, No response, timeout, etc.)
+          if ($out -match 'Server failed|No response|timeout|Request timed out|connection timed out') {
+            $result.Status = 'SERVFAIL'
+          }
+        }
+      }
+    } catch {
+      # Catch-all for any exception
+      $errMsg = $_.Exception.Message
+      if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain') {
+        $result.Status = 'NXDOMAIN'
+      } else {
+        # Any other error = DNS misconfigured
+        $result.Status = 'SERVFAIL'
+      }
+    }
+  }
+  
+  # If we got here without Success and no specific status was set, 
+  # treat as SERVFAIL (DNS misconfigured) rather than Unknown
+  if ($result.Status -eq 'Unknown') {
+    $result.Status = 'SERVFAIL'
+  }
+  
+  return $result
+}
+
 function Resolve-MX {
   param([string]$Domain)
 
@@ -1513,28 +1866,41 @@ function Write-DomainReportPage {
     <p class="metadata"><strong>Generated:</strong> $now</p>
 "@
 
-  # Issues box - collect all warnings and failures
+  # Issues box - collect all warnings and failures with individual icons
   $issues = @()
+  $hasFail = $false
   foreach ($result in @($mxResult, $spfResult, $dkimResult, $mtaStsResult, $dmarcResult, $tlsResult)) {
-    if ($result.Status -eq 'FAIL' -or $result.Status -eq 'WARN') {
-      $issues += "$($result.Section): $($result.Data.Reason)"
+    if ($result.Status -eq 'FAIL') {
+      $hasFail = $true
+      $issues += [PSCustomObject]@{ 
+        Status = 'FAIL'
+        Icon = '&#10060;'
+        Text = "$($result.Section): $($result.Data.Reason)"
+      }
+    } elseif ($result.Status -eq 'WARN') {
+      $issues += [PSCustomObject]@{ 
+        Status = 'WARN'
+        Icon = '&#9888;&#65039;'
+        Text = "$($result.Section): $($result.Data.Reason)"
+      }
     }
   }
   
   if ($issues.Count -gt 0) {
+    $boxClass = if ($hasFail) { "issues-box-fail" } else { "issues-box" }
     $html += @"
-    <div class="issues-box">
-        <h3>&#9888;&#65039; Issues Found</h3>
+    <div class="$boxClass">
+        <h3>Issues Found</h3>
         <ul>
-$(($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlEncode($_))</li>" }) -join "`n")
+$(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtility]::HtmlEncode($_.Text))</li>" }) -join "`n")
         </ul>
     </div>
 "@
   } else {
     $html += @"
-    <div style="background-color: #d4edda; border-left: 4px solid #28a745; padding: 15px; margin: 20px 0; border-radius: 4px;">
-        <h3 style="color: #155724; margin-top: 0;">&#9989; All Checks Passed</h3>
-        <p style="color: #155724; margin-bottom: 0;">No issues detected in the email security configuration.</p>
+    <div style="background-color: var(--ok-50); border-left: 4px solid var(--ok); padding: 15px; margin: 20px 0; border-radius: var(--radius-sm);">
+        <h3 style="color: var(--ok); margin-top: 0;">&#9989; All Checks Passed</h3>
+        <p style="color: var(--text); margin-bottom: 0;">No issues detected in the email security configuration.</p>
     </div>
 "@
   }
@@ -1573,6 +1939,12 @@ $(($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlE
   if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
     $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
     $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
+  } elseif ($mxResult.Status -eq 'WARN') {
+    # SERVFAIL case
+    $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--warn);'>&#9888;&#65039; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+  } elseif ($mxResult.Data.DomainExists -eq $false) {
+    # NXDOMAIN - domain truly doesn't exist
+    $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--err);'>&#10060; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   } else {
     $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   }
@@ -1724,6 +2096,12 @@ function Write-HtmlReport {
   if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
     $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
     $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
+  } elseif ($mxResult.Status -eq 'WARN') {
+    # SERVFAIL case
+    $html += "<tr><td>MX Records</td>" + (& $renderStatus $mxResult.Status) + "<td style='font-size: 11px; font-weight: 600; color: #b58900;'>&#9888;&#65039; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+  } elseif ($mxResult.Data.DomainExists -eq $false) {
+    # NXDOMAIN - domain truly doesn't exist
+    $html += "<tr><td>MX Records</td>" + (& $renderStatus $mxResult.Status) + "<td style='font-size: 11px; font-weight: 600; color: #dc3545;'>&#10060; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   } else {
     $html += "<tr><td>MX Records</td>" + (& $renderStatus $mxResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   }
@@ -1786,6 +2164,24 @@ function Write-IndexPage {
   $mtaStsPass = @($AllResults | Where-Object { $_.MTAStsResult.Status -eq 'PASS' }).Count
   $dmarcPass = @($AllResults | Where-Object { $_.DMARCResult.Status -eq 'PASS' }).Count
   $tlsPass = @($AllResults | Where-Object { $_.TLSResult.Status -eq 'PASS' }).Count
+  
+  # Determine icon for each check type based on worst status
+  function Get-CheckIcon {
+    param($CheckResults)
+    $hasFail = @($CheckResults | Where-Object { $_ -eq 'FAIL' }).Count -gt 0
+    $hasWarn = @($CheckResults | Where-Object { $_ -eq 'WARN' }).Count -gt 0
+    
+    if ($hasFail) { return '&#10060;' }      # ❌
+    elseif ($hasWarn) { return '&#9888;&#65039;' }  # ⚠️
+    else { return '&#9989;' }                 # ✅
+  }
+  
+  $mxIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.MXResult.Status })
+  $spfIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.SPFResult.Status })
+  $dkimIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.DKIMResult.Status })
+  $dmarcIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.DMARCResult.Status })
+  $mtaStsIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.MTAStsResult.Status })
+  $tlsIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.TLSResult.Status })
 
   $html = @"
 <!DOCTYPE html>
@@ -1825,9 +2221,12 @@ function Write-IndexPage {
                 <div style="font-size: 12px; margin-top: 5px;">Has failures</div>
             </div>
         </div>
-        <h3 style="margin-top: 20px;">Individual Check Summary</h3>
-        <p style="font-size: 14px;">&#9989; MX Records: $mxPass/$totalDomains | SPF: $spfPass/$totalDomains | DKIM: $dkimPass/$totalDomains</p>
-        <p style="font-size: 14px;">&#9989; DMARC: $dmarcPass/$totalDomains | MTA-STS: $mtaStsPass/$totalDomains | TLS-RPT: $tlsPass/$totalDomains</p>
+  </div>
+  
+    <div class="check-summary">
+        <h3 style="margin-top: 0;">Individual Check Summary</h3>
+        <p style="font-size: 14px; color: var(--text-muted);">$mxIcon MX Records: $mxPass/$totalDomains | $spfIcon SPF: $spfPass/$totalDomains | $dkimIcon DKIM: $dkimPass/$totalDomains</p>
+        <p style="font-size: 14px; color: var(--text-muted); margin-bottom: 0;">$dmarcIcon DMARC: $dmarcPass/$totalDomains | $mtaStsIcon MTA-STS: $mtaStsPass/$totalDomains | $tlsIcon TLS-RPT: $tlsPass/$totalDomains</p>
     </div>
 "@
 
@@ -1930,11 +2329,20 @@ function Write-IndexPage {
       $dmarcReason = $result.DMARCResult.Data.Reason -replace '^DMARC: ', ''
       # Extract only the problematic parts
       $dmarcIssues = @()
-      if ($dmarcReason -match 'p=none') { $dmarcIssues += 'p=none (monitoring only)' }
-      elseif ($dmarcReason -match 'p=quarantine') { $dmarcIssues += 'p=quarantine (not fully enforced)' }
-      if ($dmarcReason -match 'pct=(\d+)' -and [int]$Matches[1] -lt 100) { $dmarcIssues += "pct=$($Matches[1])" }
-      if ($dmarcReason -match 'sp=missing') { $dmarcIssues += 'sp=missing' }
-      if ($dmarcReason -match 'rua=missing') { $dmarcIssues += 'rua=missing' }
+      
+      # If DMARC is completely missing, just show "missing" - don't check for rua/sp/pct
+      if ($dmarcReason -eq 'missing') { 
+        $dmarcIssues += 'missing' 
+      }
+      else {
+        # DMARC exists but has issues - check specific problems
+        if ($dmarcReason -match 'p=none') { $dmarcIssues += 'p=none (monitoring only)' }
+        elseif ($dmarcReason -match 'p=quarantine') { $dmarcIssues += 'p=quarantine (not fully enforced)' }
+        
+        if ($dmarcReason -match 'pct=(\d+)' -and [int]$Matches[1] -lt 100) { $dmarcIssues += "pct=$($Matches[1])" }
+        if ($dmarcReason -match 'sp=missing') { $dmarcIssues += 'sp=missing' }
+        if ($dmarcReason -match 'rua=missing') { $dmarcIssues += 'rua=missing' }
+      }
       
       if ($dmarcIssues.Count -gt 0) {
         $issues += "DMARC: " + ($dmarcIssues -join ', ')
@@ -1956,7 +2364,13 @@ function Write-IndexPage {
         [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") 
       }) -join '<br>'
     } elseif ($result.MXResult.Status -eq 'N/A') {
-      '<span style="color: #666;">N/A</span>'
+      '<span style="color: #666;">N/A (send-only)</span>'
+    } elseif ($result.MXResult.Status -eq 'WARN') {
+      # SERVFAIL case - shown as warning with note about DNS issues
+      '<span style="color: #ffc107; font-weight: 600;">&#9888;&#65039; DNS misconfigured (SERVFAIL)</span>'
+    } elseif ($result.MXResult.Data.DomainExists -eq $false) {
+      # NXDOMAIN - domain truly doesn't exist
+      '<span style="color: #dc3545; font-weight: 600;">&#10060; Domain does not exist</span>'
     } else {
       '<span style="color: #dc3545;">No MX records</span>'
     }
@@ -1973,7 +2387,7 @@ function Write-IndexPage {
     $html += "            <tr>`n"
     $html += "                <td class='domain'><a href='" + $encodedDomainLink + "'>" + $encodedDomain + "</a></td>`n"
     $html += "                <td style='font-size: 12px;'>" + $mxRecordsText + "</td>`n"
-    $html += "                <td class='" + $statusClass + "'>" + $statusIcon + $overallStatus + "</td>`n"
+    $html += "                <td class='" + $statusClass + "' style='text-align: center;' title='" + $overallStatus + "'>" + $statusIcon + "</td>`n"
     $html += "                <td style='text-align: center;'>" + $spfBadge + "</td>`n"
     $html += "                <td style='text-align: center;'>" + $dkimBadge + "</td>`n"
     $html += "                <td style='text-align: center;'>" + $dmarcBadge + "</td>`n"
@@ -2027,10 +2441,11 @@ Write-Host "Checking domain: $Domain (Resolvers: $($Resolvers -join ', '))" -For
 $mxResult = Test-MXRecords -Domain $Domain
 $mx = $mxResult.Data.MXRecords
 $mxOk = @($mx).Count -gt 0
+$domainExists = $mxResult.Data.DomainExists
     if (-not $QuietMode) { Write-CheckResult $mxResult }
 
 # 2) SPF
-$spfResult = Test-SPFRecords -Domain $Domain
+$spfResult = Test-SPFRecords -Domain $Domain -DomainExists $domainExists
 $spfRecs = $spfResult.Data.SPFRecords
 $spfHealthy = $spfResult.Data.Healthy
     if (-not $QuietMode) { Write-CheckResult $spfResult }
@@ -2050,24 +2465,24 @@ if (@($spfRecs).Count -gt 0) {
 }
 
 $selectorList = ($Selectors -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$dkimResult = Test-DKIMRecords -Domain $Domain -Selectors $selectorList -HasMX $mxOk -HasSpfWithMechanisms $hasSpfWithMechanisms
+$dkimResult = Test-DKIMRecords -Domain $Domain -Selectors $selectorList -HasMX $mxOk -HasSpfWithMechanisms $hasSpfWithMechanisms -DomainExists $domainExists
 $DKIM_AnySelector_Valid = $dkimResult.Data.AnyValid
     if (-not $QuietMode) { Write-CheckResult $dkimResult }
 
 # 4) MTA-STS
-$mtaStsResult = Test-MTASts -Domain $Domain -HasMX $mxOk
+$mtaStsResult = Test-MTASts -Domain $Domain -HasMX $mxOk -DomainExists $domainExists
 $mtaStsTxt = $mtaStsResult.Data.MtaStsTxt
 $MtaStsEnforced = $mtaStsResult.Data.MtaStsEnforced
     if (-not $QuietMode) { Write-CheckResult $mtaStsResult }
 
 # 5) DMARC
-$dmarcResult = Test-DMARC -Domain $Domain
+$dmarcResult = Test-DMARC -Domain $Domain -DomainExists $domainExists
 $dmarcTxt = $dmarcResult.Data.DmarcTxt
 $dmarcEnforced = [bool]$dmarcResult.Data.Enforced
     if (-not $QuietMode) { Write-CheckResult $dmarcResult }
 
 # 6) TLS-RPT
-$tlsResult = Test-TLSReport -Domain $Domain -HasMX $mxOk
+$tlsResult = Test-TLSReport -Domain $Domain -HasMX $mxOk -DomainExists $domainExists
 $tlsRptTxt = $tlsResult.Data.TlsRptTxt
     if (-not $QuietMode) { Write-CheckResult $tlsResult }
 
@@ -2263,6 +2678,7 @@ if ($BulkFile) {
         $csvData = $allResults | ForEach-Object {
             [PSCustomObject]@{
                 Domain = Sanitize-CsvField $_.Domain
+                Domain_Exists = Sanitize-CsvField $_.MXResult.Data.DomainExists
                 Status = Sanitize-CsvField $_.Summary.Status
                 MX_Records = Sanitize-CsvField $_.Summary.MX_Records_Present
                 SPF_Status = Sanitize-CsvField $_.SPFResult.Status

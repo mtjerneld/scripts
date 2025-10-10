@@ -15,6 +15,7 @@ This tool performs a complete email security audit by checking:
 
 ## Recent Improvements
 
+- **Domain Existence Check**: Distinguishes between non-existent domains (no NS records) and existing domains without MX (send-only)
 - **Full HTML Export**: Complete report structure with index page, individual domain reports, CSV, and assets - all in one command
 - **Smart MX Display**: MX records shown inline in summary table with line breaks for easy reading
 - **Concise Issues**: Streamlined issue descriptions focusing only on actual problems (no informational noise)
@@ -78,7 +79,7 @@ The `-FullHtmlExport` mode creates a complete, professional report structure wit
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OpenReport
 
 # Complete export with JSON
-.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -OpenReport
+.\mailchecker.ps1 -BulkFile domains.txt -berget.ai -Json -OpenReport
 ```
 
 **Output structure:**
@@ -194,9 +195,31 @@ This tool uses a **strict security profile** by default, providing clear severit
 - **Uses `~all`** (soft fail) → ⚠️ WARN (not recommended for production)
 - **Valid with `-all`** → ✅ PASS
 
-#### MX Records
+#### MX Records & Domain Existence
 - **Present** → ✅ PASS (shows actual MX records)
-- **Missing** → ℹ️ N/A (domain may be send-only)
+- **Missing, but domain exists** (has NS records) → ℹ️ N/A (domain may be send-only)
+- **Domain does not exist** (NXDOMAIN) → ❌ FAIL
+- **DNS misconfigured** (SERVFAIL) → ⚠️ WARN
+
+*The tool performs DNS queries to distinguish between different failure scenarios:*
+
+**DNS Error Types:**
+1. **NXDOMAIN** (Non-Existent Domain): Domain is not registered or doesn't exist in DNS
+   - All email security checks marked as **N/A** (not applicable)
+   
+2. **DNS Misconfigured** (SERVFAIL/No response/Timeout): Domain might exist but DNS is not working
+   - Server failure (SERVFAIL)
+   - No response from server
+   - Connection timeout
+   - Nameservers not responding
+   - Lame delegation (nameservers don't accept queries for the domain)
+   - Network connectivity issues
+   - **Email security checks still performed** as records may exist despite NS issues
+   - *Any DNS error that is not NXDOMAIN is treated as DNS misconfiguration*
+
+**Special handling by DNS error type:**
+- **NXDOMAIN domains**: All email security checks (SPF, DKIM, DMARC, MTA-STS, TLS-RPT) are marked as **N/A** since the domain doesn't exist
+- **SERVFAIL domains**: Email security checks are **still performed** as the domain may exist in the registry and have email security records, even if NS resolution fails
 
 #### DKIM (DomainKeys Identified Mail)
 - **No valid selectors found** → ❌ FAIL
