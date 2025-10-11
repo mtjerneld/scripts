@@ -79,8 +79,47 @@ The `-FullHtmlExport` mode creates a complete, professional report structure wit
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OpenReport
 
 # Complete export with JSON
-.\mailchecker.ps1 -BulkFile domains.txt -berget.ai -Json -OpenReport
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -OpenReport
 ```
+
+### Azure Cloud Upload
+
+Upload reports directly to Azure Blob Storage with static website hosting:
+
+```powershell
+# Upload to Azure (requires .env configuration)
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure
+
+# Upload with custom Run ID
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure -AzureRunId "2025-q1-audit"
+
+# Upload and auto-open local report
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure -OpenReport
+```
+
+**Setup (one-time):**
+1. Copy `env.example` to `.env`
+2. Fill in your Azure Storage Account details:
+   ```
+   AZURE_STORAGE_ACCOUNT=mailsecurityreports
+   AZURE_STORAGE_KEY=your-key-here==
+   AZURE_WEB_ZONE=z1  # optional, defaults to z1
+   ```
+3. Run with `-UploadToAzure` switch
+
+**Features:**
+- Automatic AzCopy installation via winget (if not present)
+- Uploads to `$web/reports/<runId>/` in your storage account
+- Generates unique Run ID: `yyyyMMdd-HHmmss-random6`
+- Prints public URLs for sharing
+- Verifies upload with HTTP HEAD request
+- Keeps local copy even if upload fails
+
+**Security Notes:**
+- `.env` file is in `.gitignore` (never committed)
+- Account key gives full access - rotate regularly
+- Consider migrating to SAS tokens (scoped, time-limited) for production
+- For CI/CD: Use Azure Key Vault or GitHub Actions secrets
 
 **Output structure:**
 ```

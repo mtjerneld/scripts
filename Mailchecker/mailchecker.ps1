@@ -46,6 +46,15 @@ param(
   [switch]$Json,
   
   [Parameter(Mandatory=$false)]
+  [switch]$UploadToAzure,
+  
+  [Parameter(Mandatory=$false)]
+  [string]$AzureRunId,
+  
+  [Parameter(Mandatory=$false)]
+  [string]$EnvFile = ".env",
+  
+  [Parameter(Mandatory=$false)]
   [switch]$Help
 )
 
@@ -75,6 +84,11 @@ OUTPUT OPTIONS
     -Json                    Add JSON export (with -FullHtmlExport)
     -OutputPath <path>       Output directory (auto-generated if not specified)
     -OpenReport              Auto-open report in browser (with -FullHtmlExport)
+    
+AZURE CLOUD UPLOAD
+    -UploadToAzure          Upload report to Azure Blob Storage (requires -FullHtmlExport)
+    -AzureRunId <id>        Custom Run ID for upload (auto-generated if not specified)
+    -EnvFile <path>         Path to .env file (default: .env)
 
 QUICK EXAMPLES
 
@@ -86,6 +100,10 @@ QUICK EXAMPLES
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OpenReport
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -OutputPath ./reports
+  
+  Azure Upload:
+    .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure
+    .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure -AzureRunId "2025-audit"
 
 FULL HTML EXPORT STRUCTURE
     domains-20251008-142315/
@@ -130,12 +148,297 @@ Version: mailchecker.ps1 v2.0
     exit 0
 }
 
+# ============================================================================
+# Azure Upload Helper Functions
+# ============================================================================
+
+function Import-EnvFile {
+    param([string]$EnvFilePath)
+    
+    if (-not (Test-Path $EnvFilePath)) {
+        throw "Environment file not found: $EnvFilePath`nCreate a .env file with AZURE_STORAGE_ACCOUNT and AZURE_STORAGE_KEY"
+    }
+    
+    Write-Host "Loading environment from: $EnvFilePath" -ForegroundColor Cyan
+    
+    Get-Content $EnvFilePath | ForEach-Object {
+        $line = $_.Trim()
+        
+        # Skip empty lines and comments
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) {
+            return
+        }
+        
+        # Parse KEY=VALUE
+        if ($line -match '^([^=]+)=(.*)$') {
+            $key = $Matches[1].Trim()
+            $value = $Matches[2].Trim()
+            
+            # Remove quotes if present (double or single)
+            $value = $value -replace '^"', '' -replace "^'", '' -replace '"$', '' -replace "'$", ''
+            
+            # Set environment variable
+            Set-Item -Path "env:$key" -Value $value
+            Write-Verbose "Set env:$key"
+        }
+    }
+    
+    # Validate required variables
+    if ([string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_ACCOUNT)) {
+        throw "AZURE_STORAGE_ACCOUNT not found in $EnvFilePath"
+    }
+    
+    Write-Host "  [OK] AZURE_STORAGE_ACCOUNT: $env:AZURE_STORAGE_ACCOUNT" -ForegroundColor Green
+    
+    # Optional auth inputs:
+    # - AZURE_STORAGE_SAS: preferred for non-interactive uploads
+    # - AZURE_STORAGE_KEY: supported via env auth
+    # - Otherwise, user will authenticate with 'azcopy login' (Microsoft Entra ID)
+    if (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_SAS)) {
+        $sasTail = if ($env:AZURE_STORAGE_SAS.Length -gt 6) { $env:AZURE_STORAGE_SAS.Substring($env:AZURE_STORAGE_SAS.Length - 6) } else { $env:AZURE_STORAGE_SAS }
+        Write-Host "  [OK] AZURE_STORAGE_SAS: ****$sasTail" -ForegroundColor Green
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_KEY)) {
+        $keyLen = $env:AZURE_STORAGE_KEY.Length
+        $lastFour = if ($keyLen -gt 4) { $env:AZURE_STORAGE_KEY.Substring($keyLen - 4) } else { $env:AZURE_STORAGE_KEY }
+        Write-Host "  [OK] AZURE_STORAGE_KEY: ****$lastFour" -ForegroundColor Green
+    } else {
+        Write-Host "  [INFO] No SAS or key found. Will use 'azcopy login' (Microsoft Entra ID)." -ForegroundColor Yellow
+    }
+}
+
+function Test-AzCopyAvailable {
+    # Check if azcopy is available
+    $azcopy = Get-Command azcopy -ErrorAction SilentlyContinue
+    if ($azcopy) {
+        Write-Host "  [OK] AzCopy found: $($azcopy.Source)" -ForegroundColor Green
+        return $true
+    }
+    Write-Host "AzCopy not found." -ForegroundColor Yellow
+    return $false
+}
+
+function New-AzureRunId {
+    param([string]$CustomRunId)
+    
+    if (-not [string]::IsNullOrWhiteSpace($CustomRunId)) {
+        Write-Host "Using custom Run ID: $CustomRunId" -ForegroundColor Cyan
+        return $CustomRunId
+    }
+    
+    # Generate timestamp
+    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    
+    # Generate random token (6 chars, alphanumeric)
+    $buffer = New-Object byte[] 6
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($buffer)
+    $token = [Convert]::ToBase64String($buffer) -replace '[^a-zA-Z0-9]', ''
+    $token = $token.Substring(0, [Math]::Min(6, $token.Length))
+    
+    # Combine and lowercase
+    $runId = ("{0}-{1}" -f $timestamp, $token).ToLower()
+    
+    Write-Host "Generated Run ID: $runId" -ForegroundColor Cyan
+    return $runId
+}
+
+function Invoke-AzureUpload {
+    param(
+        [string]$SourcePath,
+        [string]$RunId
+    )
+    
+    # Validate source
+    $indexPath = Join-Path $SourcePath "index.html"
+    if (-not (Test-Path $indexPath)) {
+        throw "index.html not found in $SourcePath - cannot upload incomplete report"
+    }
+    
+    Write-Host "`nPreparing Azure upload..." -ForegroundColor Yellow
+    Write-Host "  Source: $SourcePath" -ForegroundColor Gray
+    Write-Host "  Run ID: $RunId" -ForegroundColor Gray
+    
+    # Build source path with wildcard for recursive copy
+    $src = Join-Path $SourcePath "*"
+
+    # If no SAS is provided but an account key exists and Azure CLI is available,
+    # generate a short-lived SAS for $web to avoid AAD/RBAC pitfalls
+    if ([string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_SAS) -and -not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_KEY)) {
+        $azCli = Get-Command az -ErrorAction SilentlyContinue
+        if ($azCli) {
+            try {
+                Write-Host "  Generating temporary SAS for $web via Azure CLI..." -ForegroundColor Yellow
+                $expiryUtc = (Get-Date).ToUniversalTime().AddHours(8).ToString('yyyy-MM-ddTHH:mm:ssZ')
+                $azArgs = @(
+                    'storage','container','generate-sas',
+                    '--account-name', $env:AZURE_STORAGE_ACCOUNT,
+                    '--account-key', ($env:AZURE_STORAGE_KEY).Trim(),
+                    '--name', '$web',
+                    '--permissions', 'racwdl',
+                    '--expiry', $expiryUtc,
+                    '--https-only',
+                    '--output', 'tsv'
+                )
+                $generatedSas = (& az @azArgs 2>&1).ToString().Trim()
+                if (-not [string]::IsNullOrWhiteSpace($generatedSas)) {
+                    $env:AZURE_STORAGE_SAS = $generatedSas
+                    $tail = if ($generatedSas.Length -gt 6) { $generatedSas.Substring($generatedSas.Length - 6) } else { $generatedSas }
+                    Write-Host "  [OK] SAS generated (****$tail)" -ForegroundColor Green
+                } else {
+                    Write-Host "  [WARN] Failed to generate SAS via Azure CLI; proceeding without SAS" -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host "  [WARN] SAS generation failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+    }
+
+    # Build destination URL. Prefer SAS if provided, else Entra ID login/session.
+    $baseDest = 'https://{0}.blob.core.windows.net/$web/reports/{1}/' -f $env:AZURE_STORAGE_ACCOUNT, $RunId
+    if (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_SAS)) {
+        # Ensure leading '?' on SAS
+        $sas = $env:AZURE_STORAGE_SAS
+        if ($sas -and -not $sas.StartsWith('?')) { $sas = '?' + $sas }
+        $dest = $baseDest + $sas
+    } else {
+        $dest = $baseDest
+    }
+    
+    Write-Host "`nUploading to Azure Blob Storage..." -ForegroundColor Yellow
+    
+    # Auth selection:
+    # 1) SAS present -> use SAS (no login)
+    # 2) Account Key present -> set AZCOPY_ACCOUNT_* env (force key auth)
+    # 3) Else -> Entra ID via AZCLI if available
+    $prevAutoLoginType = $env:AZCOPY_AUTO_LOGIN_TYPE
+    $prevAccountName = $env:AZCOPY_ACCOUNT_NAME
+    $prevAccountKey  = $env:AZCOPY_ACCOUNT_KEY
+    $didSetAutoLogin = $false
+    $didSetAccountCreds = $false
+
+    if (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_SAS)) {
+        # SAS auth; nothing to set
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_KEY)) {
+        # Force account key auth so AzCopy doesn't try AAD
+        $env:AZCOPY_ACCOUNT_NAME = $env:AZURE_STORAGE_ACCOUNT
+        $env:AZCOPY_ACCOUNT_KEY  = ($env:AZURE_STORAGE_KEY).Trim()
+        # Disable auto-login by unsetting the variable if present
+        if ($env:AZCOPY_AUTO_LOGIN_TYPE) { Remove-Item Env:AZCOPY_AUTO_LOGIN_TYPE -ErrorAction SilentlyContinue }
+        $didSetAccountCreds = $true
+        $didSetAutoLogin = $true
+    } else {
+        # Try Entra ID via Azure CLI tokens
+        if (-not [string]::IsNullOrWhiteSpace((Get-Command az -ErrorAction SilentlyContinue))) {
+            $env:AZCOPY_AUTO_LOGIN_TYPE = 'AZCLI'
+            $didSetAutoLogin = $true
+        }
+    }
+
+    try {
+        # Run AzCopy (recursive upload, overwrite true)
+        $azcopyArgs = @(
+            'copy',
+            $src,
+            $dest,
+            '--recursive',
+            '--overwrite=true'
+        )
+        
+        # Execute AzCopy (capture output for error handling)
+        $output = & azcopy @azcopyArgs 2>&1
+        
+        if ($LASTEXITCODE -ne 0) {
+            # Filter out the key from error messages
+            $safeOutput = $output
+            if (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_KEY)) {
+                $safeOutput = $safeOutput -replace [regex]::Escape($env:AZURE_STORAGE_KEY), '****'
+            }
+            throw "AzCopy failed with exit code $LASTEXITCODE`n$safeOutput"
+        }
+        
+        Write-Host "  [OK] Upload completed successfully" -ForegroundColor Green
+        
+        # Determine web zone
+        $zone = $env:AZURE_WEB_ZONE
+        if ([string]::IsNullOrWhiteSpace($zone)) {
+            $zone = 'z1'  # Default to z1, but may differ per region
+            Write-Host "  Note: Using zone 'z1' (default). Set AZURE_WEB_ZONE in .env if different." -ForegroundColor Gray
+        }
+        
+        # Build public URLs
+        $publicFolder = "https://{0}.{1}.web.core.windows.net/reports/{2}/" -f $env:AZURE_STORAGE_ACCOUNT, $zone, $RunId
+        $publicIndex = $publicFolder + "index.html"
+        
+        # Verify upload by checking if index.html is accessible
+        Write-Host "`nVerifying upload..." -ForegroundColor Yellow
+        try {
+            $headResponse = Invoke-WebRequest -Method Head -Uri $publicIndex -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+            if ($headResponse.StatusCode -eq 200) {
+                Write-Host "  [OK] Upload verified (HTTP 200)" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "  [WARN] Could not verify upload automatically (this may be expected if DNS hasn't propagated yet)" -ForegroundColor Yellow
+        }
+        
+        # Print public URLs
+        Write-Host "`n" -NoNewline
+        Write-Host "===================================================================" -ForegroundColor Cyan
+        Write-Host "  Report uploaded successfully!" -ForegroundColor Green
+        Write-Host "===================================================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Public URL (index):  " -NoNewline -ForegroundColor White
+        Write-Host $publicIndex -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "===================================================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Tip: Share the index URL to provide direct access to the report" -ForegroundColor Gray
+        Write-Host ""
+        
+    } catch {
+        Write-Host ""
+        Write-Host "[ERROR] Upload failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Suggestion: Authenticate with 'azcopy login' or use a SAS token in .env as AZURE_STORAGE_SAS." -ForegroundColor Yellow
+        throw
+    } finally {
+        # Restore AZCOPY envs if changed
+        if ($didSetAutoLogin) {
+            if ($null -ne $prevAutoLoginType) { $env:AZCOPY_AUTO_LOGIN_TYPE = $prevAutoLoginType } else { Remove-Item Env:AZCOPY_AUTO_LOGIN_TYPE -ErrorAction SilentlyContinue }
+        }
+        if ($didSetAccountCreds) {
+            if ($null -ne $prevAccountName) { $env:AZCOPY_ACCOUNT_NAME = $prevAccountName } else { Remove-Item Env:AZCOPY_ACCOUNT_NAME -ErrorAction SilentlyContinue }
+            if ($null -ne $prevAccountKey)  { $env:AZCOPY_ACCOUNT_KEY  = $prevAccountKey  } else { Remove-Item Env:AZCOPY_ACCOUNT_KEY  -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+# ============================================================================
+# End Azure Upload Functions
+# ============================================================================
+
 # Validate input parameters
 if ($Domain -and $BulkFile) {
     throw "Cannot specify both -Domain and -BulkFile"
 }
 if (-not $Domain -and -not $BulkFile) {
     $Domain = Read-Host "Enter domain (e.g. example.com)"
+}
+
+# Validate Azure upload requirements
+if ($UploadToAzure) {
+    if (-not $FullHtmlExport) {
+        throw "-UploadToAzure requires -FullHtmlExport to generate the report structure"
+    }
+    if (-not $BulkFile) {
+        throw "-UploadToAzure is only supported with -BulkFile (bulk mode)"
+    }
+    # Early AzCopy availability check before any scanning/export work
+    Write-Host "\nAzure upload requested: verifying AzCopy tool before scanning..." -ForegroundColor Yellow
+    if (-not (Test-AzCopyAvailable)) {
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host "AzCopy is required to upload to Azure. Please install and verify:" -ForegroundColor Yellow
+        Write-Host "  winget install azcopy --source winget" -ForegroundColor Cyan
+        Write-Host "  Close and reopen your terminal (refresh PATH), then run again." -ForegroundColor Gray
+        exit 1
+    }
 }
 
 function New-CheckResult {
@@ -1829,9 +2132,10 @@ function Get-HttpText($url){
   }
 }
 
-function Write-DomainReportPage {
+function Get-DomainReportHtml {
   param(
-    [string]$OutputPath,
+    [string]$RelAssetsPath,
+    [bool]$IncludeBackLink,
     [string]$Domain,
     [pscustomobject]$Summary,
     $mxResult,
@@ -1841,13 +2145,11 @@ function Write-DomainReportPage {
     $dmarcResult,
     $tlsResult
   )
-  
-  # Sanitize domain name for filename
-  $safeDomain = $Domain -replace '[^a-z0-9.-]', '_'
-  $domainPath = Join-Path $OutputPath "$safeDomain.html"
-  
   $now = (Get-Date).ToString('u')
-  
+
+  $backLinkTop = if ($IncludeBackLink) { '    <a href="../index.html" class="nav-link">&#8592; Back to Summary</a>' } else { '' }
+  $backLinkBottom = if ($IncludeBackLink) { '        <p><a href="../index.html">&#8592; Back to Summary</a></p>' } else { '' }
+
   $html = @"
 <!DOCTYPE html>
 <html lang="en">
@@ -1855,37 +2157,28 @@ function Write-DomainReportPage {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mail Security Report - $([System.Web.HttpUtility]::HtmlEncode($Domain))</title>
-    <link rel="stylesheet" href="../assets/style.css">
+    <link rel="stylesheet" href="$RelAssetsPath/style.css">
 </head>
 <body>
 <div class="container">
-    <a href="../index.html" class="nav-link">&#8592; Back to Summary</a>
+$backLinkTop
     
     <h1>Mail Security Report</h1>
-    <p class="metadata"><strong>Domain:</strong> $([System.Web.HttpUtility]::HtmlEncode($Domain))</p>
-    <p class="metadata"><strong>Generated:</strong> $now</p>
+    <p class=\"metadata\"><strong>Domain:</strong> $([System.Web.HttpUtility]::HtmlEncode($Domain))</p>
+    <p class=\"metadata\"><strong>Generated:</strong> $now</p>
 "@
 
-  # Issues box - collect all warnings and failures with individual icons
+  # Issues box
   $issues = @()
   $hasFail = $false
   foreach ($result in @($mxResult, $spfResult, $dkimResult, $mtaStsResult, $dmarcResult, $tlsResult)) {
     if ($result.Status -eq 'FAIL') {
       $hasFail = $true
-      $issues += [PSCustomObject]@{ 
-        Status = 'FAIL'
-        Icon = '&#10060;'
-        Text = "$($result.Section): $($result.Data.Reason)"
-      }
+      $issues += [PSCustomObject]@{ Status='FAIL'; Icon='&#10060;'; Text = "$($result.Section): $($result.Data.Reason)" }
     } elseif ($result.Status -eq 'WARN') {
-      $issues += [PSCustomObject]@{ 
-        Status = 'WARN'
-        Icon = '&#9888;&#65039;'
-        Text = "$($result.Section): $($result.Data.Reason)"
-      }
+      $issues += [PSCustomObject]@{ Status='WARN'; Icon='&#9888;&#65039;'; Text = "$($result.Section): $($result.Data.Reason)" }
     }
   }
-  
   if ($issues.Count -gt 0) {
     $boxClass = if ($hasFail) { "issues-box-fail" } else { "issues-box" }
     $html += @"
@@ -1908,8 +2201,7 @@ $(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtil
   # Summary table
   $html += "<h2>Summary</h2>"
   $html += "<table><tr><th style='width: 200px;'>Check</th><th style='width: 120px;'>Status</th><th>Details</th></tr>"
-  
-  # Helper to render status cell
+
   $renderStatusCell = {
     param($status)
     $cls = switch ($status) {
@@ -1928,36 +2220,27 @@ $(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtil
       'N/A' { '&#x2139;&#xFE0F; ' }
       default { '' }
     }
-    $text = switch ($status) {
-      'OK' { 'PASS' }
-      default { $status }
-    }
+    $text = switch ($status) { 'OK' { 'PASS' } default { $status } }
     return "<td class='$cls'>$icon$text</td>"
   }
-  
-  # MX Records
+
   if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
     $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
     $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
   } elseif ($mxResult.Status -eq 'WARN') {
-    # SERVFAIL case
     $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--warn);'>&#9888;&#65039; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   } elseif ($mxResult.Data.DomainExists -eq $false) {
-    # NXDOMAIN - domain truly doesn't exist
     $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--err);'>&#10060; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   } else {
     $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   }
-  
   $html += "<tr><td>SPF</td>" + (& $renderStatusCell $spfResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
   $html += "<tr><td>DKIM</td>" + (& $renderStatusCell $dkimResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
   $html += "<tr><td>DMARC</td>" + (& $renderStatusCell $dmarcResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
   $html += "<tr><td>MTA-STS</td>" + (& $renderStatusCell $mtaStsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
   $html += "<tr><td>TLS-RPT</td>" + (& $renderStatusCell $tlsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
-  
   $html += "</table>"
 
-  # Detailed sections (reuse existing ConvertTo-HtmlSection)
   $html += ConvertTo-HtmlSection $mxResult
   $html += ConvertTo-HtmlSection $spfResult
   $html += ConvertTo-HtmlSection $dkimResult
@@ -1965,17 +2248,39 @@ $(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtil
   $html += ConvertTo-HtmlSection $mtaStsResult
   $html += ConvertTo-HtmlSection $tlsResult
 
-  # Footer
   $html += @"
     <div class="footer">
         <p>Generated by <strong>mailchecker.ps1</strong> on $now</p>
-        <p><a href="../index.html">&#8592; Back to Summary</a></p>
+$backLinkBottom
     </div>
 </div>
-<script src="../assets/app.js"></script>
+<script src="$RelAssetsPath/app.js"></script>
 </body>
 </html>
 "@
+  return $html
+}
+
+function Write-DomainReportPage {
+  param(
+    [string]$OutputPath,
+    [string]$Domain,
+    [pscustomobject]$Summary,
+    $mxResult,
+    $spfResult,
+    $dkimResult,
+    $mtaStsResult,
+    $dmarcResult,
+    $tlsResult
+  )
+  
+  # Sanitize domain name for filename
+  $safeDomain = $Domain -replace '[^a-z0-9.-]', '_'
+  $domainPath = Join-Path $OutputPath "$safeDomain.html"
+  
+  $html = Get-DomainReportHtml -RelAssetsPath "../assets" -IncludeBackLink $true -Domain $Domain -Summary $Summary -mxResult $mxResult -spfResult $spfResult -dkimResult $dkimResult -mtaStsResult $mtaStsResult -dmarcResult $dmarcResult -tlsResult $tlsResult
+
+  # html already complete from helper
 
   try {
     $html | Out-File -FilePath $domainPath -Encoding utf8 -Force
@@ -1999,134 +2304,19 @@ function Write-HtmlReport {
 
   # Old Render-Section function removed - now using ConvertTo-HtmlSection
 
-  $css = @'
-  body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; color:#222 }
-  h1 { color:#0078D7 }
-  h2 { border-bottom:1px solid #ddd; padding-bottom:4px }
-  table { border-collapse: collapse; width: 480px; margin-bottom: 12px; table-layout: fixed; }
-  table th, table td { word-wrap: break-word; overflow-wrap: break-word; padding: 6px 8px; }
-  /* Borderless table variant for DKIM (columns still align) */
-  table.no-borders { border: none }
-  table.no-borders th, table.no-borders td { border: none; padding:6px 8px; text-align:left; vertical-align:top; }
-  /* Use a monospace font for pre-wrapped cells to keep columns aligned */
-  table.no-borders td pre { margin:0; font-family: Consolas, 'Courier New', monospace; white-space: pre-wrap }
-  th, td { border:1px solid #ddd; padding:6px 8px; text-align:left }
-  .ok { color: green }
-  .warn { color: #b58900 }
-  .fail { color: red }
-  .info { color: #0078D7 }
-  p.ok, p.fail, p.warn, p.info { font-size: 14px; margin: 4px 0; font-weight: 600 }
-  p.ok { color: green }
-  p.fail { color: red }
-  p.warn { color: #b58900 }
-  p.info { color: #0078D7 }
-  /* Icon support - icons are manually added in HTML content */
-  .status-ok { color: green; }
-  .status-fail { color: red; }
-  .status-warn { color: #b58900; }
-  .status-info { color: #0078D7; }
-  /* Info blocks styling */
-  .info-block { margin: 8px 0 4px 0; }
-  .info-block p { margin: 2px 0; }
-'@
-
-  $now = (Get-Date).ToString('u')
-
-  $html = @"
-<html>
-  <head>
-    <meta charset='utf-8' />
-    <title>Mail check report for $Domain</title>
-    <style>$css</style>
-  </head>
-  <body>
-  <h1>Mail check report &mdash; $([System.Web.HttpUtility]::HtmlEncode($Domain))</h1>
-    <p>Generated: $now</p>
-"@
-
-  $html += "<h2>Summary</h2>"
-  $html += "<p>Tested domain: <strong>$([System.Web.HttpUtility]::HtmlEncode($Summary.Domain))</strong></p>"
-  
-  # Overall status
-  $statusClass = switch ($Summary.Status) {
-    'PASS' { 'status-ok' }
-    'WARN' { 'status-warn' }
-    'FAIL' { 'status-fail' }
-    default { '' }
-  }
-  $statusIcon = switch ($Summary.Status) {
-    'PASS' { '&#x2705; ' }
-    'WARN' { '&#x26A0;&#xFE0F; ' }
-    'FAIL' { '&#x274C; ' }
-    default { '' }
-  }
-  $html += "<p style='font-weight: 600; font-size: 16px;' class='$statusClass'>Overall Status: $statusIcon$([System.Web.HttpUtility]::HtmlEncode($Summary.Status))</p>"
-  
-  # Individual check statuses
-  $html += "<table style='width: 480px; table-layout: fixed;'><tr><th style='width: 180px;'>Check</th><th style='width: 100px;'>Status</th><th style='width: 200px;'>Notes</th></tr>"
-  
-  # Helper to render status
-  $renderStatus = {
-    param($status)
-    $cls = switch ($status) {
-      'PASS' { 'status-ok' }
-      'OK' { 'status-ok' }  # Legacy support
-      'WARN' { 'status-warn' }
-      'FAIL' { 'status-fail' }
-      'N/A' { 'status-info' }
-      default { '' }
+  # Ensure assets (CSS/JS) exist alongside the single-page report
+  try {
+    $outDir = Split-Path -Parent $Path
+    $assetsDir = Join-Path $outDir "assets"
+    if (-not (Test-Path $assetsDir)) {
+      New-Item -ItemType Directory -Path $assetsDir -Force | Out-Null
     }
-    $icon = switch ($status) {
-      'PASS' { '&#x2705; ' }
-      'OK' { '&#x2705; ' }  # Legacy support
-      'WARN' { '&#x26A0;&#xFE0F; ' }
-      'FAIL' { '&#x274C; ' }
-      'N/A' { '&#x2139;&#xFE0F; ' }
-      default { '' }
-    }
-    $text = switch ($status) {
-      'OK' { 'PASS' }  # Normalize OK to PASS
-      default { $status }
-    }
-    return "<td class='$cls'>$icon$text</td>"
+    Write-AssetsFiles -AssetsPath $assetsDir
+  } catch {
+    Write-Host ("[WARN] Could not create/write assets for single HTML: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
   }
-  
-  # Add rows for each check
-  # MX Records - show actual records instead of just status
-  if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
-    $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
-    $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
-  } elseif ($mxResult.Status -eq 'WARN') {
-    # SERVFAIL case
-    $html += "<tr><td>MX Records</td>" + (& $renderStatus $mxResult.Status) + "<td style='font-size: 11px; font-weight: 600; color: #b58900;'>&#9888;&#65039; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
-  } elseif ($mxResult.Data.DomainExists -eq $false) {
-    # NXDOMAIN - domain truly doesn't exist
-    $html += "<tr><td>MX Records</td>" + (& $renderStatus $mxResult.Status) + "<td style='font-size: 11px; font-weight: 600; color: #dc3545;'>&#10060; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
-  } else {
-    $html += "<tr><td>MX Records</td>" + (& $renderStatus $mxResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
-  }
-  
-  $html += "<tr><td>SPF</td>" + (& $renderStatus $spfResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
-  $html += "<tr><td>DKIM</td>" + (& $renderStatus $dkimResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
-  $html += "<tr><td>MTA-STS</td>" + (& $renderStatus $mtaStsResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
-  $html += "<tr><td>DMARC</td>" + (& $renderStatus $dmarcResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
-  $html += "<tr><td>TLS-RPT</td>" + (& $renderStatus $tlsResult.Status) + "<td style='font-size: 11px;'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
-  
-  $html += "</table>"
 
-  # Old helper functions removed - now using ConvertTo-HtmlSection
-
-  # (Block status table removed - verbose per-block console text is included in each section below)
-
-  # Use unified result objects for all sections
-  $html += ConvertTo-HtmlSection $mxResult
-  $html += ConvertTo-HtmlSection $spfResult
-  $html += ConvertTo-HtmlSection $dkimResult
-  $html += ConvertTo-HtmlSection $mtaStsResult
-  $html += ConvertTo-HtmlSection $dmarcResult
-  $html += ConvertTo-HtmlSection $tlsResult
-
-  $html += "</body></html>"
+  $html = Get-DomainReportHtml -RelAssetsPath "assets" -IncludeBackLink $false -Domain $Domain -Summary $Summary -mxResult $mxResult -spfResult $spfResult -dkimResult $dkimResult -mtaStsResult $mtaStsResult -dmarcResult $dmarcResult -tlsResult $tlsResult
 
   try {
     $html | Out-File -FilePath $Path -Encoding utf8 -Force
@@ -2818,6 +3008,34 @@ if ($BulkFile) {
             # Fallback: use file:// URI (clickable in most modern terminals)
             $fileUri = "file:///$($indexPathFull -replace '\\', '/')"
             Write-Host "   $fileUri" -ForegroundColor Cyan
+        }
+        
+        # Azure Upload (if requested)
+        if ($UploadToAzure) {
+            try {
+                Write-Host "`n" -NoNewline
+                Write-Host "============================================================" -ForegroundColor Cyan
+                Write-Host "  Starting Azure Upload Process" -ForegroundColor Yellow
+                Write-Host "============================================================" -ForegroundColor Cyan
+                Write-Host ""
+                
+                # Step 1: Load environment variables
+                Import-EnvFile -EnvFilePath $EnvFile
+                
+                # Step 2: AzCopy availability was checked earlier; proceed directly to upload
+                
+                # Step 3: Generate or use provided Run ID
+                Write-Host "`nGenerating Run ID..." -ForegroundColor Yellow
+                $runId = New-AzureRunId -CustomRunId $AzureRunId
+                
+                # Step 4: Upload to Azure
+                Invoke-AzureUpload -SourcePath $outputStructure.RootPath -RunId $runId
+                
+            } catch {
+                Write-Host "`n❌ Azure upload failed: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "Local report is still available at: $indexPath" -ForegroundColor Yellow
+                # Don't throw - we still have a local report
+            }
         }
     } else {
         # No FullHtmlExport - just console output

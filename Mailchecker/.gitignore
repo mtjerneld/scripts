@@ -5,6 +5,11 @@
 *.zip
 *.ps1
 
+# Environment files (contains secrets)
+*.env
+.env
+!.env.example
+
 # Ignore all subdirectories (output folders, test folders, etc.)
 */
 !.vscode/
