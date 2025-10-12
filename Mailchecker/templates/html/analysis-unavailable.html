@@ -1,14 +1,32 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Analysis Unavailable</title>
   <link rel="stylesheet" href="../assets/style.css">
-  </head>
+</head>
 <body>
 <div class="container">
+  <a href="../index.html" class="nav-link">Back to Summary</a>
+  
   <h1>Analysis Unavailable</h1>
-  <p>OpenAI API key is missing. Add OPENAI_API_KEY in .env and re-run with -ChatGPT.</p>
+  <div class="issues-box">
+    <h3>Configuration Required</h3>
+    <p>OpenAI API key is missing. Add <code>OPENAI_API_KEY</code> to your <code>.env</code> file and re-run with <code>-ChatGPT</code>.</p>
+  </div>
+  
+  <h2>Setup Instructions</h2>
+  <ol>
+    <li>Create or edit <code>.env</code> file in the script directory</li>
+    <li>Add: <code>OPENAI_API_KEY=your-api-key-here</code></li>
+    <li>Optionally add: <code>OPENAI_MODEL=gpt-4o</code></li>
+    <li>Re-run the script with <code>-ChatGPT</code> parameter</li>
+  </ol>
+  
+  <div class="footer">
+    <p><a href="../index.html" class="back-link">Back to Summary</a></p>
+  </div>
 </div>
 </body>
 </html>

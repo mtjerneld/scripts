@@ -1755,10 +1755,50 @@ function Get-HttpText($url){
 function Convert-MarkdownToHtml {
   param([string]$Markdown)
   if ([string]::IsNullOrWhiteSpace($Markdown)) { return "" }
-  $html = $Markdown
-  # Escape basic HTML first
-  $html = [System.Web.HttpUtility]::HtmlEncode($html)
-  # Un-escape Markdown link URLs and structure as HTML
+  
+  # First, extract and convert tables before HTML encoding
+  $tablePattern = '(?ms)^\|(.+?)\|[\r\n]+\|[-:\s|]+\|[\r\n]+((?:\|.+?\|[\r\n]+)+)'
+  $tables = @{}
+  $tableIndex = 0
+  $Markdown = [regex]::Replace($Markdown, $tablePattern, {
+    param($match)
+    $tableIndex++
+    $placeholder = "___TABLE_PLACEHOLDER_$tableIndex___"
+    
+    # Parse table
+    $lines = $match.Value -split '[\r\n]+' | Where-Object { $_ -match '\|' }
+    if ($lines.Count -lt 2) { return $match.Value }
+    
+    $headerLine = $lines[0].Trim()
+    $headers = ($headerLine -split '\|' | Where-Object { $_.Trim() }) | ForEach-Object { $_.Trim() }
+    
+    # Skip separator line, process data rows
+    $dataLines = $lines[2..($lines.Count-1)]
+    
+    $tableHtml = "<table>`n<thead><tr>"
+    foreach ($h in $headers) {
+      $tableHtml += "<th>$h</th>"
+    }
+    $tableHtml += "</tr></thead>`n<tbody>`n"
+    
+    foreach ($line in $dataLines) {
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+      $cells = ($line -split '\|' | Where-Object { $_.Trim() }) | ForEach-Object { $_.Trim() }
+      $tableHtml += "<tr>"
+      foreach ($cell in $cells) {
+        $tableHtml += "<td>$cell</td>"
+      }
+      $tableHtml += "</tr>`n"
+    }
+    $tableHtml += "</tbody></table>"
+    
+    $tables[$placeholder] = $tableHtml
+    return "`n$placeholder`n"
+  })
+  
+  # Now process the rest of the markdown
+  $html = [System.Web.HttpUtility]::HtmlEncode($Markdown)
+  
   # Headings
   $html = $html -replace '(?m)^# {1}\s*(.+)$', '<h1>$1</h1>'
   $html = $html -replace '(?m)^## {1}\s*(.+)$', '<h2>$1</h2>'
@@ -1773,13 +1813,55 @@ function Convert-MarkdownToHtml {
   $html = $html -replace '(?s)```(.*?)```', '<pre><code>$1</code></pre>'
   # Inline code
   $html = $html -replace '`([^`]+)`', '<code>$1</code>'
-  # Lists (basic)
-  $html = $html -replace '(?m)^(?:- |\* )(.*)$', '<li>$1</li>'
-  $html = $html -replace '(?s)(<li>.*</li>)', '<ul>$1</ul>'
+  # Blockquotes
+  $html = $html -replace '(?m)^&gt;\s*(.+)$', '<blockquote>$1</blockquote>'
   # Links [text](url)
   $html = $html -replace '\[([^\]]+)\]\(([^\)]+)\)', '<a href="$2">$1</a>'
-  # Paragraphs
-  $html = $html -replace '(?m)^(?!<h\d|<ul>|<li>|<pre>|<p>|</|<code>|<strong>|<em>)(.+)$', '<p>$1</p>'
+  
+  # Lists (improved handling) - process line by line to properly group
+  $lines = $html -split '[\r\n]+'
+  $result = New-Object System.Collections.Generic.List[string]
+  $inList = $false
+  
+  foreach ($line in $lines) {
+    if ($line -match '^(?:- |\* )(.*)$') {
+      # This is a list item
+      if (-not $inList) {
+        $result.Add('<ul>')
+        $inList = $true
+      }
+      $content = $Matches[1]
+      $result.Add("<li>$content</li>")
+    } else {
+      # Not a list item
+      if ($inList) {
+        $result.Add('</ul>')
+        $inList = $false
+      }
+      if (-not [string]::IsNullOrWhiteSpace($line)) {
+        $result.Add($line)
+      }
+    }
+  }
+  
+  # Close any open list
+  if ($inList) {
+    $result.Add('</ul>')
+  }
+  
+  $html = $result -join "`n"
+  
+  # Restore tables (they're already HTML, no encoding needed)
+  foreach ($key in $tables.Keys) {
+    $html = $html.Replace([System.Web.HttpUtility]::HtmlEncode($key), $tables[$key])
+  }
+  
+  # Paragraphs (but not for lines that are part of lists, headings, or tables)
+  $html = $html -replace '(?m)^(?!<h\d|<ul>|<li>|<pre>|<p>|</|<code>|<strong>|<em>|<table>|<blockquote>)(.+)$', '<p>$1</p>'
+  
+  # Clean up empty paragraphs
+  $html = $html -replace '<p>\s*</p>', ''
+  
   return $html
 }
 
@@ -1898,10 +1980,10 @@ function Invoke-OpenAIAnalysis {
   $minimalSchema = [ordered]@{
     type = 'object'
     properties = [ordered]@{
-      summary         = @{ type = 'string' }
+      summary         = @{ type = 'string'; maxLength = 800 }
       overall_status  = @{ type = 'string'; enum = @('PASS','WARN','FAIL') }
-      key_findings    = @{ type = 'array'; items = @{ type = 'string' } }
-      report_markdown = @{ type = 'string' }
+      key_findings    = @{ type = 'array'; items = @{ type = 'string'; maxLength = 400 }; minItems = 3; maxItems = 8 }
+      report_markdown = @{ type = 'string'; maxLength = 12000 }
     }
     required = @('summary','overall_status','key_findings','report_markdown')
     additionalProperties = $false
@@ -1921,7 +2003,7 @@ function Invoke-OpenAIAnalysis {
   $bodyObj = [ordered]@{
     model             = $modelToUse
     max_output_tokens = $effectiveMaxOutput
-    text              = [ordered]@{ format = [ordered]@{ type='json_schema'; name='analysis'; strict=$true; schema=$minimalSchema } }
+    text              = [ordered]@{ format = [ordered]@{ type='json_schema'; name='analysis'; strict=$true; schema=$minimalSchema }; verbosity = 'low' }
     input             = $inputBlocks
   }
   # Normalize content-part types to input_text for Responses API
@@ -2190,21 +2272,44 @@ function Write-AnalysisReport {
       'FAIL' { 'status-chip fail' }
       default { 'status-chip info' }
     }
+    $emoji = switch ($status) {
+      'PASS' { '✅' }
+      'OK'   { '✅' }
+      'WARN' { '⚠️' }
+      'FAIL' { '❌' }
+      default { 'ℹ️' }
+    }
     $label = if ($status -eq 'OK') { 'PASS' } else { $status }
     $encoded = [System.Web.HttpUtility]::HtmlEncode($label)
-    return ('<span class="' + $cls + '">' + $encoded + '</span>')
+    return ('<span class="' + $cls + '">' + $emoji + ' ' + $encoded + '</span>')
   }
   $statusChip = Get-StatusChipHtmlLocal $AnalysisObj.overall_status
-  $keyFindingsHtml = if ($AnalysisObj.key_findings) { '<ul>' + (($AnalysisObj.key_findings | ForEach-Object { '<li>' + [System.Web.HttpUtility]::HtmlEncode($_) + '</li>' }) -join '') + '</ul>' } else { '<p>(none)</p>' }
-  $remRows = @()
-  foreach ($r in @($AnalysisObj.remediations)) {
-    if ($null -eq $r) { continue }
-    $links = if ($r.links) { ($r.links | ForEach-Object { '<a href="' + [System.Web.HttpUtility]::HtmlEncode($_) + '">' + [System.Web.HttpUtility]::HtmlEncode($_) + '</a>' }) -join '<br>' } else { '' }
-    $remRows += ("<tr><td>" + [System.Web.HttpUtility]::HtmlEncode($r.title) + "</td><td>" + [System.Web.HttpUtility]::HtmlEncode($r.priority) + "</td><td>" + [System.Web.HttpUtility]::HtmlEncode($r.owner) + "</td><td>" + [System.Web.HttpUtility]::HtmlEncode($r.eta_days) + "</td><td>" + [System.Web.HttpUtility]::HtmlEncode($r.rationale) + "</td><td>" + $links + "</td></tr>")
+  
+  # Build conditional sections - only show if we have data
+  $keyFindingsSection = ''
+  if ($AnalysisObj.key_findings -and @($AnalysisObj.key_findings).Count -gt 0) {
+    $keyFindingsHtml = '<ul>' + (($AnalysisObj.key_findings | ForEach-Object { '<li>' + [System.Web.HttpUtility]::HtmlEncode($_) + '</li>' }) -join '') + '</ul>'
+    $keyFindingsSection = @"
+    <section id="key-findings">
+      <h2>Key Findings</h2>
+      $keyFindingsHtml
+    </section>
+
+"@
   }
-  $remTable = if ($remRows.Count -gt 0) { '<table><thead><tr><th>Title</th><th>Priority</th><th>Owner</th><th>ETA</th><th>Rationale</th><th>Links</th></tr></thead><tbody>' + ($remRows -join '') + '</tbody></table>' } else { '<p>(none)</p>' }
-  $perDomain = if ($AnalysisObj.per_domain_notes) { '<ul>' + (@($AnalysisObj.per_domain_notes) | ForEach-Object { '<li><strong>' + [System.Web.HttpUtility]::HtmlEncode($_.domain) + '</strong>: ' + [System.Web.HttpUtility]::HtmlEncode($_.notes) + '</li>' }) -join '' + '</ul>' } else { '<p>(none)</p>' }
-  $reportHtml = Convert-MarkdownToHtml -md $AnalysisObj.report_markdown
+  
+  $fullReportSection = ''
+  if ($AnalysisObj.report_markdown -and $AnalysisObj.report_markdown.Trim().Length -gt 0) {
+    $reportHtml = Convert-MarkdownToHtml -Markdown $AnalysisObj.report_markdown
+    $fullReportSection = @"
+    <section id="full-report">
+      <h2>Full Report</h2>
+      <div class="md">$reportHtml</div>
+    </section>
+
+"@
+  }
+  
   function Get-MetaHtmlLocal {
     param($meta, $usage)
     $lines = @()
@@ -2214,16 +2319,20 @@ function Write-AnalysisReport {
     if ($usage) {
       foreach ($p in $usage.PSObject.Properties) { $lines += ('usage.' + $p.Name + ': ' + [System.Web.HttpUtility]::HtmlEncode(($p.Value -as [string]))) }
     }
-    if ($lines.Count -eq 0) { return '<p>(none)</p>' }
-    return '<pre class="meta">' + ([System.Web.HttpUtility]::HtmlEncode(($lines -join "`n"))) + '</pre>'
+    if ($lines.Count -eq 0) { return '' }
+    return @"
+    <footer class="meta">
+      <h3>Analysis Metadata</h3>
+      <pre class="meta">$([System.Web.HttpUtility]::HtmlEncode(($lines -join "`n")))</pre>
+    </footer>
+
+"@
   }
   $metaHtml = Get-MetaHtmlLocal -meta $AnalysisObj.meta -usage $AnalysisObj.usage
   $out = $tmpl.Replace('{{OVERALL_STATUS}}', $statusChip)
   $out = $out.Replace('{{SUMMARY}}', [System.Web.HttpUtility]::HtmlEncode($AnalysisObj.summary))
-  $out = $out.Replace('{{KEY_FINDINGS}}', $keyFindingsHtml)
-  $out = $out.Replace('{{REMEDIATIONS}}', $remTable)
-  $out = $out.Replace('{{PER_DOMAIN_NOTES}}', $perDomain)
-  $out = $out.Replace('{{REPORT_MARKDOWN_HTML}}', $reportHtml)
+  $out = $out.Replace('{{KEY_FINDINGS_SECTION}}', $keyFindingsSection)
+  $out = $out.Replace('{{FULL_REPORT_SECTION}}', $fullReportSection)
   $out = $out.Replace('{{META}}', $metaHtml)
   $indexPath = Join-Path $AnalysisDir 'index.html'
   $out | Out-File -FilePath $indexPath -Encoding utf8 -Force
@@ -3030,16 +3139,48 @@ if ($BulkFile) {
                         $respJsonPath = Join-Path $analysisDir 'response.json'
                         ($analysisResp.raw | ConvertTo-Json -Depth 100) | Out-File -FilePath $respJsonPath -Encoding utf8 -Force
                     } catch {}
+                    # Display usage statistics
+                    try {
+                        if ($analysisResp.raw.usage) {
+                            $usage = $analysisResp.raw.usage
+                            Write-Host "  Usage Summary:" -ForegroundColor Cyan
+                            Write-Host ("    Input tokens:        {0,6}" -f $usage.input_tokens) -ForegroundColor Gray
+                            if ($usage.input_tokens_details -and $usage.input_tokens_details.cached_tokens -gt 0) {
+                                Write-Host ("    Cached tokens:       {0,6}" -f $usage.input_tokens_details.cached_tokens) -ForegroundColor Gray
+                            }
+                            Write-Host ("    Output tokens:       {0,6}" -f $usage.output_tokens) -ForegroundColor Gray
+                            if ($usage.output_tokens_details -and $usage.output_tokens_details.reasoning_tokens -gt 0) {
+                                Write-Host ("    Reasoning tokens:    {0,6}" -f $usage.output_tokens_details.reasoning_tokens) -ForegroundColor Gray
+                            }
+                            Write-Host ("    Total tokens:        {0,6}" -f $usage.total_tokens) -ForegroundColor Cyan
+                        }
+                    } catch {}
                     # Prefer parsed object if available (robust parsing handles quoted JSON)
                     $analysisText = $analysisResp.text
                     $analysisObj = $analysisResp.obj
-                    if (-not $analysisObj) { try { $analysisObj = $analysisText | ConvertFrom-Json -Depth 100 } catch {} }
+                    if (-not $analysisObj) { 
+                        try { 
+                            $analysisObj = $analysisText | ConvertFrom-Json -Depth 100 
+                        } catch { 
+                            Write-Host ("  [WARN] Failed to parse analysis JSON: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+                        }
+                    }
                     if ($null -eq $analysisObj) {
+                        Write-Host "  [ERROR] Analysis object is null - response may be invalid or truncated" -ForegroundColor Red
+                        Write-Host ("  Response text length: {0} chars" -f $analysisText.Length) -ForegroundColor Gray
                         $templatePath = Join-Path $PSScriptRoot 'templates/html/analysis-invalid.html'
                         $failHtml = Get-Content -Path $templatePath -Raw -Encoding UTF8
                         $failHtml | Out-File -FilePath (Join-Path $analysisDir 'index.html') -Encoding utf8 -Force
                         try { $textPath = Join-Path $analysisDir 'response_text.txt'; $analysisText | Out-File -FilePath $textPath -Encoding utf8 -Force } catch {}
                     } else {
+                        Write-Host "  [OK] Analysis parsed successfully" -ForegroundColor Green
+                        # Validate field lengths against schema
+                        if ($analysisObj.report_markdown -and $analysisObj.report_markdown.Length -gt 12000) {
+                            Write-Host ("  [WARN] report_markdown exceeds limit ({0} > 12000 chars)" -f $analysisObj.report_markdown.Length) -ForegroundColor Yellow
+                        }
+                        if ($analysisObj.summary -and $analysisObj.summary.Length -gt 800) {
+                            Write-Host ("  [WARN] summary exceeds limit ({0} > 800 chars)" -f $analysisObj.summary.Length) -ForegroundColor Yellow
+                        }
                         ($analysisText) | Out-File -FilePath (Join-Path $analysisDir 'analysis.json') -Encoding utf8 -Force
                         $templatePath = Join-Path $PSScriptRoot 'templates/html/analysis.html'
                         Write-AnalysisReport -AnalysisDir $analysisDir -TemplatePath $templatePath -AnalysisObj $analysisObj

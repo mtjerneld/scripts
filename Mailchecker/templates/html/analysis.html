@@ -1,52 +1,33 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Email Security – AI Analysis</title>
-  <base href="./">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Email Security &mdash; AI Analysis</title>
   <link rel="stylesheet" href="../assets/style.css">
   <link rel="stylesheet" href="../assets/analysis.css">
   <script defer src="../assets/analysis.js"></script>
-  </head>
+</head>
 <body>
   <div class="container">
-  <header class="page-header">
-    <h1>Email Security – AI Analysis</h1>
-    <nav><a href="../index.html">← Back</a></nav>
-  </header>
+    <a href="../index.html" class="nav-link">Back to Summary</a>
+    
+    <h1>Email Security &mdash; AI Analysis</h1>
 
-  <div class="summary-stats">
-    <h2>Summary</h2>
-    <div class="flex-center">
-      {{OVERALL_STATUS}}
-      <div class="summary">{{SUMMARY}}</div>
+    <div class="summary-stats">
+      <h2>Summary</h2>
+      <div class="flex-center">
+        {{OVERALL_STATUS}}
+        <div class="summary">{{SUMMARY}}</div>
+      </div>
     </div>
-  </div>
 
-  <section id="key-findings">
-    <h2>Key findings</h2>
-    {{KEY_FINDINGS}}
-  </section>
-
-  <section id="remediations">
-    <h2>Remediation plan</h2>
-    {{REMEDIATIONS}}
-  </section>
-
-  <section id="per-domain-notes" class="section">
-    <h2>Per Domain</h2>
-    {{PER_DOMAIN_NOTES}}
-  </section>
-
-  <section id="full-report">
-    <h2>Full report</h2>
-    <div class="md">{{REPORT_MARKDOWN_HTML}}</div>
-  </section>
-
-  <footer class="meta">
-    {{META}}
-  </footer>
+{{KEY_FINDINGS_SECTION}}
+{{FULL_REPORT_SECTION}}
+{{META}}
+    <div class="footer">
+      <p><a href="../index.html" class="back-link">Back to Summary</a></p>
+    </div>
   </div>
 </body>
 </html>

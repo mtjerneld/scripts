@@ -1,14 +1,32 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Analysis Invalid</title>
   <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body>
 <div class="container">
+  <a href="../index.html" class="nav-link">Back to Summary</a>
+  
   <h1>Analysis Invalid</h1>
-  <p>Model did not return valid JSON.</p>
+  <div class="issues-box-fail">
+    <h3>Error</h3>
+    <p>The AI model did not return valid JSON or the response could not be parsed.</p>
+  </div>
+  
+  <h2>Troubleshooting</h2>
+  <ul>
+    <li>Check <code>response.json</code> for the raw API response</li>
+    <li>Check <code>response_text.txt</code> for the extracted text</li>
+    <li>The response may have exceeded schema limits or been truncated</li>
+    <li>Check console output for specific error messages</li>
+  </ul>
+  
+  <div class="footer">
+    <p><a href="../index.html" class="back-link">Back to Summary</a></p>
+  </div>
 </div>
 </body>
 </html>
