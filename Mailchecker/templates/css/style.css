@@ -108,6 +108,10 @@ h3 {
 }
 
 /* Navigation */
+.nav-link::before {
+    content: '← ';
+}
+
 .nav-link {
     display: inline-block;
     margin: var(--space-2) 0;
@@ -124,6 +128,10 @@ h3 {
     background-color: var(--pri-700);
     box-shadow: var(--shadow-sm);
     text-decoration: none;
+}
+
+.footer a.back-link::before {
+    content: '← ';
 }
 
 /* Summary statistics */
@@ -217,9 +225,17 @@ td.domain {
 }
 
 /* Status cells (for Status column with background) */
+td.status-ok::before {
+    content: '✅ ';
+}
+
 td.status-ok {
     background: var(--ok-50);
     color: var(--ok);
+}
+
+td.status-fail::before {
+    content: '❌ ';
 }
 
 td.status-fail {
@@ -227,9 +243,17 @@ td.status-fail {
     color: var(--err);
 }
 
+td.status-warn::before {
+    content: '⚠️ ';
+}
+
 td.status-warn {
     background: var(--warn-50);
     color: var(--warn);
+}
+
+td.status-info::before {
+    content: 'ℹ️ ';
 }
 
 td.status-info {
@@ -238,16 +262,36 @@ td.status-info {
 }
 
 /* Status badges (for individual check columns without background) */
+span.status-ok::before {
+    content: '✅';
+    margin-right: 0.25em;
+}
+
 span.status-ok {
     color: var(--ok);
+}
+
+span.status-fail::before {
+    content: '❌';
+    margin-right: 0.25em;
 }
 
 span.status-fail {
     color: var(--err);
 }
 
+span.status-warn::before {
+    content: '⚠️';
+    margin-right: 0.25em;
+}
+
 span.status-warn {
     color: var(--warn);
+}
+
+span.status-info::before {
+    content: 'ℹ️';
+    margin-right: 0.25em;
 }
 
 span.status-info {
@@ -268,6 +312,18 @@ span.status-info {
     color: var(--text);
     background: none !important;
     padding: 0;
+}
+
+.info-block p.status-info::before {
+    content: 'ℹ️ ';
+}
+
+.info-block p.status-warn::before {
+    content: '⚠️ ';
+}
+
+.info-block p.status-fail::before {
+    content: '❌ ';
 }
 
 .info-block .status-info { color: var(--info); }
@@ -393,6 +449,14 @@ a:hover {
     transition: background-color 0.2s, box-shadow 0.2s;
 }
 
+.download-links a.csv-link::before {
+    content: '📊 ';
+}
+
+.download-links a.json-link::before {
+    content: '📄 ';
+}
+
 .download-links a:hover {
     background-color: var(--pri-700);
     box-shadow: var(--shadow-sm);
@@ -405,4 +469,187 @@ a:hover {
     font-size: 14px;
     margin: var(--space-2) 0;
 }
+
+/* Success box (all checks passed) */
+.success-box {
+    background-color: var(--ok-50);
+    border-left: 4px solid var(--ok);
+    padding: var(--space-3) var(--space-4);
+    margin: var(--space-4) 0;
+    border-radius: var(--radius-sm);
+}
+
+.success-box h3::before {
+    content: '✅ ';
+}
+
+.success-box h3 {
+    color: var(--ok);
+    margin-top: 0;
+}
+
+.success-box p {
+    color: var(--text);
+    margin-bottom: 0;
+}
+
+/* Table column widths - domain report summary table */
+.summary-table th.col-check { width: 200px; }
+.summary-table th.col-status { width: 120px; }
+
+/* Table column widths - index page table */
+.index-table th.col-domain { width: 200px; }
+.index-table th.col-mx { width: 200px; }
+.index-table th.col-status { width: 90px; }
+.index-table th.col-spf { width: 70px; }
+.index-table th.col-dkim { width: 70px; }
+.index-table th.col-dmarc { width: 90px; }
+.index-table th.col-mta-sts { width: 90px; }
+.index-table th.col-tls-rpt { width: 90px; }
+
+/* Table cell sizes */
+.td-small {
+    font-size: 12px;
+}
+
+.td-center {
+    text-align: center;
+}
+
+/* Summary table detail cells with warning/error */
+.td-detail-warn::before {
+    content: '⚠️ ';
+}
+
+.td-detail-warn {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--warn);
+}
+
+.td-detail-error::before {
+    content: '❌ ';
+}
+
+.td-detail-error {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--err);
+}
+
+/* Text color utilities */
+.text-success::before {
+    content: '✅ ';
+}
+
+.text-success {
+    color: var(--ok);
+}
+
+.text-warning::before {
+    content: '⚠️ ';
+}
+
+.text-warning {
+    color: var(--warn);
+    font-weight: 600;
+}
+
+.text-error::before {
+    content: '❌ ';
+}
+
+.text-error {
+    color: var(--err);
+    font-weight: 600;
+}
+
+.text-muted {
+    color: var(--text-muted);
+}
+
+.text-muted-light {
+    color: #666;
+}
+
+/* Check summary paragraphs */
+.check-summary p {
+    font-size: 14px;
+    color: var(--text-muted);
+}
+
+.check-summary p:last-child {
+    margin-bottom: 0;
+}
+
+.check-summary h3 {
+    margin-top: 0;
+}
+
+/* Flexbox utilities */
+.flex-between {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+.flex-between h2 {
+    margin: 0;
+}
+
+.flex-center {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Button */
+.btn {
+    display: inline-block;
+    padding: 8px 12px;
+    background-color: var(--pri-600);
+    color: white;
+    text-decoration: none;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    transition: background-color 0.2s, box-shadow 0.2s;
+}
+
+.btn:hover {
+    background-color: var(--pri-700);
+    box-shadow: var(--shadow-sm);
+    text-decoration: none;
+}
+
+/* Stat card subtitle */
+.stat-subtitle {
+    font-size: 12px;
+    margin-top: 5px;
+}
+
+/* Legend colors (footer) */
+.legend-pass::before {
+    content: '✅ ';
+}
+
+.legend-pass { color: #28a745; }
+
+.legend-warn::before {
+    content: '⚠️ ';
+}
+
+.legend-warn { color: #ffc107; }
+
+.legend-fail::before {
+    content: '❌ ';
+}
+
+.legend-fail { color: #dc3545; }
+
+.legend-info::before {
+    content: 'ℹ️ ';
+}
+
+.legend-info { color: #0078D7; }
 

@@ -1,5 +1,12 @@
 .md h1,.md h2,.md h3{margin-top:1.2em}
 .md ul{padding-left:18px}
-.md pre{background:#f5f5f5;padding:12px;border-radius:6px;overflow:auto}
+.md pre{background:#f5f5f5;padding:12px;border-radius:6px;overflow:auto;white-space:pre-wrap}
 .md code{font-family:Consolas,Monaco,monospace}
+
+.status-chip{display:inline-block;padding:4px 8px;border-radius:6px;font-weight:600}
+.status-pass{background:#e6f4ea;color:#137333}
+.status-warn{background:#fff4e5;color:#b26a00}
+.status-fail{background:#fde7e9;color:#b3261e}
+.page-header{display:flex;justify-content:space-between;align-items:center;margin:16px 0}
+.page-header nav a{text-decoration:none}
 

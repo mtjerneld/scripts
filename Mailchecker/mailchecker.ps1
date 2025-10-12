@@ -1465,27 +1465,25 @@ function ConvertTo-HtmlSection {
         $html += "`n  <div class='info-block'>`n"
         foreach ($msg in $allMessages) {
             $cls = 'status-info'
-            $icon = '&#x2139;&#xFE0F; '  # ℹ️
             if ($msg -match '^(?i)\s*Warning:') { 
                 $cls = 'status-warn'
-                $icon = '&#x26A0;&#xFE0F; '  # ⚠️
             }
             $encodedMsg = [System.Web.HttpUtility]::HtmlEncode($msg)
-            $html += ("    <p class='" + $cls + "'>" + $icon + $encodedMsg + "</p>`n")
+            $html += ("    <p class='" + $cls + "'>" + $encodedMsg + "</p>`n")
         }
         $html += "  </div>`n"
     }
     
     $statusText = "$($Result.Section) status: $($Result.Status)"
     $clsFinal = switch ($Result.Status) {
-        'PASS' { 'status-ok'; $icon = '&#x2705; ' }    # ✅
-        'OK'   { 'status-ok'; $icon = '&#x2705; ' }    # ✅ (Legacy)
-        'FAIL' { 'status-fail'; $icon = '&#x274C; ' }  # ❌
-        'WARN' { 'status-warn'; $icon = '&#x26A0;&#xFE0F; ' }  # ⚠️
-        'N/A'  { 'status-info'; $icon = '&#x2139;&#xFE0F; ' }  # ℹ️
+        'PASS' { 'status-ok' }
+        'OK'   { 'status-ok' }
+        'FAIL' { 'status-fail' }
+        'WARN' { 'status-warn' }
+        'N/A'  { 'status-info' }
     }
     $encodedStatus = [System.Web.HttpUtility]::HtmlEncode($statusText)
-    $html += "  <p class='" + $clsFinal + "'>" + $icon + $encodedStatus + "</p>`n"
+    $html += "  <p class='" + $clsFinal + "'>" + $encodedStatus + "</p>`n"
     
     return $html
 }
@@ -1745,19 +1743,6 @@ function Resolve-SPF {
   return @()
 }
 
-function Get-DmarcInfo($txt){
-  $map = @{}
-  if (-not $txt) { return $map }
-  $pairs = $txt -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-  foreach($p in $pairs){
-    $kv = $p -split '=',2
-    if($kv.Count -eq 2){
-      $map[$kv[0].Trim()] = $kv[1].Trim()
-    }
-  }
-  return $map
-}
-
 function Get-HttpText($url){
   try {
     $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -Headers @{ "User-Agent"="MailStackCheck/1.1" } -TimeoutSec 10
@@ -1879,8 +1864,6 @@ function Invoke-OpenAIAnalysis {
   # Normalize schema for Responses API
   try { Set-OpenAIAdditionalPropertiesFalse -Node $schemaJson } catch {}
   try { Set-OpenAIRequiredForAllProperties -Node $schemaJson } catch {}
-  $schemaRaw  = [System.IO.File]::ReadAllText($SchemaPath, $utf8NoBom)
-  $jsonSchemaStr = ([ordered]@{ name = 'analysis'; strict = $true; schema = $schemaJson } | ConvertTo-Json -Depth 100 -Compress)
 
   $userMeta = @{ date = (Get-Date).ToString('u'); domain_count = $Compressed.total_domains } | ConvertTo-Json -Depth 5 -Compress
   $compressedJson = $Compressed | ConvertTo-Json -Depth 6 -Compress
@@ -1943,7 +1926,7 @@ function Invoke-OpenAIAnalysis {
   }
   # Normalize content-part types to input_text for Responses API
   try {
-    $null = Normalize-ResponsesContentTypes -BodyObj $bodyObj
+    $null = ConvertTo-NormalizedResponsesContentTypes -BodyObj $bodyObj
   } catch {}
   $bodyJson = $bodyObj | ConvertTo-Json -Depth 100 -Compress
   $swBuild.Stop()
@@ -1960,8 +1943,7 @@ function Invoke-OpenAIAnalysis {
     Write-Host ("  Payload dumped to {0} (pretty: {1})" -f $dumpPath, $prettyPath) -ForegroundColor Gray
   } catch {}
 
-  # Minimal, exact headers for Responses API
-  $headers = @{ 'Authorization' = "Bearer $apiKey" }
+  # Get timeout configuration
   $timeout = if ($env:OPENAI_TIMEOUT_SECONDS) { [int]$env:OPENAI_TIMEOUT_SECONDS } else { $TimeoutSeconds }
   $bodyBytes = [System.Text.Encoding]::UTF8.GetByteCount($bodyJson)
   # Safety check to ensure we only ever post to the official endpoint
@@ -2011,7 +1993,7 @@ function Invoke-OpenAIAnalysis {
   if ($null -eq $json) { throw 'Failed to parse OpenAI response JSON' }
   # Prefer robust parsing into object, fallback to text
   $parsedObj = $null
-  try { $parsedObj = Parse-OpenAIResponseJson -respObj $json } catch {}
+  try { $parsedObj = ConvertFrom-OpenAIResponseJson -respObj $json } catch {}
   if ($parsedObj) {
     return [PSCustomObject]@{ raw = $json; obj = $parsedObj; text = ($parsedObj | ConvertTo-Json -Depth 50); input_tokens = $inputTokens; est_cost = $costEstimate }
   } else {
@@ -2020,60 +2002,7 @@ function Invoke-OpenAIAnalysis {
   }
 }
 
-function Invoke-OpenAIHello {
-  param(
-    [string]$Model,
-    [int]$TimeoutSeconds = 60
-  )
-  # PS5 networking hardening
-  try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
-  try { [System.Net.ServicePointManager]::Expect100Continue = $false } catch {}
-
-  $apiKey = $env:OPENAI_API_KEY
-  if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'OPENAI_API_KEY missing' }
-  $modelToUse = if ($Model) { $Model } elseif ($env:OPENAI_MODEL) { $env:OPENAI_MODEL } else { 'gpt-4o-mini' }
-
-  $bodyObj = [ordered]@{
-    model = $modelToUse
-    input = @(@{ role='user'; content=@(@{ type='input_text'; text='Say hello' }) })
-  }
-  $bodyJson = $bodyObj | ConvertTo-Json -Depth 20 -Compress
-  # Dump body (no BOM)
-  try { [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'openai-hello.json'), $bodyJson, (New-Object System.Text.UTF8Encoding($false))) } catch {}
-
-  $baseUrl = 'https://api.openai.com/v1'
-  $url = "$baseUrl/responses"
-  if ($url -notmatch '^https://api\.openai\.com/v1/responses$') { throw ("Safety check failed: URL ({0}) is not OpenAI's official endpoint." -f $url) }
-  $headers = @{ 'Authorization' = "Bearer $apiKey"; 'Content-Type' = 'application/json' }
-
-  try {
-    # Prefer InFile with utf8NoBOM in PS5 for reliability
-    $helloFile = Join-Path (Get-Location) 'openai-hello.json'
-    $resp = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $helloFile -ContentType 'application/json' -TimeoutSec $TimeoutSeconds -ErrorAction Stop
-    return $resp
-  } catch {
-    $we = $_.Exception
-    $errBody = $null
-    if ($we.Response) {
-      try {
-        $stream = $we.Response.GetResponseStream()
-        if ($stream) {
-          $mem = New-Object System.IO.MemoryStream
-          $buffer = New-Object byte[] 8192
-          while (($read = $stream.Read($buffer,0,$buffer.Length)) -gt 0) { $mem.Write($buffer,0,$read) }
-          $errBody = [System.Text.Encoding]::UTF8.GetString($mem.ToArray())
-          $mem.Dispose()
-        }
-      } catch {}
-    }
-    if ($errBody) {
-      try { [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'openai-error.json'), $errBody, (New-Object System.Text.UTF8Encoding($false))) } catch {}
-    }
-    throw ("OpenAI hello failed: {0}" -f $we.Message)
-  }
-}
-
-function Normalize-ResponsesContentTypes {
+function ConvertTo-NormalizedResponsesContentTypes {
   param([Parameter(Mandatory=$true)][hashtable]$BodyObj)
   if (-not $BodyObj.input) { return $BodyObj }
   foreach ($blk in $BodyObj.input) {
@@ -2108,7 +2037,7 @@ function Get-FirstResponsesOutputText {
   return $FallbackContent
 }
 
-function Parse-OpenAIResponseJson {
+function ConvertFrom-OpenAIResponseJson {
   param(
     [Parameter(Mandatory=$true)] $respObj
   )
@@ -2320,8 +2249,8 @@ function Get-DomainReportHtml {
   $html = Get-Content -Path $templatePath -Raw -Encoding UTF8
   
   # Build back links
-  $backLinkTop = if ($IncludeBackLink) { '    <a href="../index.html" class="nav-link">&#8592; Back to Summary</a>' } else { '' }
-  $backLinkBottom = if ($IncludeBackLink) { '        <p><a href="../index.html">&#8592; Back to Summary</a></p>' } else { '' }
+  $backLinkTop = if ($IncludeBackLink) { '    <a href="../index.html" class="nav-link">Back to Summary</a>' } else { '' }
+  $backLinkBottom = if ($IncludeBackLink) { '        <p><a href="../index.html" class="back-link">Back to Summary</a></p>' } else { '' }
   
   # Build issues box
   $issues = @()
@@ -2329,9 +2258,9 @@ function Get-DomainReportHtml {
   foreach ($result in @($mxResult, $spfResult, $dkimResult, $mtaStsResult, $dmarcResult, $tlsResult)) {
     if ($result.Status -eq 'FAIL') {
       $hasFail = $true
-      $issues += [PSCustomObject]@{ Status='FAIL'; Icon='&#10060;'; Text = "$($result.Section): $($result.Data.Reason)" }
+      $issues += "$($result.Section): $($result.Data.Reason)"
     } elseif ($result.Status -eq 'WARN') {
-      $issues += [PSCustomObject]@{ Status='WARN'; Icon='&#9888;&#65039;'; Text = "$($result.Section): $($result.Data.Reason)" }
+      $issues += "$($result.Section): $($result.Data.Reason)"
       }
     }
   if ($issues.Count -gt 0) {
@@ -2340,22 +2269,22 @@ function Get-DomainReportHtml {
     <div class="$boxClass">
         <h3>Issues Found</h3>
         <ul>
-$(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtility]::HtmlEncode($_.Text))</li>" }) -join "`n")
+$(($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlEncode($_))</li>" }) -join "`n")
         </ul>
     </div>
 "@
   } else {
     $issuesBox = @"
-    <div style="background-color: var(--ok-50); border-left: 4px solid var(--ok); padding: 15px; margin: 20px 0; border-radius: var(--radius-sm);">
-        <h3 style="color: var(--ok); margin-top: 0;">&#9989; All Checks Passed</h3>
-        <p style="color: var(--text); margin-bottom: 0;">No issues detected in the email security configuration.</p>
+    <div class="success-box">
+        <h3>All Checks Passed</h3>
+        <p>No issues detected in the email security configuration.</p>
     </div>
 "@
   }
 
   # Build summary table
   $summaryTable = "<h2>Summary</h2>`n"
-  $summaryTable += "<table><tr><th style='width: 200px;'>Check</th><th style='width: 120px;'>Status</th><th>Details</th></tr>"
+  $summaryTable += "<table class='summary-table'><tr><th class='col-check'>Check</th><th class='col-status'>Status</th><th>Details</th></tr>"
   
   $renderStatusCell = {
     param($status)
@@ -2367,33 +2296,25 @@ $(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtil
       'N/A' { 'status-info' }
       default { '' }
     }
-    $icon = switch ($status) {
-      'PASS' { '&#x2705; ' }
-      'OK' { '&#x2705; ' }
-      'WARN' { '&#x26A0;&#xFE0F; ' }
-      'FAIL' { '&#x274C; ' }
-      'N/A' { '&#x2139;&#xFE0F; ' }
-      default { '' }
-    }
     $text = switch ($status) { 'OK' { 'PASS' } default { $status } }
-    return "<td class='$cls'>$icon$text</td>"
+    return "<td class='$cls'>$text</td>"
   }
   
   if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
     $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
     $summaryTable += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
   } elseif ($mxResult.Status -eq 'WARN') {
-    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--warn);'>&#9888;&#65039; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td class='td-detail-warn'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   } elseif ($mxResult.Data.DomainExists -eq $false) {
-    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--err);'>&#10060; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td class='td-detail-error'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   } else {
-    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   }
-  $summaryTable += "<tr><td>SPF</td>" + (& $renderStatusCell $spfResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
-  $summaryTable += "<tr><td>DKIM</td>" + (& $renderStatusCell $dkimResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
-  $summaryTable += "<tr><td>DMARC</td>" + (& $renderStatusCell $dmarcResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
-  $summaryTable += "<tr><td>MTA-STS</td>" + (& $renderStatusCell $mtaStsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
-  $summaryTable += "<tr><td>TLS-RPT</td>" + (& $renderStatusCell $tlsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
+  $summaryTable += "<tr><td>SPF</td>" + (& $renderStatusCell $spfResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
+  $summaryTable += "<tr><td>DKIM</td>" + (& $renderStatusCell $dkimResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
+  $summaryTable += "<tr><td>DMARC</td>" + (& $renderStatusCell $dmarcResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
+  $summaryTable += "<tr><td>MTA-STS</td>" + (& $renderStatusCell $mtaStsResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
+  $summaryTable += "<tr><td>TLS-RPT</td>" + (& $renderStatusCell $tlsResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
   $summaryTable += "</table>"
 
   # Build sections
@@ -2517,27 +2438,27 @@ function Write-IndexPage {
   $dmarcPass = @($AllResults | Where-Object { $_.DMARCResult.Status -eq 'PASS' }).Count
   $tlsPass = @($AllResults | Where-Object { $_.TLSResult.Status -eq 'PASS' }).Count
   
-  # Determine icon for each check type based on worst status
-  function Get-CheckIcon {
+  # Determine icon class for each check type based on worst status
+  function Get-CheckIconClass {
     param($CheckResults)
     $hasFail = @($CheckResults | Where-Object { $_ -eq 'FAIL' }).Count -gt 0
     $hasWarn = @($CheckResults | Where-Object { $_ -eq 'WARN' }).Count -gt 0
     
-    if ($hasFail) { return '&#10060;' }      # ❌
-    elseif ($hasWarn) { return '&#9888;&#65039;' }  # ⚠️
-    else { return '&#9989;' }                 # ✅
+    if ($hasFail) { return 'status-fail' }
+    elseif ($hasWarn) { return 'status-warn' }
+    else { return 'status-ok' }
   }
   
-  $mxIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.MXResult.Status })
-  $spfIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.SPFResult.Status })
-  $dkimIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.DKIMResult.Status })
-  $dmarcIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.DMARCResult.Status })
-  $mtaStsIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.MTAStsResult.Status })
-  $tlsIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.TLSResult.Status })
+  $mxIconClass = Get-CheckIconClass ($AllResults | ForEach-Object { $_.MXResult.Status })
+  $spfIconClass = Get-CheckIconClass ($AllResults | ForEach-Object { $_.SPFResult.Status })
+  $dkimIconClass = Get-CheckIconClass ($AllResults | ForEach-Object { $_.DKIMResult.Status })
+  $dmarcIconClass = Get-CheckIconClass ($AllResults | ForEach-Object { $_.DMARCResult.Status })
+  $mtaStsIconClass = Get-CheckIconClass ($AllResults | ForEach-Object { $_.MTAStsResult.Status })
+  $tlsIconClass = Get-CheckIconClass ($AllResults | ForEach-Object { $_.TLSResult.Status })
 
   # Build check summary
-  $checkSummary = "        <p style=`"font-size: 14px; color: var(--text-muted);`">$mxIcon MX Records: $mxPass/$totalDomains | $spfIcon SPF: $spfPass/$totalDomains | $dkimIcon DKIM: $dkimPass/$totalDomains</p>`n"
-  $checkSummary += "        <p style=`"font-size: 14px; color: var(--text-muted); margin-bottom: 0;`">$dmarcIcon DMARC: $dmarcPass/$totalDomains | $mtaStsIcon MTA-STS: $mtaStsPass/$totalDomains | $tlsIcon TLS-RPT: $tlsPass/$totalDomains</p>"
+  $checkSummary = "        <p><span class='$mxIconClass'></span> MX Records: $mxPass/$totalDomains | <span class='$spfIconClass'></span> SPF: $spfPass/$totalDomains | <span class='$dkimIconClass'></span> DKIM: $dkimPass/$totalDomains</p>`n"
+  $checkSummary += "        <p><span class='$dmarcIconClass'></span> DMARC: $dmarcPass/$totalDomains | <span class='$mtaStsIconClass'></span> MTA-STS: $mtaStsPass/$totalDomains | <span class='$tlsIconClass'></span> TLS-RPT: $tlsPass/$totalDomains</p>"
 
   # Build download links if CSV or JSON available
   $downloadLinks = ""
@@ -2546,11 +2467,11 @@ function Write-IndexPage {
     $downloadLinks += "        <strong>Download:</strong>`n"
     if ($CsvFileName) {
       $encodedCsvName = [System.Web.HttpUtility]::HtmlEncode($CsvFileName)
-      $downloadLinks += "        <a href='" + $encodedCsvName + "'>&#128202; CSV Report</a>`n"
+      $downloadLinks += "        <a class='csv-link' href='" + $encodedCsvName + "'>CSV Report</a>`n"
     }
     if ($JsonFileName) {
       $encodedJsonName = [System.Web.HttpUtility]::HtmlEncode($JsonFileName)
-      $downloadLinks += "        <a href='" + $encodedJsonName + "'>&#128196; JSON Export</a>`n"
+      $downloadLinks += "        <a class='json-link' href='" + $encodedJsonName + "'>JSON Export</a>`n"
     }
     $downloadLinks += "    </div>`n"
   }
@@ -2560,28 +2481,23 @@ function Write-IndexPage {
     param([string]$status)
     
     $cls = 'status-info'
-    $icon = '&#x2139;&#xFE0F;'
     $text = $status
     
     if ($status -eq 'PASS' -or $status -eq 'OK') {
       $cls = 'status-ok'
-      $icon = '&#9989;'
       $text = 'PASS'
     } elseif ($status -eq 'WARN') {
       $cls = 'status-warn'
-      $icon = '&#9888;&#65039;'
       $text = 'WARN'
     } elseif ($status -eq 'FAIL') {
       $cls = 'status-fail'
-      $icon = '&#10060;'
       $text = 'FAIL'
     } elseif ($status -eq 'N/A') {
       $cls = 'status-info'
-      $icon = '&#8505;&#65039;'
       $text = 'N/A'
     }
     
-    return "<span class='" + $cls + "' title='" + $text + "'>" + $icon + "</span>"
+    return "<span class='" + $cls + "' title='" + $text + "'></span>"
   }
 
   # Build domain rows
@@ -2597,12 +2513,6 @@ function Write-IndexPage {
         'PASS' { 'status-ok' }
         'WARN' { 'status-warn' }
         'FAIL' { 'status-fail' }
-        default { '' }
-      }
-    $statusIcon = switch ($overallStatus) {
-      'PASS' { '&#9989; ' }
-      'WARN' { '&#9888;&#65039; ' }
-      'FAIL' { '&#10060; ' }
         default { '' }
       }
     
@@ -2648,7 +2558,7 @@ function Write-IndexPage {
     $issuesText = if ($issues.Count -gt 0) { 
       ($issues | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode($_) }) -join '<br>'
     } else {
-      '<span style="color: #28a745;">No issues</span>' 
+      '<span class="text-success">No issues</span>' 
     }
     
     # Get MX records for display
@@ -2657,15 +2567,15 @@ function Write-IndexPage {
         [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") 
       }) -join '<br>'
     } elseif ($result.MXResult.Status -eq 'N/A') {
-      '<span style="color: #666;">N/A (send-only)</span>'
+      '<span class="text-muted-light">N/A (send-only)</span>'
     } elseif ($result.MXResult.Status -eq 'WARN') {
       # SERVFAIL case - shown as warning with note about DNS issues
-      '<span style="color: #ffc107; font-weight: 600;">&#9888;&#65039; DNS misconfigured (SERVFAIL)</span>'
+      '<span class="text-warning">DNS misconfigured (SERVFAIL)</span>'
     } elseif ($result.MXResult.Data.DomainExists -eq $false) {
       # NXDOMAIN - domain truly doesn't exist
-      '<span style="color: #dc3545; font-weight: 600;">&#10060; Domain does not exist</span>'
+      '<span class="text-error">Domain does not exist</span>'
     } else {
-      '<span style="color: #dc3545;">No MX records</span>'
+      '<span class="text-error">No MX records</span>'
     }
     
     $encodedDomainLink = [System.Web.HttpUtility]::HtmlAttributeEncode($domainLink)
@@ -2679,14 +2589,14 @@ function Write-IndexPage {
     
     $domainRows += "            <tr>`n"
     $domainRows += "                <td class='domain'><a href='" + $encodedDomainLink + "'>" + $encodedDomain + "</a></td>`n"
-    $domainRows += "                <td style='font-size: 12px;'>" + $mxRecordsText + "</td>`n"
-    $domainRows += "                <td class='" + $statusClass + "' style='text-align: center;' title='" + $overallStatus + "'>" + $statusIcon + "</td>`n"
-    $domainRows += "                <td style='text-align: center;'>" + $spfBadge + "</td>`n"
-    $domainRows += "                <td style='text-align: center;'>" + $dkimBadge + "</td>`n"
-    $domainRows += "                <td style='text-align: center;'>" + $dmarcBadge + "</td>`n"
-    $domainRows += "                <td style='text-align: center;'>" + $mtastsBadge + "</td>`n"
-    $domainRows += "                <td style='text-align: center;'>" + $tlsBadge + "</td>`n"
-    $domainRows += "                <td style='font-size: 12px;'>" + $issuesText + "</td>`n"
+    $domainRows += "                <td class='td-small'>" + $mxRecordsText + "</td>`n"
+    $domainRows += "                <td class='" + $statusClass + " td-center' title='" + $overallStatus + "'></td>`n"
+    $domainRows += "                <td class='td-center'>" + $spfBadge + "</td>`n"
+    $domainRows += "                <td class='td-center'>" + $dkimBadge + "</td>`n"
+    $domainRows += "                <td class='td-center'>" + $dmarcBadge + "</td>`n"
+    $domainRows += "                <td class='td-center'>" + $mtastsBadge + "</td>`n"
+    $domainRows += "                <td class='td-center'>" + $tlsBadge + "</td>`n"
+    $domainRows += "                <td class='td-small'>" + $issuesText + "</td>`n"
     $domainRows += "            </tr>`n"
   }
 

@@ -7,15 +7,6 @@
   <base href="./">
   <link rel="stylesheet" href="../assets/style.css">
   <link rel="stylesheet" href="../assets/analysis.css">
-  <style>
-    .status-chip{display:inline-block;padding:4px 8px;border-radius:6px;font-weight:600}
-    .status-pass{background:#e6f4ea;color:#137333}
-    .status-warn{background:#fff4e5;color:#b26a00}
-    .status-fail{background:#fde7e9;color:#b3261e}
-    .page-header{display:flex;justify-content:space-between;align-items:center;margin:16px 0}
-    .page-header nav a{text-decoration:none}
-    .md pre{white-space:pre-wrap}
-  </style>
   <script defer src="../assets/analysis.js"></script>
   </head>
 <body>
@@ -27,7 +18,7 @@
 
   <div class="summary-stats">
     <h2>Summary</h2>
-    <div style="display:flex; align-items:center; gap:12px;">
+    <div class="flex-center">
       {{OVERALL_STATUS}}
       <div class="summary">{{SUMMARY}}</div>
     </div>
