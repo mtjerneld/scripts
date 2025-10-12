@@ -76,7 +76,7 @@ MAILCHECKER - Email Security Configuration Checker
 
 SYNOPSIS
     .\mailchecker.ps1 -Domain <domain> [-Selectors <list>] [-Html]
-    .\mailchecker.ps1 -BulkFile <file> [-FullHtmlExport] [-OpenReport] [-Json]
+    .\mailchecker.ps1 -BulkFile <file> [-FullHtmlExport] [-OpenReport] [-Json] [-ChatGPT]
 
 DESCRIPTION
     Checks email security: MX, SPF, DKIM, MTA-STS, DMARC, TLS-RPT
@@ -89,11 +89,12 @@ KEY PARAMETERS
     -DnsServer <servers>     DNS servers to use (default: 8.8.8.8, 1.1.1.1)
     
 OUTPUT OPTIONS
-    -Html                    Generate HTML report for single domain
+    -Html                    Generate HTML report for single domain (outputs to: output/)
     -FullHtmlExport         [RECOMMENDED] Complete export: index, domain reports, CSV, assets
     -Json                    Add JSON export (with -FullHtmlExport)
-    -OutputPath <path>       Output directory (auto-generated if not specified)
+    -OutputPath <path>       Output directory (default: output/)
     -OpenReport              Auto-open report in browser (with -FullHtmlExport)
+    -ChatGPT                 Generate AI analysis with remediation plan (requires OPENAI_API_KEY in .env)
     
 AZURE CLOUD UPLOAD
     -UploadToAzure          Upload report to Azure Blob Storage (requires -FullHtmlExport)
@@ -109,23 +110,30 @@ QUICK EXAMPLES
   Bulk Checking:
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OpenReport
-    .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -OutputPath ./reports
+    .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json
+  
+  With AI Analysis:
+    .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -ChatGPT
+    .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -ChatGPT -OpenReport
   
   Azure Upload:
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure -AzureRunId "2025-audit"
 
-FULL HTML EXPORT STRUCTURE
-    domains-20251008-142315/
-      index.html              Main summary with links
-      bulk-results-*.csv      CSV export
-      results.json            JSON export (if -Json)
-      assets/
-        style.css             Modern responsive styles
-        app.js                Interactive features
-      domains/
-        example.com.html      Individual reports
-        ...
+DEFAULT OUTPUT STRUCTURE (output/domains-20251008-142315/)
+    index.html              Main summary with links
+    bulk-results-*.csv      CSV export
+    results.json            JSON export (if -Json)
+    analysis/
+      index.html            AI-generated analysis (if -ChatGPT)
+    assets/
+      style.css             Modern responsive styles
+      app.js                Interactive features
+      analysis.css          AI analysis styles
+      analysis.js           AI analysis scripts
+    domains/
+      example.com.html      Individual reports
+      ...
 
 INPUT FILE FORMAT (domains.txt)
     example.com
@@ -144,6 +152,13 @@ COMMON ISSUES
     - SPF >10 lookups -> Simplify or use redirect
     - MTA-STS testing mode -> Change to mode: enforce
     - DMARC p=none -> Upgrade to p=reject
+
+AI ANALYSIS (OPTIONAL)
+    Add OPENAI_API_KEY to .env to enable AI-powered analysis:
+    - Strategic remediation plan with priorities
+    - Per-domain recommendations
+    - Cost estimation and timeline
+    - Actionable next steps
 
 MORE INFORMATION
     See README.md for:
@@ -541,7 +556,8 @@ function New-OutputStructure {
         }
         
         $timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
-        $resolvedPath = Join-Path (Get-Location) "$baseName-$timestamp"
+        $outputDir = Join-Path (Get-Location) "output"
+        $resolvedPath = Join-Path $outputDir "$baseName-$timestamp"
     } else {
         # Use provided path
         $resolvedPath = $OutputPath
@@ -581,468 +597,27 @@ function New-OutputStructure {
 function Write-AssetsFiles {
     param([string]$AssetsPath)
     
-    # Create style.css with professional color palette
-    $css = @'
-/* CSS Variables - Professional Email Security Palette */
-:root {
-  /* Brand */
-  --pri-800:#0B3A5B; --pri-700:#11527F; --pri-600:#1670B0; --pri-500:#1C86D1;
-  --pri-100:#D6E9F7; --pri-50:#F2F8FD;
-
-  /* Neutrals */
-  --ink:#0F1720; --n900:#1C2430; --n800:#2A3442; --n700:#3B4757; --n600:#5A6676;
-  --n500:#7F8A98; --n400:#AAB3BD; --n300:#D3D9E0; --n200:#E7ECF1; --n100:#F5F7FA; --white:#FFFFFF;
-
-  /* Status */
-  --ok:#156A3A;       --ok-50:#E5F5EC;
-  --warn:#8A6A00;     --warn-50:#FFF7DA;
-  --err:#8F1D1D;      --err-50:#FDEAEA;
-  --info:#0F766E;     --info-50:#E0F2F1;
-
-  /* Semantic surfaces */
-  --bg: var(--n100);
-  --surface: var(--white);
-  --surface-muted: var(--n200);
-  --text: var(--ink);
-  --text-muted: var(--n600);
-  --border: var(--n300);
-  --link: var(--pri-600);
-  --link-hover: var(--pri-700);
-
-  /* Focus ring */
-  --focus: #66A9E8;
-
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(16,24,40,.06);
-  --shadow-md: 0 4px 12px rgba(16,24,40,.10);
-
-  /* Radii & spacing */
-  --radius: 12px;
-  --radius-sm: 8px;
-  --space-1: .5rem; --space-2: .75rem; --space-3: 1rem; --space-4: 1.25rem; --space-6: 1.75rem;
-
-  /* Typography */
-  --font-sans: ui-sans-serif, 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, 'SFMono-Regular', 'Menlo', Monaco, 'Consolas', 'Liberation Mono', 'Courier New', monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg:#0A0F16;
-    --surface:#0F1520;
-    --surface-muted:#111827;
-    --text:#E9EEF5;
-    --text-muted:#A6B1BF;
-    --border:#243042;
-    --link:#59B4FF;
-    --link-hover:#86CBFF;
-
-    /* Status on dark */
-    --ok:#66E3A1;   --ok-50:#0E2A1C;
-    --warn:#FFD166; --warn-50:#231A06;
-    --err:#FF7A7A;  --err-50:#2A0E0E;
-    --info:#7AD6CF; --info-50:#0E2221;
-
-    --shadow-sm: 0 1px 2px rgba(0,0,0,.35);
-    --shadow-md: 0 8px 24px rgba(0,0,0,.45);
-  }
-}
-
-/* Global styles */
-* { box-sizing: border-box; }
-
-body { 
-    font-family: var(--font-sans);
-    margin: 0;
-    padding: 20px;
-    background-color: var(--bg);
-    color: var(--text);
-    line-height: 1.6;
-}
-
-.container {
-    max-width: 1400px;
-    margin: 0 auto;
-    background-color: var(--surface);
-    padding: var(--space-6);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-md);
-    border: 1px solid var(--border);
-}
-
-h1 { 
-    color: var(--n900);
-    border-bottom: 3px solid var(--pri-600);
-    padding-bottom: var(--space-2);
-    margin: 0 0 var(--space-4) 0;
-    font-weight: 700;
-}
-
-h2 { 
-    border-bottom: 1px solid var(--border);
-    padding-bottom: var(--space-2);
-    margin-top: var(--space-6);
-    color: var(--n900);
-    font-weight: 600;
-}
-
-h3 {
-    color: var(--n800);
-    margin-top: var(--space-4);
-    font-weight: 600;
-}
-
-/* Navigation */
-.nav-link {
-    display: inline-block;
-    margin: var(--space-2) 0;
-    padding: .6rem 1rem;
-    background-color: var(--pri-600);
-    color: white;
-    text-decoration: none;
-    border-radius: var(--radius-sm);
-    transition: background-color 0.2s, box-shadow 0.2s;
-    font-weight: 600;
-}
-
-.nav-link:hover {
-    background-color: var(--pri-700);
-    box-shadow: var(--shadow-sm);
-    text-decoration: none;
-}
-
-/* Summary statistics */
-.summary-stats {
-    background: linear-gradient(135deg, var(--pri-600) 0%, var(--pri-800) 100%);
-    color: white;
-    padding: var(--space-4);
-    border-radius: var(--radius);
-    margin-bottom: var(--space-6);
-    box-shadow: var(--shadow-md);
-}
-
-.summary-stats h2 {
-    color: white;
-    border-bottom: 2px solid rgba(255,255,255,0.3);
-    margin-top: 0;
-}
-
-.summary-stats p {
-    margin: var(--space-2) 0;
-    font-size: 16px;
-    opacity: 0.95;
-}
-
-.stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: var(--space-3);
-    margin-top: var(--space-3);
-}
-
-.stat-card {
-    background-color: rgba(255,255,255,0.15);
-    padding: var(--space-3);
-    border-radius: var(--radius-sm);
-    text-align: center;
-    backdrop-filter: blur(10px);
-}
-
-.stat-number {
-    font-size: 32px;
-    font-weight: 700;
-    margin: var(--space-2) 0;
-}
-
-/* Table styles */
-table {
-    border-collapse: collapse;
-    width: 100%;
-    margin-bottom: var(--space-4);
-    background-color: var(--surface);
-    box-shadow: var(--shadow-sm);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-}
-
-th, td {
-    border: 1px solid var(--border);
-    padding: var(--space-2) var(--space-3);
-    text-align: left;
-}
-
-th {
-    background-color: var(--surface-muted);
-    font-weight: 600;
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    color: var(--n800);
-}
-
-tr:hover {
-    background-color: var(--n100);
-}
-
-td.domain {
-    font-weight: 600;
-    font-family: var(--font-mono);
-    color: var(--pri-700);
-}
-
-/* Status badges */
-.status-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: .4rem;
-    padding: .2rem .5rem;
-    border-radius: 999px;
-    font-size: .825rem;
-    font-weight: 600;
-}
-
-/* Status cells (for Status column with background) */
-td.status-ok {
-    background: var(--ok-50);
-    color: var(--ok);
-}
-
-td.status-fail {
-    background: var(--err-50);
-    color: var(--err);
-}
-
-td.status-warn {
-    background: var(--warn-50);
-    color: var(--warn);
-}
-
-td.status-info {
-    background: var(--info-50);
-    color: var(--info);
-}
-
-/* Status badges (for individual check columns without background) */
-span.status-ok {
-    color: var(--ok);
-}
-
-span.status-fail {
-    color: var(--err);
-}
-
-span.status-warn {
-    color: var(--warn);
-}
-
-span.status-info {
-    color: var(--info);
-}
-
-/* Info blocks */
-.info-block {
-    margin: var(--space-3) 0;
-    padding: var(--space-3);
-    border-left: 4px solid var(--info);
-    background-color: var(--info-50);
-    border-radius: var(--radius-sm);
-}
-
-.info-block p {
-    margin: var(--space-1) 0;
-    color: var(--text);
-    background: none !important;
-    padding: 0;
-}
-
-.info-block .status-info { color: var(--info); }
-.info-block .status-warn { color: var(--warn); }
-.info-block .status-fail { color: var(--err); }
-
-/* Issue box */
-.issues-box {
-    background-color: var(--warn-50);
-    border-left: 4px solid var(--warn);
-    padding: var(--space-3) var(--space-4);
-    margin: var(--space-4) 0;
-    border-radius: var(--radius-sm);
-}
-
-.issues-box h3 {
-    margin-top: 0;
-    color: var(--warn);
-}
-
-.issues-box ul {
-    margin: var(--space-2) 0;
-    color: var(--text);
-}
-
-/* Issue box - failure variant */
-.issues-box-fail {
-    background-color: var(--err-50);
-    border-left: 4px solid var(--err);
-    padding: var(--space-3) var(--space-4);
-    margin: var(--space-4) 0;
-    border-radius: var(--radius-sm);
-}
-
-.issues-box-fail h3 {
-    margin-top: 0;
-    color: var(--err);
-}
-
-.issues-box-fail ul {
-    margin: var(--space-2) 0;
-    color: var(--text);
-}
-
-/* Check summary section */
-.check-summary {
-    background-color: var(--surface);
-    padding: var(--space-4);
-    border-radius: var(--radius-sm);
-    margin-top: var(--space-4);
-    border: 1px solid var(--border);
-}
-
-/* Section styles */
-.section {
-    margin: var(--space-6) 0;
-    padding: var(--space-4);
-    background-color: var(--surface-muted);
-    border-radius: var(--radius-sm);
-}
-
-pre {
-    background-color: var(--n100);
-    padding: var(--space-3);
-    border-radius: var(--radius-sm);
-    overflow-x: auto;
-    font-family: var(--font-mono);
-    font-size: 13px;
-    border: 1px solid var(--border);
-    color: var(--n800);
-}
-
-/* Footer */
-.footer {
-    margin-top: var(--space-6);
-    padding-top: var(--space-4);
-    border-top: 1px solid var(--border);
-    text-align: center;
-    color: var(--text-muted);
-    font-size: 13px;
-}
-
-/* Links */
-a {
-    color: var(--link);
-    text-decoration: none;
-    transition: color 0.2s;
-}
-
-a:hover {
-    color: var(--link-hover);
-    text-decoration: underline;
-}
-
-:focus-visible {
-    outline: 3px solid var(--focus);
-    outline-offset: 2px;
-    border-radius: 6px;
-}
-
-/* Download links */
-.download-links {
-    margin: var(--space-4) 0;
-    padding: var(--space-3) var(--space-4);
-    background-color: var(--pri-50);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--pri-100);
-}
-
-.download-links strong {
-    color: var(--n800);
-}
-
-.download-links a {
-    display: inline-block;
-    margin: var(--space-1) var(--space-2) var(--space-1) 0;
-    padding: .6rem 1rem;
-    background-color: var(--pri-600);
-    color: white;
-    border-radius: var(--radius-sm);
-    text-decoration: none;
-    font-weight: 600;
-    transition: background-color 0.2s, box-shadow 0.2s;
-}
-
-.download-links a:hover {
-    background-color: var(--pri-700);
-    box-shadow: var(--shadow-sm);
-    text-decoration: none;
-}
-
-/* Metadata */
-.metadata {
-    color: var(--text-muted);
-    font-size: 14px;
-    margin: var(--space-2) 0;
-}
-'@
-
-    $cssPath = Join-Path $AssetsPath "style.css"
-    $css | Out-File -FilePath $cssPath -Encoding utf8 -Force
+    # Copy CSS and JS from source templates folder to flat output structure
+    $sourceTemplatesPath = Join-Path $PSScriptRoot 'templates'
     
-    # Create app.js with sorting and filtering functionality
-    $js = @'
-// Simple table sorting and filtering
-document.addEventListener('DOMContentLoaded', function() {
-    // Add sorting to index table if it exists
-    const table = document.querySelector('table');
-    if (!table) return;
+    # Copy main stylesheet
+    $styleSrc = Join-Path $sourceTemplatesPath "css/style.css"
+    $styleDst = Join-Path $AssetsPath "style.css"
+    Copy-Item -Path $styleSrc -Destination $styleDst -Force
     
-    const headers = table.querySelectorAll('th');
-    headers.forEach((header, index) => {
-        header.style.cursor = 'pointer';
-        header.addEventListener('click', () => sortTable(index));
-    });
-});
-
-function sortTable(columnIndex) {
-    const table = document.querySelector('table');
-    const tbody = table.querySelector('tbody') || table;
-    const rows = Array.from(tbody.querySelectorAll('tr')).slice(1); // Skip header
+    # Copy main JS
+    $jsSrc = Join-Path $sourceTemplatesPath "js/app.js"
+    $jsDst = Join-Path $AssetsPath "app.js"
+    Copy-Item -Path $jsSrc -Destination $jsDst -Force
     
-    const sorted = rows.sort((a, b) => {
-        const aText = a.cells[columnIndex]?.textContent.trim() || '';
-        const bText = b.cells[columnIndex]?.textContent.trim() || '';
-        return aText.localeCompare(bText);
-    });
+    # Copy analysis-specific CSS and JS (used by analysis.html template)
+    $analysisCssSrc = Join-Path $sourceTemplatesPath "css/analysis.css"
+    $analysisCssDst = Join-Path $AssetsPath "analysis.css"
+    Copy-Item -Path $analysisCssSrc -Destination $analysisCssDst -Force
     
-    sorted.forEach(row => tbody.appendChild(row));
-}
-
-function filterTable(status) {
-    const table = document.querySelector('table');
-    const rows = table.querySelectorAll('tr');
-    
-    rows.forEach((row, index) => {
-        if (index === 0) return; // Skip header
-        
-        if (status === 'all') {
-            row.style.display = '';
-        } else {
-            const statusCell = row.cells[1]?.textContent.trim();
-            row.style.display = statusCell.includes(status.toUpperCase()) ? '' : 'none';
-        }
-    });
-}
-'@
-
-    $jsPath = Join-Path $AssetsPath "app.js"
-    $js | Out-File -FilePath $jsPath -Encoding utf8 -Force
+    $analysisJsSrc = Join-Path $sourceTemplatesPath "js/analysis.js"
+    $analysisJsDst = Join-Path $AssetsPath "analysis.js"
+    Copy-Item -Path $analysisJsSrc -Destination $analysisJsDst -Force
 }
 
 function Test-MXRecords {
@@ -2740,28 +2315,15 @@ function Get-DomainReportHtml {
   )
   $now = (Get-Date).ToString('u')
 
+  # Load template
+  $templatePath = Join-Path $PSScriptRoot 'templates/html/domain-report.html'
+  $html = Get-Content -Path $templatePath -Raw -Encoding UTF8
+  
+  # Build back links
   $backLinkTop = if ($IncludeBackLink) { '    <a href="../index.html" class="nav-link">&#8592; Back to Summary</a>' } else { '' }
   $backLinkBottom = if ($IncludeBackLink) { '        <p><a href="../index.html">&#8592; Back to Summary</a></p>' } else { '' }
   
-  $html = @"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mail Security Report - $([System.Web.HttpUtility]::HtmlEncode($Domain))</title>
-    <link rel="stylesheet" href="$RelAssetsPath/style.css">
-</head>
-<body>
-<div class="container">
-$backLinkTop
-    
-    <h1>Mail Security Report</h1>
-    <p class=\"metadata\"><strong>Domain:</strong> $([System.Web.HttpUtility]::HtmlEncode($Domain))</p>
-    <p class=\"metadata\"><strong>Generated:</strong> $now</p>
-"@
-
-  # Issues box
+  # Build issues box
   $issues = @()
   $hasFail = $false
   foreach ($result in @($mxResult, $spfResult, $dkimResult, $mtaStsResult, $dmarcResult, $tlsResult)) {
@@ -2774,7 +2336,7 @@ $backLinkTop
     }
   if ($issues.Count -gt 0) {
     $boxClass = if ($hasFail) { "issues-box-fail" } else { "issues-box" }
-    $html += @"
+    $issuesBox = @"
     <div class="$boxClass">
         <h3>Issues Found</h3>
         <ul>
@@ -2783,7 +2345,7 @@ $(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtil
     </div>
 "@
   } else {
-    $html += @"
+    $issuesBox = @"
     <div style="background-color: var(--ok-50); border-left: 4px solid var(--ok); padding: 15px; margin: 20px 0; border-radius: var(--radius-sm);">
         <h3 style="color: var(--ok); margin-top: 0;">&#9989; All Checks Passed</h3>
         <p style="color: var(--text); margin-bottom: 0;">No issues detected in the email security configuration.</p>
@@ -2791,9 +2353,9 @@ $(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtil
 "@
   }
 
-  # Summary table
-  $html += "<h2>Summary</h2>"
-  $html += "<table><tr><th style='width: 200px;'>Check</th><th style='width: 120px;'>Status</th><th>Details</th></tr>"
+  # Build summary table
+  $summaryTable = "<h2>Summary</h2>`n"
+  $summaryTable += "<table><tr><th style='width: 200px;'>Check</th><th style='width: 120px;'>Status</th><th>Details</th></tr>"
   
   $renderStatusCell = {
     param($status)
@@ -2819,38 +2381,41 @@ $(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtil
   
   if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
     $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
-    $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
+    $summaryTable += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
   } elseif ($mxResult.Status -eq 'WARN') {
-    $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--warn);'>&#9888;&#65039; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--warn);'>&#9888;&#65039; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   } elseif ($mxResult.Data.DomainExists -eq $false) {
-    $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--err);'>&#10060; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px; font-weight: 600; color: var(--err);'>&#10060; $([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   } else {
-    $html += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
   }
-  $html += "<tr><td>SPF</td>" + (& $renderStatusCell $spfResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
-  $html += "<tr><td>DKIM</td>" + (& $renderStatusCell $dkimResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
-  $html += "<tr><td>DMARC</td>" + (& $renderStatusCell $dmarcResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
-  $html += "<tr><td>MTA-STS</td>" + (& $renderStatusCell $mtaStsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
-  $html += "<tr><td>TLS-RPT</td>" + (& $renderStatusCell $tlsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
-  $html += "</table>"
+  $summaryTable += "<tr><td>SPF</td>" + (& $renderStatusCell $spfResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
+  $summaryTable += "<tr><td>DKIM</td>" + (& $renderStatusCell $dkimResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
+  $summaryTable += "<tr><td>DMARC</td>" + (& $renderStatusCell $dmarcResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
+  $summaryTable += "<tr><td>MTA-STS</td>" + (& $renderStatusCell $mtaStsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
+  $summaryTable += "<tr><td>TLS-RPT</td>" + (& $renderStatusCell $tlsResult.Status) + "<td style='font-size: 12px;'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
+  $summaryTable += "</table>"
 
-  $html += ConvertTo-HtmlSection $mxResult
-  $html += ConvertTo-HtmlSection $spfResult
-  $html += ConvertTo-HtmlSection $dkimResult
-  $html += ConvertTo-HtmlSection $dmarcResult
-  $html += ConvertTo-HtmlSection $mtaStsResult
-  $html += ConvertTo-HtmlSection $tlsResult
+  # Build sections
+  $sections = ""
+  $sections += ConvertTo-HtmlSection $mxResult
+  $sections += ConvertTo-HtmlSection $spfResult
+  $sections += ConvertTo-HtmlSection $dkimResult
+  $sections += ConvertTo-HtmlSection $dmarcResult
+  $sections += ConvertTo-HtmlSection $mtaStsResult
+  $sections += ConvertTo-HtmlSection $tlsResult
 
-  $html += @"
-    <div class="footer">
-        <p>Generated by <strong>mailchecker.ps1</strong> on $now</p>
-$backLinkBottom
-    </div>
-</div>
-<script src="$RelAssetsPath/app.js"></script>
-</body>
-</html>
-"@
+  # Replace placeholders
+  $encodedDomain = [System.Web.HttpUtility]::HtmlEncode($Domain)
+  $html = $html -replace '\{\{DOMAIN\}\}', $encodedDomain
+  $html = $html -replace '\{\{TIMESTAMP\}\}', $now
+  $html = $html -replace '\{\{REL_ASSETS_PATH\}\}', $RelAssetsPath
+  $html = $html -replace '\{\{BACK_LINK_TOP\}\}', $backLinkTop
+  $html = $html -replace '\{\{BACK_LINK_BOTTOM\}\}', $backLinkBottom
+  $html = $html -replace '\{\{ISSUES_BOX\}\}', $issuesBox
+  $html = $html -replace '\{\{SUMMARY_TABLE\}\}', $summaryTable
+  $html = $html -replace '\{\{SECTIONS\}\}', $sections
+  
   return $html
 }
 
@@ -2931,6 +2496,10 @@ function Write-IndexPage {
   $now = (Get-Date).ToString('u')
   $totalDomains = $AllResults.Count
   
+  # Load template
+  $templatePath = Join-Path $PSScriptRoot 'templates/html/index.html'
+  $html = Get-Content -Path $templatePath -Raw -Encoding UTF8
+  
   # Calculate statistics - domain level (based on overall status)
   $passResults = @($AllResults | Where-Object { $_.Summary.Status -eq 'PASS' })
   $warnResults = @($AllResults | Where-Object { $_.Summary.Status -eq 'WARN' })
@@ -2966,89 +2535,25 @@ function Write-IndexPage {
   $mtaStsIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.MTAStsResult.Status })
   $tlsIcon = Get-CheckIcon ($AllResults | ForEach-Object { $_.TLSResult.Status })
 
-  $html = @"
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mail Security Check - Summary Report</title>
-    <link rel="stylesheet" href="assets/style.css">
-  </head>
-  <body>
-<div class="container">
-    <h1>&#128231; Mail Security Check - Summary Report</h1>
-    <p class="metadata"><strong>Generated:</strong> $now</p>
-    <p class="metadata"><strong>Total Domains Checked:</strong> $totalDomains</p>
-    
-    <div class="summary-stats">
-        <h2>Domain Overview</h2>
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div>Total Domains</div>
-                <div class="stat-number">$totalDomains</div>
-  </div>
-            <div class="stat-card">
-                <div>&#9989; Fully Compliant</div>
-                <div class="stat-number">$passCount</div>
-                <div style="font-size: 12px; margin-top: 5px;">All checks passed</div>
-            </div>
-            <div class="stat-card">
-                <div>&#9888;&#65039; Needs Improvement</div>
-                <div class="stat-number">$warnCount</div>
-                <div style="font-size: 12px; margin-top: 5px;">Has warnings</div>
-            </div>
-            <div class="stat-card">
-                <div>&#10060; Critical Issues</div>
-                <div class="stat-number">$failCount</div>
-                <div style="font-size: 12px; margin-top: 5px;">Has failures</div>
-            </div>
-        </div>
-  </div>
-  
-    <div class="check-summary">
-        <h3 style="margin-top: 0;">Individual Check Summary</h3>
-        <p style="font-size: 14px; color: var(--text-muted);">$mxIcon MX Records: $mxPass/$totalDomains | $spfIcon SPF: $spfPass/$totalDomains | $dkimIcon DKIM: $dkimPass/$totalDomains</p>
-        <p style="font-size: 14px; color: var(--text-muted); margin-bottom: 0;">$dmarcIcon DMARC: $dmarcPass/$totalDomains | $mtaStsIcon MTA-STS: $mtaStsPass/$totalDomains | $tlsIcon TLS-RPT: $tlsPass/$totalDomains</p>
-    </div>
-"@
+  # Build check summary
+  $checkSummary = "        <p style=`"font-size: 14px; color: var(--text-muted);`">$mxIcon MX Records: $mxPass/$totalDomains | $spfIcon SPF: $spfPass/$totalDomains | $dkimIcon DKIM: $dkimPass/$totalDomains</p>`n"
+  $checkSummary += "        <p style=`"font-size: 14px; color: var(--text-muted); margin-bottom: 0;`">$dmarcIcon DMARC: $dmarcPass/$totalDomains | $mtaStsIcon MTA-STS: $mtaStsPass/$totalDomains | $tlsIcon TLS-RPT: $tlsPass/$totalDomains</p>"
 
-  # Download links if CSV or JSON available
+  # Build download links if CSV or JSON available
+  $downloadLinks = ""
   if ($CsvFileName -or $JsonFileName) {
-    $html += "    <div class='download-links'>`n"
-    $html += "        <strong>Download:</strong>`n"
+    $downloadLinks = "    <div class='download-links'>`n"
+    $downloadLinks += "        <strong>Download:</strong>`n"
     if ($CsvFileName) {
       $encodedCsvName = [System.Web.HttpUtility]::HtmlEncode($CsvFileName)
-      $html += "        <a href='" + $encodedCsvName + "'>&#128202; CSV Report</a>`n"
+      $downloadLinks += "        <a href='" + $encodedCsvName + "'>&#128202; CSV Report</a>`n"
     }
     if ($JsonFileName) {
       $encodedJsonName = [System.Web.HttpUtility]::HtmlEncode($JsonFileName)
-      $html += "        <a href='" + $encodedJsonName + "'>&#128196; JSON Export</a>`n"
+      $downloadLinks += "        <a href='" + $encodedJsonName + "'>&#128196; JSON Export</a>`n"
     }
-    $html += "    </div>`n"
+    $downloadLinks += "    </div>`n"
   }
-
-  $html += @"
-  <div style="display:flex; justify-content: space-between; align-items:center; gap:12px;">
-    <h2 style="margin:0;">Detailed Results</h2>
-    <a class="btn" href="analysis/index.html" style="display:inline-block; padding:8px 12px; text-decoration:none;">View analysis &amp; remediation recommendations</a>
-  </div>
-  <table>
-        <thead>
-            <tr>
-                <th style="width: 200px;">Domain</th>
-                <th style="width: 200px;">MX Records</th>
-                <th style="width: 90px;">Status</th>
-                <th style="width: 70px;">SPF</th>
-                <th style="width: 70px;">DKIM</th>
-                <th style="width: 90px;">DMARC</th>
-                <th style="width: 90px;">MTA-STS</th>
-                <th style="width: 90px;">TLS-RPT</th>
-                <th>Issues</th>
-    </tr>
-        </thead>
-        <tbody>
-"@
 
   # Helper to render status badge - build strings without nested expansion
   function Get-StatusBadgeHtml {
@@ -3079,6 +2584,8 @@ function Write-IndexPage {
     return "<span class='" + $cls + "' title='" + $text + "'>" + $icon + "</span>"
   }
 
+  # Build domain rows
+  $domainRows = ""
   foreach ($result in $AllResults) {
     $domain = $result.Domain
     $safeDomain = $domain -replace '[^a-z0-9.-]', '_'
@@ -3170,37 +2677,28 @@ function Write-IndexPage {
     $dmarcBadge = Get-StatusBadgeHtml $result.DMARCResult.Status
     $tlsBadge = Get-StatusBadgeHtml $result.TLSResult.Status
     
-    $html += "            <tr>`n"
-    $html += "                <td class='domain'><a href='" + $encodedDomainLink + "'>" + $encodedDomain + "</a></td>`n"
-    $html += "                <td style='font-size: 12px;'>" + $mxRecordsText + "</td>`n"
-    $html += "                <td class='" + $statusClass + "' style='text-align: center;' title='" + $overallStatus + "'>" + $statusIcon + "</td>`n"
-    $html += "                <td style='text-align: center;'>" + $spfBadge + "</td>`n"
-    $html += "                <td style='text-align: center;'>" + $dkimBadge + "</td>`n"
-    $html += "                <td style='text-align: center;'>" + $dmarcBadge + "</td>`n"
-    $html += "                <td style='text-align: center;'>" + $mtastsBadge + "</td>`n"
-    $html += "                <td style='text-align: center;'>" + $tlsBadge + "</td>`n"
-    $html += "                <td style='font-size: 12px;'>" + $issuesText + "</td>`n"
-    $html += "            </tr>`n"
+    $domainRows += "            <tr>`n"
+    $domainRows += "                <td class='domain'><a href='" + $encodedDomainLink + "'>" + $encodedDomain + "</a></td>`n"
+    $domainRows += "                <td style='font-size: 12px;'>" + $mxRecordsText + "</td>`n"
+    $domainRows += "                <td class='" + $statusClass + "' style='text-align: center;' title='" + $overallStatus + "'>" + $statusIcon + "</td>`n"
+    $domainRows += "                <td style='text-align: center;'>" + $spfBadge + "</td>`n"
+    $domainRows += "                <td style='text-align: center;'>" + $dkimBadge + "</td>`n"
+    $domainRows += "                <td style='text-align: center;'>" + $dmarcBadge + "</td>`n"
+    $domainRows += "                <td style='text-align: center;'>" + $mtastsBadge + "</td>`n"
+    $domainRows += "                <td style='text-align: center;'>" + $tlsBadge + "</td>`n"
+    $domainRows += "                <td style='font-size: 12px;'>" + $issuesText + "</td>`n"
+    $domainRows += "            </tr>`n"
   }
 
-  $html += @"
-        </tbody>
-  </table>
-  
-    <div class="footer">
-        <p><strong>Legend:</strong> 
-        <span style='color: #28a745;'>&#9989; PASS</span> = Meets security standards | 
-        <span style='color: #ffc107;'>&#9888;&#65039; WARN</span> = Needs improvement | 
-        <span style='color: #dc3545;'>&#10060; FAIL</span> = Critical issue | 
-        <span style='color: #0078D7;'>&#8505;&#65039; N/A</span> = Not applicable
-        </p>
-        <p>Generated by <strong>mailchecker.ps1</strong> on $now</p>
-    </div>
-</div>
-<script src="assets/app.js"></script>
-  </body>
-</html>
-"@
+  # Replace placeholders
+  $html = $html -replace '\{\{TIMESTAMP\}\}', $now
+  $html = $html -replace '\{\{TOTAL_DOMAINS\}\}', $totalDomains
+  $html = $html -replace '\{\{PASS_COUNT\}\}', $passCount
+  $html = $html -replace '\{\{WARN_COUNT\}\}', $warnCount
+  $html = $html -replace '\{\{FAIL_COUNT\}\}', $failCount
+  $html = $html -replace '\{\{CHECK_SUMMARY\}\}', $checkSummary
+  $html = $html -replace '\{\{DOWNLOAD_LINKS\}\}', $downloadLinks
+  $html = $html -replace '\{\{DOMAIN_ROWS\}\}', $domainRows
 
   try {
     $html | Out-File -FilePath $indexPath -Encoding utf8 -Force
@@ -3377,7 +2875,7 @@ if ($BulkFile) {
     } else {
         # Legacy mode - simple output path
         if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-            $resolvedOutputPath = "."
+            $resolvedOutputPath = "output"
         } else {
             $resolvedOutputPath = $OutputPath
     }
@@ -3591,22 +3089,8 @@ if ($BulkFile) {
                 $analysisDir = Join-Path $outputStructure.RootPath 'analysis'
                 if (-not (Test-Path $analysisDir)) { New-Item -ItemType Directory -Path $analysisDir -Force | Out-Null }
                 if ([string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
-                    $failHtml = @"
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Analysis Unavailable</title>
-  <link rel="stylesheet" href="../assets/style.css">
-  </head>
-<body>
-<div class="container">
-  <h1>Analysis Unavailable</h1>
-  <p>OpenAI API key is missing. Add OPENAI_API_KEY in .env and re-run with -ChatGPT.</p>
-</div>
-</body>
-</html>
-"@
+                    $templatePath = Join-Path $PSScriptRoot 'templates/html/analysis-unavailable.html'
+                    $failHtml = Get-Content -Path $templatePath -Raw -Encoding UTF8
                     $failHtml | Out-File -FilePath (Join-Path $analysisDir 'index.html') -Encoding utf8 -Force
                 } else {
                     $modelToUse = if ($env:OPENAI_MODEL) { $env:OPENAI_MODEL } else { 'gpt-4o-mini' }
@@ -3641,27 +3125,13 @@ if ($BulkFile) {
                     $analysisObj = $analysisResp.obj
                     if (-not $analysisObj) { try { $analysisObj = $analysisText | ConvertFrom-Json -Depth 100 } catch {} }
                     if ($null -eq $analysisObj) {
-                        $failHtml = @"
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Analysis Invalid</title>
-  <link rel="stylesheet" href="../assets/style.css">
-</head>
-<body>
-<div class="container">
-  <h1>Analysis Invalid</h1>
-  <p>Model did not return valid JSON.</p>
-</div>
-</body>
-</html>
-"@
+                        $templatePath = Join-Path $PSScriptRoot 'templates/html/analysis-invalid.html'
+                        $failHtml = Get-Content -Path $templatePath -Raw -Encoding UTF8
                         $failHtml | Out-File -FilePath (Join-Path $analysisDir 'index.html') -Encoding utf8 -Force
                         try { $textPath = Join-Path $analysisDir 'response_text.txt'; $analysisText | Out-File -FilePath $textPath -Encoding utf8 -Force } catch {}
                     } else {
                         ($analysisText) | Out-File -FilePath (Join-Path $analysisDir 'analysis.json') -Encoding utf8 -Force
-                        $templatePath = Join-Path $PSScriptRoot 'templates/analysis.html'
+                        $templatePath = Join-Path $PSScriptRoot 'templates/html/analysis.html'
                         Write-AnalysisReport -AnalysisDir $analysisDir -TemplatePath $templatePath -AnalysisObj $analysisObj
                         Write-Host "  [OK] ChatGPT analysis written to analysis/index.html" -ForegroundColor Green
                         $script:__ChatGptRunCompleted = $true
@@ -3753,7 +3223,7 @@ if ($BulkFile) {
     if ($Html) {
         # Determine output path
         if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-            $resolvedOutputPath = "."
+            $resolvedOutputPath = "output"
         } else {
             $resolvedOutputPath = $OutputPath
         }

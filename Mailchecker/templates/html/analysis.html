@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Email Security – AI Analysis</title>
+  <base href="./">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/analysis.css">
+  <style>
+    .status-chip{display:inline-block;padding:4px 8px;border-radius:6px;font-weight:600}
+    .status-pass{background:#e6f4ea;color:#137333}
+    .status-warn{background:#fff4e5;color:#b26a00}
+    .status-fail{background:#fde7e9;color:#b3261e}
+    .page-header{display:flex;justify-content:space-between;align-items:center;margin:16px 0}
+    .page-header nav a{text-decoration:none}
+    .md pre{white-space:pre-wrap}
+  </style>
+  <script defer src="../assets/analysis.js"></script>
+  </head>
+<body>
+  <div class="container">
+  <header class="page-header">
+    <h1>Email Security – AI Analysis</h1>
+    <nav><a href="../index.html">← Back</a></nav>
+  </header>
+
+  <div class="summary-stats">
+    <h2>Summary</h2>
+    <div style="display:flex; align-items:center; gap:12px;">
+      {{OVERALL_STATUS}}
+      <div class="summary">{{SUMMARY}}</div>
+    </div>
+  </div>
+
+  <section id="key-findings">
+    <h2>Key findings</h2>
+    {{KEY_FINDINGS}}
+  </section>
+
+  <section id="remediations">
+    <h2>Remediation plan</h2>
+    {{REMEDIATIONS}}
+  </section>
+
+  <section id="per-domain-notes" class="section">
+    <h2>Per Domain</h2>
+    {{PER_DOMAIN_NOTES}}
+  </section>
+
+  <section id="full-report">
+    <h2>Full report</h2>
+    <div class="md">{{REPORT_MARKDOWN_HTML}}</div>
+  </section>
+
+  <footer class="meta">
+    {{META}}
+  </footer>
+  </div>
+</body>
+</html>
+

@@ -15,14 +15,16 @@ This tool performs a complete email security audit by checking:
 
 ## Recent Improvements
 
+- **AI-Powered Analysis**: ChatGPT integration for strategic remediation plans and actionable recommendations
+- **Clean Output Directory**: All reports default to `output/` folder to keep main directory clean
+- **Template Architecture**: All HTML/CSS/JS extracted to organized `templates/` folder (547 lines reduction, 14.5% smaller!)
 - **Domain Existence Check**: Distinguishes between non-existent domains (no NS records) and existing domains without MX (send-only)
 - **Full HTML Export**: Complete report structure with index page, individual domain reports, CSV, and assets - all in one command
 - **Smart MX Display**: MX records shown inline in summary table with line breaks for easy reading
 - **Concise Issues**: Streamlined issue descriptions focusing only on actual problems (no informational noise)
 - **Auto-Open Reports**: `-OpenReport` switch automatically opens generated reports in default browser
 - **JSON Export**: Optional `-Json` switch for structured JSON export of all results
-- **Smart Output Path**: Automatic directory naming based on input file if `-OutputPath` not specified
-- **Simplified Workflow**: Replaced `-Csv` and `-SummaryHtml` with unified `-FullHtmlExport` for cleaner usage
+- **Azure Upload**: Direct upload to Azure Blob Storage with static website hosting
 - **Strict Security Profile**: PASS/WARN/FAIL severity ratings with comprehensive reason fields
 - **Comprehensive Help System**: Concise `-Help` output with quick examples and reference to README
 - **Bulk Domain Checking**: Process multiple domains from input files with full reporting
@@ -69,8 +71,11 @@ The `-FullHtmlExport` mode creates a complete, professional report structure wit
 # Basic usage - console output only
 .\mailchecker.ps1 -BulkFile domains.txt
 
-# Full HTML export with auto-generated folder (includes CSV automatically)
+# Full HTML export (auto-creates output/domains-timestamp/ folder)
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport
+
+# Full HTML export with AI analysis
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -ChatGPT
 
 # Full HTML export to specific directory
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OutputPath ./reports
@@ -78,9 +83,40 @@ The `-FullHtmlExport` mode creates a complete, professional report structure wit
 # Full HTML export with auto-open in browser
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OpenReport
 
-# Complete export with JSON
-.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -OpenReport
+# Complete export with JSON and AI analysis
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -ChatGPT -OpenReport
 ```
+
+### AI-Powered Analysis (Optional)
+
+Generate strategic remediation plans and actionable recommendations using ChatGPT:
+
+```powershell
+# Enable AI analysis (requires OPENAI_API_KEY in .env)
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -ChatGPT
+
+# AI analysis with auto-open
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -ChatGPT -OpenReport
+```
+
+**Setup (one-time):**
+1. Add to your `.env` file:
+   ```
+   OPENAI_API_KEY=sk-proj-...your-key...
+   OPENAI_MODEL=gpt-4o-mini               # optional, defaults to gpt-4o-mini
+   OPENAI_MAX_OUTPUT_TOKENS=8000          # optional
+   OPENAI_TIMEOUT_SECONDS=60              # optional
+   ```
+2. Run with `-ChatGPT` switch
+
+**AI Analysis includes:**
+- Strategic remediation plan prioritized by impact
+- Per-domain specific recommendations
+- Estimated timeline and resource requirements
+- Comprehensive markdown report
+- Links to relevant documentation
+
+The analysis is saved to `output/*/analysis/index.html` with full JSON response preserved for auditing.
 
 ### Azure Cloud Upload
 
@@ -93,22 +129,21 @@ Upload reports directly to Azure Blob Storage with static website hosting:
 # Upload with custom Run ID
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure -AzureRunId "2025-q1-audit"
 
-# Upload and auto-open local report
-.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure -OpenReport
+# Upload with AI analysis
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -ChatGPT -UploadToAzure -OpenReport
 ```
 
 **Setup (one-time):**
-1. Copy `env.example` to `.env`
-2. Fill in your Azure Storage Account details:
+1. Add to your `.env` file:
    ```
    AZURE_STORAGE_ACCOUNT=mailsecurityreports
    AZURE_STORAGE_KEY=your-key-here==
    AZURE_WEB_ZONE=z1  # optional, defaults to z1
    ```
-3. Run with `-UploadToAzure` switch
+2. Run with `-UploadToAzure` switch
 
 **Features:**
-- Automatic AzCopy installation via winget (if not present)
+- Automatic AzCopy installation check (install via winget if needed)
 - Uploads to `$web/reports/<runId>/` in your storage account
 - Generates unique Run ID: `yyyyMMdd-HHmmss-random6`
 - Prints public URLs for sharing
@@ -118,18 +153,22 @@ Upload reports directly to Azure Blob Storage with static website hosting:
 **Security Notes:**
 - `.env` file is in `.gitignore` (never committed)
 - Account key gives full access - rotate regularly
-- Consider migrating to SAS tokens (scoped, time-limited) for production
+- Consider using SAS tokens (scoped, time-limited) for production
 - For CI/CD: Use Azure Key Vault or GitHub Actions secrets
 
 **Output structure:**
 ```
-domains-20251008-142315/
+output/domains-20251008-142315/
 ├─ index.html              ← Summary with MX records and concise issues
 ├─ bulk-results-*.csv      ← CSV export (always included)
 ├─ results.json            ← JSON export (if -Json specified)
+├─ analysis/
+│  └─ index.html           ← AI analysis and remediation plan (if -ChatGPT)
 ├─ assets/
 │  ├─ style.css            ← Modern responsive styles
-│  └─ app.js               ← Interactive features (sorting)
+│  ├─ app.js               ← Interactive features (sorting)
+│  ├─ analysis.css         ← AI analysis styles
+│  └─ analysis.js          ← AI analysis scripts
 └─ domains/
    ├─ example.com.html     ← Individual domain reports
    ├─ google.com.html
@@ -152,10 +191,14 @@ domains-20251008-142315/
 | `-Selectors` | String | Comma-separated DKIM selectors to test | `"default,s1,s2,selector1,selector2,google,mail,k1"` |
 | `-DnsServer` | String[] | DNS server(s) to query first | Falls back to 8.8.8.8 and 1.1.1.1 |
 | `-Html` | Switch | Generate HTML report for single domain | - |
-| `-OutputPath` | String | Directory where output files will be saved. Auto-generates timestamped folder if not specified. | Auto-generated based on input file |
+| `-OutputPath` | String | Directory where output files will be saved | `output/` (auto-generates timestamped subfolder) |
 | `-FullHtmlExport` | Switch | Create complete HTML export: index, domain reports, CSV, assets | - |
 | `-OpenReport` | Switch | Automatically open generated index.html in default browser (requires `-FullHtmlExport`) | - |
 | `-Json` | Switch | Export results to JSON format (with `-FullHtmlExport`) | - |
+| `-ChatGPT` | Switch | Generate AI-powered analysis with remediation plan (requires OPENAI_API_KEY in .env) | - |
+| `-UploadToAzure` | Switch | Upload report to Azure Blob Storage (requires `-FullHtmlExport`) | - |
+| `-AzureRunId` | String | Custom Run ID for Azure upload | Auto-generated: `yyyyMMdd-HHmmss-random6` |
+| `-EnvFile` | String | Path to .env file for configuration | `.env` |
 | `-Help` | Switch | Show concise help information and exit | - |
 
 ## Output
@@ -305,13 +348,17 @@ Example reasons:
 
 ### Bulk checking examples
 ```powershell
-# Basic full HTML export (auto-creates timestamped folder)
+# Basic full HTML export (auto-creates output/domains-timestamp/ folder)
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport
-# Creates: .\domains-20251008-142315\
+# Creates: output\domains-20251008-142315\
 #   ├─ index.html (summary with MX records and issues)
 #   ├─ domains\*.html (individual detailed reports)
 #   ├─ assets\style.css & app.js
 #   └─ bulk-results-*.csv (always included)
+
+# With AI-powered analysis and remediation plan
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -ChatGPT
+# Adds: analysis/index.html with strategic recommendations
 
 # Full export with automatic browser open
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OpenReport
@@ -321,9 +368,13 @@ Example reasons:
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -OutputPath "./reports"
 # Creates: ./reports/index.html with all reports
 
-# Complete export with JSON
-.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -OpenReport
-# Creates full HTML structure + results.json + opens in browser
+# Complete export with JSON and AI analysis
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -ChatGPT -OpenReport
+# Creates full HTML structure + results.json + AI analysis + opens in browser
+
+# Upload to Azure cloud storage
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure
+# Uploads to Azure Blob Storage with public URL
 
 # Console output only (no HTML/CSV)
 .\mailchecker.ps1 -BulkFile domains.txt
@@ -382,32 +433,50 @@ domain-with-whitespace.com
 
 ## File Structure
 
-### Single Domain Mode (using `-Html`)
+### Project Structure
 ```
 Mailchecker/
-├── mailchecker.ps1          # Main PowerShell script
+├── mailchecker.ps1          # Main PowerShell script (3,235 lines)
 ├── README.md                # This documentation
-└── example.com-*.html       # Individual HTML report (timestamped)
+├── .gitignore               # Git ignore patterns
+├── domains.txt              # Example input file
+├── templates/               # Presentation templates (organized by type)
+│   ├── html/               # HTML templates (5 files)
+│   │   ├── analysis.html
+│   │   ├── domain-report.html
+│   │   └── index.html (+ error pages)
+│   ├── css/                # CSS stylesheets (2 files)
+│   │   ├── style.css       (main stylesheet)
+│   │   └── analysis.css    (AI analysis styles)
+│   └── js/                 # JavaScript files (2 files)
+│       ├── app.js          (table interactions)
+│       └── analysis.js     (AI analysis scripts)
+├── prompts/                # AI prompts for ChatGPT
+│   └── agent.md
+├── schema/                 # JSON schemas
+│   └── analysis.schema.json
+├── BulkFiles/              # Domain list files
+└── output/                 # Default output directory (gitignored)
 ```
 
-### Bulk Mode (using `-FullHtmlExport`)
+### Generated Output Structure (with `-FullHtmlExport`)
 ```
-Mailchecker/
-├── mailchecker.ps1          # Main PowerShell script
-├── README.md                # This documentation
-├── domains.txt              # Example input file
-└── domains-20251008-142315/ # Auto-generated output folder
-    ├── index.html           # Summary: MX records, status badges, concise issues
-    ├── bulk-results-*.csv   # CSV export (always included)
-    ├── results.json         # JSON export (if -Json specified)
-    ├── assets/              # Styling and interactive features
-    │   ├── style.css        # Modern responsive CSS
-    │   └── app.js           # Table sorting functionality
-    └── domains/             # Individual detailed reports
-        ├── example.com.html
-        ├── google.com.html
-        ├── microsoft.com.html
-        └── ...
+output/domains-20251008-142315/
+├── index.html              # Summary: MX records, status badges, concise issues
+├── bulk-results-*.csv      # CSV export (always included)
+├── results.json            # JSON export (if -Json specified)
+├── analysis/               # AI analysis (if -ChatGPT specified)
+│   └── index.html          # Strategic remediation plan
+├── assets/                 # Styling and interactive features (copied from templates)
+│   ├── style.css           # Modern responsive CSS
+│   ├── app.js              # Table sorting functionality
+│   ├── analysis.css        # AI analysis styles
+│   └── analysis.js         # AI analysis scripts
+└── domains/                # Individual detailed reports
+    ├── example.com.html
+    ├── google.com.html
+    ├── microsoft.com.html
+    └── ...
 ```
 
 ## License

@@ -1,4 +1,5 @@
 *.html
+!templates/html/*.html
 *.csv
 *.txt
 *.json
@@ -13,9 +14,16 @@
 # Ignore all subdirectories (output folders, test folders, etc.)
 */
 !.vscode/
-!templates/
 !schema/
 !prompts/
+!templates/
+!templates/html/
+!templates/css/
+!templates/js/
+!BulkFiles/
+
+# Output directory (keep clean)
+output/
 
 # But keep the example file
 !domains.txt
