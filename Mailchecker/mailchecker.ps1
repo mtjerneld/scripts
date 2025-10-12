@@ -55,8 +55,18 @@ param(
   [string]$EnvFile = ".env",
   
   [Parameter(Mandatory=$false)]
+  [switch]$ChatGPT,
+  
+  [Parameter(Mandatory=$false)]
   [switch]$Help
+  ,
+  [Parameter(Mandatory=$false)]
+  [switch]$ChatGPTHello
 )
+
+# Ensure modern TLS and avoid 100-Continue delays for outbound HTTPS calls
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+try { [System.Net.ServicePointManager]::Expect100Continue = $false } catch {}
 
 # Show help if requested
 if ($Help) {
@@ -198,11 +208,27 @@ function Import-EnvFile {
         $sasTail = if ($env:AZURE_STORAGE_SAS.Length -gt 6) { $env:AZURE_STORAGE_SAS.Substring($env:AZURE_STORAGE_SAS.Length - 6) } else { $env:AZURE_STORAGE_SAS }
         Write-Host "  [OK] AZURE_STORAGE_SAS: ****$sasTail" -ForegroundColor Green
     } elseif (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_KEY)) {
-        $keyLen = $env:AZURE_STORAGE_KEY.Length
-        $lastFour = if ($keyLen -gt 4) { $env:AZURE_STORAGE_KEY.Substring($keyLen - 4) } else { $env:AZURE_STORAGE_KEY }
-        Write-Host "  [OK] AZURE_STORAGE_KEY: ****$lastFour" -ForegroundColor Green
+    $keyLen = $env:AZURE_STORAGE_KEY.Length
+    $lastFour = if ($keyLen -gt 4) { $env:AZURE_STORAGE_KEY.Substring($keyLen - 4) } else { $env:AZURE_STORAGE_KEY }
+    Write-Host "  [OK] AZURE_STORAGE_KEY: ****$lastFour" -ForegroundColor Green
     } else {
         Write-Host "  [INFO] No SAS or key found. Will use 'azcopy login' (Microsoft Entra ID)." -ForegroundColor Yellow
+    }
+}
+
+function Import-OpenAIEnv {
+    param([string]$EnvFilePath)
+    if (-not (Test-Path $EnvFilePath)) { return }
+    Get-Content $EnvFilePath | ForEach-Object {
+        $line = $_.Trim()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
+        if ($line -match '^([^=]+)=(.*)$') {
+            $key = $Matches[1].Trim()
+            if ($key -notlike 'OPENAI_*') { return }
+            $value = $Matches[2].Trim()
+            $value = $value -replace '^"', '' -replace "^'", '' -replace '"$', '' -replace "'$", ''
+            Set-Item -Path "env:$key" -Value $value
+        }
     }
 }
 
@@ -259,6 +285,37 @@ function Invoke-AzureUpload {
     
     # Build source path with wildcard for recursive copy
     $src = Join-Path $SourcePath "*"
+    
+    # If a SAS is present in environment, validate it; if invalid/expired, clear it so we can regenerate
+    if (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_SAS)) {
+        try {
+            $sasRaw = $env:AZURE_STORAGE_SAS
+            if ($sasRaw.StartsWith('?')) { $sasRaw = $sasRaw.Substring(1) }
+            $pairs = $sasRaw -split '&' | Where-Object { $_ -match '=' }
+            $qs = @{}
+            foreach ($p in $pairs) {
+                $kv = $p -split '=',2
+                if ($kv.Count -eq 2) { $qs[$kv[0]] = [System.Web.HttpUtility]::UrlDecode($kv[1]) }
+            }
+            $nowUtc = [DateTime]::UtcNow
+            $isValid = $true
+            if ($qs.ContainsKey('se')) {
+                $se = [DateTime]::Parse($qs['se'], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
+                if ($se -le $nowUtc) { $isValid = $false }
+            }
+            if ($qs.ContainsKey('st') -and $isValid) {
+                $st = [DateTime]::Parse($qs['st'], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
+                # Allow small clock skew tolerance
+                if ($st -gt $nowUtc.AddMinutes(5)) { $isValid = $false }
+            }
+            if (-not $isValid) {
+                Write-Host "  [WARN] Existing AZURE_STORAGE_SAS appears invalid or expired; will generate a new SAS." -ForegroundColor Yellow
+                $env:AZURE_STORAGE_SAS = $null
+            }
+        } catch {
+            # If parsing fails, ignore (will use as-is)
+        }
+    }
 
     # If no SAS is provided but an account key exists and Azure CLI is available,
     # generate a short-lived SAS for $web to avoid AAD/RBAC pitfalls
@@ -267,13 +324,16 @@ function Invoke-AzureUpload {
         if ($azCli) {
             try {
                 Write-Host "  Generating temporary SAS for $web via Azure CLI..." -ForegroundColor Yellow
-                $expiryUtc = (Get-Date).ToUniversalTime().AddHours(8).ToString('yyyy-MM-ddTHH:mm:ssZ')
+                $nowUtc = (Get-Date).ToUniversalTime()
+                $startUtc = $nowUtc.AddMinutes(-10).ToString('yyyy-MM-ddTHH:mm:ssZ')
+                $expiryUtc = $nowUtc.AddHours(8).ToString('yyyy-MM-ddTHH:mm:ssZ')
                 $azArgs = @(
                     'storage','container','generate-sas',
                     '--account-name', $env:AZURE_STORAGE_ACCOUNT,
                     '--account-key', ($env:AZURE_STORAGE_KEY).Trim(),
                     '--name', '$web',
                     '--permissions', 'racwdl',
+                    '--start', $startUtc,
                     '--expiry', $expiryUtc,
                     '--https-only',
                     '--output', 'tsv'
@@ -2132,6 +2192,539 @@ function Get-HttpText($url){
   }
 }
 
+function Convert-MarkdownToHtml {
+  param([string]$Markdown)
+  if ([string]::IsNullOrWhiteSpace($Markdown)) { return "" }
+  $html = $Markdown
+  # Escape basic HTML first
+  $html = [System.Web.HttpUtility]::HtmlEncode($html)
+  # Un-escape Markdown link URLs and structure as HTML
+  # Headings
+  $html = $html -replace '(?m)^# {1}\s*(.+)$', '<h1>$1</h1>'
+  $html = $html -replace '(?m)^## {1}\s*(.+)$', '<h2>$1</h2>'
+  $html = $html -replace '(?m)^### {1}\s*(.+)$', '<h3>$1</h3>'
+  $html = $html -replace '(?m)^#### {1}\s*(.+)$', '<h4>$1</h4>'
+  $html = $html -replace '(?m)^##### {1}\s*(.+)$', '<h5>$1</h5>'
+  $html = $html -replace '(?m)^###### {1}\s*(.+)$', '<h6>$1</h6>'
+  # Bold and italic
+  $html = $html -replace '\*\*(.+?)\*\*', '<strong>$1</strong>'
+  $html = $html -replace '(?<!\*)\*(.+?)\*', '<em>$1</em>'
+  # Code fences
+  $html = $html -replace '(?s)```(.*?)```', '<pre><code>$1</code></pre>'
+  # Inline code
+  $html = $html -replace '`([^`]+)`', '<code>$1</code>'
+  # Lists (basic)
+  $html = $html -replace '(?m)^(?:- |\* )(.*)$', '<li>$1</li>'
+  $html = $html -replace '(?s)(<li>.*</li>)', '<ul>$1</ul>'
+  # Links [text](url)
+  $html = $html -replace '\[([^\]]+)\]\(([^\)]+)\)', '<a href="$2">$1</a>'
+  # Paragraphs
+  $html = $html -replace '(?m)^(?!<h\d|<ul>|<li>|<pre>|<p>|</|<code>|<strong>|<em>)(.+)$', '<p>$1</p>'
+  return $html
+}
+
+function Compress-ResultsForAI {
+  param([array]$AllResults)
+  function Truncate([string]$s, [int]$max=250) { if ([string]::IsNullOrWhiteSpace($s)) { return '' } if ($s.Length -le $max) { return $s } return $s.Substring(0,$max) }
+  $domains = @()
+  foreach ($r in $AllResults) {
+    try {
+      $mxProviders = @()
+      if ($r.MXResult -and $r.MXResult.Data -and $r.MXResult.Data.MXRecords) {
+        $mxProviders = @($r.MXResult.Data.MXRecords | ForEach-Object { [string]$_.NameExchange })
+      }
+      $issues = @()
+      function Add-Issue([string]$t) { if (-not [string]::IsNullOrWhiteSpace($t)) { if ($issues -notcontains $t) { $issues += $t } } }
+      if ($r.SPFResult -and $r.SPFResult.Status -ne 'PASS' -and $r.SPFResult.Status -ne 'OK') { Add-Issue ("SPF: " + (Truncate([string]$r.SPFResult.Data.Reason,160))) }
+      if ($r.DKIMResult -and $r.DKIMResult.Status -ne 'PASS') { Add-Issue ("DKIM: " + (Truncate([string]$r.DKIMResult.Data.Reason,160))) }
+      if ($r.DMARCResult -and $r.DMARCResult.Status -ne 'PASS') { Add-Issue ("DMARC: " + (Truncate([string]$r.DMARCResult.Data.Reason,160))) }
+      if ($r.MTAStsResult -and $r.MTAStsResult.Status -ne 'PASS') { Add-Issue ("MTA-STS: " + (Truncate([string]$r.MTAStsResult.Data.Reason,160))) }
+      if ($r.TLSResult -and $r.TLSResult.Status -ne 'PASS') { Add-Issue ("TLS-RPT: " + (Truncate([string]$r.TLSResult.Data.Reason,160))) }
+
+      $domains += @{
+        domain  = [string]$r.Domain
+        overall = [string]$r.Summary.Status
+        checks  = @{
+          spf     = @{ status = [string]$r.SPFResult.Status;   reason = (Truncate([string]$r.SPFResult.Data.Reason)) }
+          dkim    = @{ status = [string]$r.DKIMResult.Status;  reason = (Truncate([string]$r.DKIMResult.Data.Reason)) }
+          dmarc   = @{ status = [string]$r.DMARCResult.Status; reason = (Truncate([string]$r.DMARCResult.Data.Reason)) }
+          mta_sts = @{ status = [string]$r.MTAStsResult.Status }
+          tls_rpt = @{ status = [string]$r.TLSResult.Status }
+        }
+        mx      = @{ providers = $mxProviders }
+        issues  = $issues
+      }
+    } catch {
+      # Skip malformed entry
+    }
+  }
+  return @{ generated = (Get-Date).ToString('u'); total_domains = $domains.Count; domains = $domains }
+}
+
+function ConvertTo-PlainObject {
+  param($obj)
+  if ($null -eq $obj) { return $null }
+  if ($obj -is [string] -or $obj -is [bool] -or $obj -is [int] -or $obj -is [double] -or $obj -is [decimal]) { return $obj }
+  if ($obj -is [System.Collections.IDictionary]) {
+    $ht = @{}
+    foreach ($k in $obj.Keys) { $ht[[string]$k] = ConvertTo-PlainObject $obj[$k] }
+    return $ht
+  }
+  if ($obj -is [System.Collections.IEnumerable] -and -not ($obj -is [string])) {
+    $arr = @()
+    foreach ($it in $obj) { $arr += ,(ConvertTo-PlainObject $it) }
+    return $arr
+  }
+  if ($obj -is [psobject]) {
+    $ht = @{}
+    foreach ($p in $obj.PSObject.Properties) { $ht[[string]$p.Name] = ConvertTo-PlainObject $p.Value }
+    return $ht
+  }
+  return ("" + $obj)
+}
+
+function Get-EstimatedTokens {
+  param([string]$Text)
+  if ($null -eq $Text) { return 0 }
+  return [int][Math]::Ceiling(($Text.Length) / 4)
+}
+
+function Invoke-OpenAIAnalysis {
+  param(
+    [pscustomobject]$Compressed,
+    [string]$AgentPath,
+    [string]$SchemaPath,
+    [string]$Model,
+    [int]$MaxOutputTokens = 8000,
+    [int]$TimeoutSeconds = 60
+  )
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  $agent = [System.IO.File]::ReadAllText($AgentPath, $utf8NoBom)
+  $schemaJson = Get-Content -Path $SchemaPath -Raw -ErrorAction Stop | ConvertFrom-Json
+  # Normalize schema for Responses API
+  try { Set-OpenAIAdditionalPropertiesFalse -Node $schemaJson } catch {}
+  try { Set-OpenAIRequiredForAllProperties -Node $schemaJson } catch {}
+  $schemaRaw  = [System.IO.File]::ReadAllText($SchemaPath, $utf8NoBom)
+  $jsonSchemaStr = ([ordered]@{ name = 'analysis'; strict = $true; schema = $schemaJson } | ConvertTo-Json -Depth 100 -Compress)
+
+  $userMeta = @{ date = (Get-Date).ToString('u'); domain_count = $Compressed.total_domains } | ConvertTo-Json -Depth 5 -Compress
+  $compressedJson = $Compressed | ConvertTo-Json -Depth 6 -Compress
+
+  $inputTokens = (Get-EstimatedTokens -Text ($agent + $userMeta + $compressedJson))
+  $maxIn = [int]([int]($env:OPENAI_MAX_INPUT_TOKENS) | ForEach-Object { if ($_ -gt 0) { $_ } else { 50000 } })
+  if ($inputTokens -gt $maxIn) { throw "Input exceeds token cap ($inputTokens > $maxIn)." }
+
+  $priceIn = [double]([double]$env:OPENAI_PRICE_INPUT_PER_1K_USD | ForEach-Object { if ($_ -gt 0) { $_ } else { 0.005 } })
+  $priceOut = [double]([double]$env:OPENAI_PRICE_OUTPUT_PER_1K_USD | ForEach-Object { if ($_ -gt 0) { $_ } else { 0.015 } })
+  $maxCost = [double]([double]$env:OPENAI_MAX_COST_USD_PER_RUN | ForEach-Object { if ($_ -gt 0) { $_ } else { 0.10 } })
+  $inputCost = [Math]::Round((($inputTokens/1000.0)*$priceIn), 4)
+  $allowedOutputCost = $maxCost - $inputCost
+  $allowedOutputTokens = if ($allowedOutputCost -gt 0) { [int][Math]::Floor(($allowedOutputCost / $priceOut) * 1000) } else { 0 }
+  $effectiveMaxOutput = [int][Math]::Max(0, [int][Math]::Min($MaxOutputTokens, $allowedOutputTokens))
+  $costEstimate = [Math]::Round($inputCost + (($effectiveMaxOutput/1000.0)*$priceOut), 4)
+  Write-Host ("  Cost cap: {0:N2} | Input est: {1:N4} | Allowed out tokens: {2} | Using out tokens: {3} | Est total: {4:N4}" -f $maxCost, $inputCost, $allowedOutputTokens, $effectiveMaxOutput, $costEstimate) -ForegroundColor Gray
+  if ($effectiveMaxOutput -le 0) { throw ("Estimated cost {0:N4} exceeds cap {1:N2}." -f $inputCost, $maxCost) }
+
+  # Always target OpenAI's official Responses API endpoint (ignore OPENAI_BASE_URL)
+  $baseUrl = 'https://api.openai.com/v1'
+  $url = "$baseUrl/responses"
+  $apiKey = $env:OPENAI_API_KEY
+  if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'OPENAI_API_KEY missing' }
+  $modelToUse = if ($Model) { $Model } elseif ($env:OPENAI_MODEL) { $env:OPENAI_MODEL } else { 'gpt-5-mini' }
+
+  Write-Host "  Building JSON payload..." -ForegroundColor Gray
+  $swBuild = [Diagnostics.Stopwatch]::StartNew()
+  # Build object payload using typed content blocks and strict schema
+  $userCombined = "All output must be in English. Return a single JSON strictly validating the provided schema under response_format.\nRun:\n" + $userMeta + "\nData:\n" + $compressedJson
+  # Use a minimal strict schema first to force raw JSON (expand later)
+  $minimalSchema = [ordered]@{
+    type = 'object'
+    properties = [ordered]@{
+      summary         = @{ type = 'string' }
+      overall_status  = @{ type = 'string'; enum = @('PASS','WARN','FAIL') }
+      key_findings    = @{ type = 'array'; items = @{ type = 'string' } }
+      report_markdown = @{ type = 'string' }
+    }
+    required = @('summary','overall_status','key_findings','report_markdown')
+    additionalProperties = $false
+  }
+  $inputBlocks = @(
+    @{ role = 'system'; content = @(@{ type = 'input_text'; text = $agent }) },
+    @{ role = 'user'  ; content = @(@{ type = 'input_text'; text = $userCombined }) }
+  )
+  # Sanitize content part types defensively
+  foreach ($blk in $inputBlocks) {
+    if ($blk.content) {
+      for ($i=0; $i -lt $blk.content.Count; $i++) {
+        if ($blk.content[$i].type -ne 'input_text') { $blk.content[$i].type = 'input_text' }
+      }
+    }
+  }
+  $bodyObj = [ordered]@{
+    model             = $modelToUse
+    max_output_tokens = $effectiveMaxOutput
+    text              = [ordered]@{ format = [ordered]@{ type='json_schema'; name='analysis'; strict=$true; schema=$minimalSchema } }
+    input             = $inputBlocks
+  }
+  # Normalize content-part types to input_text for Responses API
+  try {
+    $null = Normalize-ResponsesContentTypes -BodyObj $bodyObj
+  } catch {}
+  $bodyJson = $bodyObj | ConvertTo-Json -Depth 100 -Compress
+  $swBuild.Stop()
+  Write-Host ("  Payload built in {0} ms" -f $swBuild.ElapsedMilliseconds) -ForegroundColor Gray
+  # Dump payload for debugging (compact and pretty variants, no BOM)
+  try {
+    $dumpPath = Join-Path (Get-Location) 'openai-payload.json'
+    $prettyPath = Join-Path (Get-Location) 'openai-payload.pretty.json'
+    [System.IO.File]::WriteAllText($dumpPath, $bodyJson, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+      $pretty = $bodyObj | ConvertTo-Json -Depth 100
+      [System.IO.File]::WriteAllText($prettyPath, $pretty, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {}
+    Write-Host ("  Payload dumped to {0} (pretty: {1})" -f $dumpPath, $prettyPath) -ForegroundColor Gray
+  } catch {}
+
+  # Minimal, exact headers for Responses API
+  $headers = @{ 'Authorization' = "Bearer $apiKey" }
+  $timeout = if ($env:OPENAI_TIMEOUT_SECONDS) { [int]$env:OPENAI_TIMEOUT_SECONDS } else { $TimeoutSeconds }
+  $bodyBytes = [System.Text.Encoding]::UTF8.GetByteCount($bodyJson)
+  # Safety check to ensure we only ever post to the official endpoint
+  if ($url -notmatch '^https://api\.openai\.com/v1/responses$') { throw ("Safety check failed: URL ({0}) is not OpenAI's official endpoint." -f $url) }
+  Write-Host ("  Endpoint: {0}" -f $url) -ForegroundColor Gray
+  Write-Host ("  Submitting request to OpenAI (input≈{0} tokens, max_output={1}, timeout={2}s, body={3} bytes)..." -f $inputTokens, $effectiveMaxOutput, $timeout, $bodyBytes) -ForegroundColor Gray
+  try {
+    # Use HttpClient (PS5-stable) for the main call as well
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+    try { [System.Net.ServicePointManager]::Expect100Continue = $false } catch {}
+    Add-Type -AssemblyName System.Net.Http
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.UseProxy = $false
+    $handler.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromSeconds($timeout)
+    $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue('Bearer', $apiKey)
+    $client.DefaultRequestHeaders.Accept.Clear()
+    $client.DefaultRequestHeaders.Accept.Add([System.Net.Http.Headers.MediaTypeWithQualityHeaderValue]::new('application/json'))
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd('Mailchecker-PS5/1.0')
+    $content = New-Object System.Net.Http.StringContent($bodyJson, [System.Text.Encoding]::UTF8, 'application/json')
+    $swSend = [Diagnostics.Stopwatch]::StartNew()
+    $httpResp = $client.PostAsync($url, $content).GetAwaiter().GetResult()
+    $rawResp = $httpResp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    $swSend.Stop()
+    if (-not $httpResp.IsSuccessStatusCode) {
+      try { [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'openai-error.json'), $rawResp, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+      throw ("OpenAI request failed (HTTP {0} {1}): {2}" -f [int]$httpResp.StatusCode, $httpResp.StatusCode, $rawResp)
+    }
+    Write-Host ("  OpenAI HTTP OK in {0} ms" -f $swSend.ElapsedMilliseconds) -ForegroundColor Gray
+    $resp = $rawResp
+  } catch {
+    $we = $_.Exception
+    throw ("OpenAI request failed: {0}" -f $we.Message)
+  }
+
+  # Invoke-RestMethod returns a parsed object already; fall back if it's a string
+  $json = $null
+  if ($resp -is [string]) {
+    if ($PSVersionTable.PSVersion.Major -ge 7) { $json = $resp | ConvertFrom-Json -Depth 100 -ErrorAction SilentlyContinue }
+    else { $json = $resp | ConvertFrom-Json -ErrorAction SilentlyContinue }
+  } else {
+    $json = $resp
+  }
+  # Best-effort logging of size
+  try { $rawStr = ($resp | ConvertTo-Json -Depth 20); Write-Host ("  Response body chars: {0}" -f ($rawStr.Length)) -ForegroundColor Gray } catch {}
+  if ($null -eq $json) { throw 'Failed to parse OpenAI response JSON' }
+  # Prefer robust parsing into object, fallback to text
+  $parsedObj = $null
+  try { $parsedObj = Parse-OpenAIResponseJson -respObj $json } catch {}
+  if ($parsedObj) {
+    return [PSCustomObject]@{ raw = $json; obj = $parsedObj; text = ($parsedObj | ConvertTo-Json -Depth 50); input_tokens = $inputTokens; est_cost = $costEstimate }
+  } else {
+    $payload = Get-FirstResponsesOutputText -Json $json -FallbackContent $resp.Content
+    return [PSCustomObject]@{ raw = $json; text = $payload; input_tokens = $inputTokens; est_cost = $costEstimate }
+  }
+}
+
+function Invoke-OpenAIHello {
+  param(
+    [string]$Model,
+    [int]$TimeoutSeconds = 60
+  )
+  # PS5 networking hardening
+  try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+  try { [System.Net.ServicePointManager]::Expect100Continue = $false } catch {}
+
+  $apiKey = $env:OPENAI_API_KEY
+  if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'OPENAI_API_KEY missing' }
+  $modelToUse = if ($Model) { $Model } elseif ($env:OPENAI_MODEL) { $env:OPENAI_MODEL } else { 'gpt-4o-mini' }
+
+  $bodyObj = [ordered]@{
+    model = $modelToUse
+    input = @(@{ role='user'; content=@(@{ type='input_text'; text='Say hello' }) })
+  }
+  $bodyJson = $bodyObj | ConvertTo-Json -Depth 20 -Compress
+  # Dump body (no BOM)
+  try { [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'openai-hello.json'), $bodyJson, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+
+  $baseUrl = 'https://api.openai.com/v1'
+  $url = "$baseUrl/responses"
+  if ($url -notmatch '^https://api\.openai\.com/v1/responses$') { throw ("Safety check failed: URL ({0}) is not OpenAI's official endpoint." -f $url) }
+  $headers = @{ 'Authorization' = "Bearer $apiKey"; 'Content-Type' = 'application/json' }
+
+  try {
+    # Prefer InFile with utf8NoBOM in PS5 for reliability
+    $helloFile = Join-Path (Get-Location) 'openai-hello.json'
+    $resp = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -InFile $helloFile -ContentType 'application/json' -TimeoutSec $TimeoutSeconds -ErrorAction Stop
+    return $resp
+  } catch {
+    $we = $_.Exception
+    $errBody = $null
+    if ($we.Response) {
+      try {
+        $stream = $we.Response.GetResponseStream()
+        if ($stream) {
+          $mem = New-Object System.IO.MemoryStream
+          $buffer = New-Object byte[] 8192
+          while (($read = $stream.Read($buffer,0,$buffer.Length)) -gt 0) { $mem.Write($buffer,0,$read) }
+          $errBody = [System.Text.Encoding]::UTF8.GetString($mem.ToArray())
+          $mem.Dispose()
+        }
+      } catch {}
+    }
+    if ($errBody) {
+      try { [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'openai-error.json'), $errBody, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+    }
+    throw ("OpenAI hello failed: {0}" -f $we.Message)
+  }
+}
+
+function Normalize-ResponsesContentTypes {
+  param([Parameter(Mandatory=$true)][hashtable]$BodyObj)
+  if (-not $BodyObj.input) { return $BodyObj }
+  foreach ($blk in $BodyObj.input) {
+    if (-not $blk.content) { continue }
+    for ($i=0; $i -lt $blk.content.Count; $i++) {
+      if ($blk.content[$i].type -ne 'input_text') { $blk.content[$i].type = 'input_text' }
+    }
+  }
+  return $BodyObj
+}
+
+function Get-FirstResponsesOutputText {
+  param(
+    [Parameter(Mandatory=$true)]$Json,
+    [Parameter(Mandatory=$false)]$FallbackContent
+  )
+  try {
+    if ($Json.output) {
+      foreach ($item in $Json.output) {
+        if ($item.type -eq 'message' -and $item.content) {
+          foreach ($c in $item.content) {
+            if ($c.type -eq 'output_text' -and $c.text) { return $c.text }
+          }
+        }
+      }
+      # Legacy shape
+      if ($Json.output[0].content[0].text) { return $Json.output[0].content[0].text }
+    }
+    if ($Json.output_text) { return $Json.output_text }
+    if ($Json.choices -and $Json.choices[0].message.content) { return $Json.choices[0].message.content }
+  } catch {}
+  return $FallbackContent
+}
+
+function Parse-OpenAIResponseJson {
+  param(
+    [Parameter(Mandatory=$true)] $respObj
+  )
+  if ($respObj.status -eq 'incomplete') {
+    $reason = $respObj.incomplete_details.reason
+    throw ("Model status=incomplete (reason={0}) - JSON may be truncated." -f $reason)
+  }
+  $jsonText = ($respObj.output |
+    Where-Object { $_.type -eq 'message' } |
+    Select-Object -First 1 -ExpandProperty content |
+    Where-Object { $_.type -eq 'output_text' } |
+    Select-Object -First 1 -ExpandProperty text)
+
+  if (-not $jsonText) { throw 'No output_text found in response.' }
+
+  if ($jsonText -match '^\s*```') {
+    $jsonText = $jsonText -replace '^\s*```(?:json)?\s*',''
+    $jsonText = $jsonText -replace '\s*```$',''
+  }
+
+  $first = $null
+  try { $first = $jsonText | ConvertFrom-Json } catch { $first = ($jsonText.Trim() | ConvertFrom-Json) }
+  if ($first -is [string] -and $first.TrimStart().StartsWith('{')) {
+    return ($first | ConvertFrom-Json)
+  }
+  return $first
+}
+
+function Set-OpenAIAdditionalPropertiesFalse {
+  param([Parameter(Mandatory=$true)]$Node)
+  if ($null -eq $Node) { return }
+  $typeName = $Node.GetType().Name
+  if ($typeName -eq 'Hashtable' -or $typeName -eq 'PSCustomObject') {
+    # If object-type schema, ensure additionalProperties:false
+    if ($Node.type -eq 'object') {
+      $hasProp = $false
+      try { $hasProp = $Node.PSObject.Properties.Name -contains 'additionalProperties' } catch {}
+      if (-not $hasProp) {
+        try { Add-Member -InputObject $Node -NotePropertyName 'additionalProperties' -NotePropertyValue $false -Force } catch {}
+      } elseif ($Node.additionalProperties -ne $false) {
+        $Node.additionalProperties = $false
+      }
+      # Recurse into properties
+      if ($Node.properties) {
+        if ($Node.properties -is [hashtable]) {
+          foreach ($k in $Node.properties.Keys) { Set-OpenAIAdditionalPropertiesFalse -Node $Node.properties[$k] }
+        } else {
+          foreach ($kv in $Node.properties.PSObject.Properties) { Set-OpenAIAdditionalPropertiesFalse -Node $kv.Value }
+        }
+      }
+    }
+    # If array-type schema, recurse into items
+    if ($Node.type -eq 'array' -and $Node.items) {
+      Set-OpenAIAdditionalPropertiesFalse -Node $Node.items
+    }
+  }
+}
+
+function Set-OpenAIRequiredForAllProperties {
+  param([Parameter(Mandatory=$true)]$Node)
+  if ($null -eq $Node) { return }
+  $typeName = $Node.GetType().Name
+  if ($typeName -eq 'Hashtable' -or $typeName -eq 'PSCustomObject') {
+    if ($Node.type -eq 'object' -and $Node.properties) {
+      # Build required array to include all property keys if missing/invalid
+      $propNames = @()
+      if ($Node.properties -is [hashtable]) {
+        foreach ($k in $Node.properties.Keys) { $propNames += $k }
+      } else {
+        foreach ($p in $Node.properties.PSObject.Properties) { $propNames += $p.Name }
+      }
+      $needSet = $true
+      try {
+        if ($Node.required -and ($Node.required -is [System.Collections.IEnumerable])) {
+          # If required exists, ensure it includes all keys
+          $diff = $propNames | Where-Object { $Node.required -notcontains $_ }
+          if ($diff.Count -eq 0) { $needSet = $false }
+        }
+      } catch {}
+      if ($needSet) { $Node.required = $propNames }
+      # Recurse
+      if ($Node.properties -is [hashtable]) {
+        foreach ($k in $Node.properties.Keys) { Set-OpenAIRequiredForAllProperties -Node $Node.properties[$k] }
+      } else {
+        foreach ($kv in $Node.properties.PSObject.Properties) { Set-OpenAIRequiredForAllProperties -Node $kv.Value }
+      }
+    }
+    if ($Node.type -eq 'array' -and $Node.items) { Set-OpenAIRequiredForAllProperties -Node $Node.items }
+  }
+}
+
+function Invoke-OpenAIHelloHttpClient {
+  param(
+    [string]$Model = 'gpt-5-mini',
+    [int]$TimeoutSeconds = 60
+  )
+  try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+  try { [System.Net.ServicePointManager]::Expect100Continue = $false } catch {}
+
+  $apiKey = $env:OPENAI_API_KEY
+  if ([string]::IsNullOrWhiteSpace($apiKey)) { throw 'OPENAI_API_KEY missing' }
+
+  $payloadObj = [ordered]@{
+    model = $Model
+    input = @(
+      @{ role = 'user'; content = @(@{ type = 'input_text'; text = 'Say hello' }) }
+    )
+  }
+  $payloadJson = $payloadObj | ConvertTo-Json -Depth 20 -Compress
+  try { [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'openai-hello.json'), $payloadJson, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+
+  Add-Type -AssemblyName System.Net.Http
+  $handler = New-Object System.Net.Http.HttpClientHandler
+  $handler.UseProxy = $false
+  $handler.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+
+  $client = New-Object System.Net.Http.HttpClient($handler)
+  $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
+  $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue('Bearer', $apiKey)
+  $client.DefaultRequestHeaders.Accept.Clear()
+  $client.DefaultRequestHeaders.Accept.Add([System.Net.Http.Headers.MediaTypeWithQualityHeaderValue]::new('application/json'))
+  $client.DefaultRequestHeaders.UserAgent.ParseAdd('Mailchecker-PS5/1.0')
+
+  $uri = 'https://api.openai.com/v1/responses'
+  $content = New-Object System.Net.Http.StringContent($payloadJson, [System.Text.Encoding]::UTF8, 'application/json')
+  $response = $client.PostAsync($uri, $content).GetAwaiter().GetResult()
+  $raw = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+
+  if (-not $response.IsSuccessStatusCode) {
+    try { [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'openai-error.json'), $raw, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+    throw ("HTTP {0} {1}: {2}" -f [int]$response.StatusCode, $response.StatusCode, $raw)
+  }
+  if ($PSVersionTable.PSVersion.Major -ge 7) { return ($raw | ConvertFrom-Json -Depth 50) }
+  else { return ($raw | ConvertFrom-Json) }
+}
+
+function Write-AnalysisReport {
+  param(
+    [string]$AnalysisDir,
+    [string]$TemplatePath,
+    [pscustomobject]$AnalysisObj
+  )
+  $tmpl = Get-Content -Path $TemplatePath -Raw -ErrorAction Stop
+  function Get-StatusChipHtmlLocal {
+    param([string]$status)
+    $cls = switch ($status) {
+      'PASS' { 'status-chip ok' }
+      'OK'   { 'status-chip ok' }
+      'WARN' { 'status-chip warn' }
+      'FAIL' { 'status-chip fail' }
+      default { 'status-chip info' }
+    }
+    $label = if ($status -eq 'OK') { 'PASS' } else { $status }
+    $encoded = [System.Web.HttpUtility]::HtmlEncode($label)
+    return ('<span class="' + $cls + '">' + $encoded + '</span>')
+  }
+  $statusChip = Get-StatusChipHtmlLocal $AnalysisObj.overall_status
+  $keyFindingsHtml = if ($AnalysisObj.key_findings) { '<ul>' + (($AnalysisObj.key_findings | ForEach-Object { '<li>' + [System.Web.HttpUtility]::HtmlEncode($_) + '</li>' }) -join '') + '</ul>' } else { '<p>(none)</p>' }
+  $remRows = @()
+  foreach ($r in @($AnalysisObj.remediations)) {
+    if ($null -eq $r) { continue }
+    $links = if ($r.links) { ($r.links | ForEach-Object { '<a href="' + [System.Web.HttpUtility]::HtmlEncode($_) + '">' + [System.Web.HttpUtility]::HtmlEncode($_) + '</a>' }) -join '<br>' } else { '' }
+    $remRows += ("<tr><td>" + [System.Web.HttpUtility]::HtmlEncode($r.title) + "</td><td>" + [System.Web.HttpUtility]::HtmlEncode($r.priority) + "</td><td>" + [System.Web.HttpUtility]::HtmlEncode($r.owner) + "</td><td>" + [System.Web.HttpUtility]::HtmlEncode($r.eta_days) + "</td><td>" + [System.Web.HttpUtility]::HtmlEncode($r.rationale) + "</td><td>" + $links + "</td></tr>")
+  }
+  $remTable = if ($remRows.Count -gt 0) { '<table><thead><tr><th>Title</th><th>Priority</th><th>Owner</th><th>ETA</th><th>Rationale</th><th>Links</th></tr></thead><tbody>' + ($remRows -join '') + '</tbody></table>' } else { '<p>(none)</p>' }
+  $perDomain = if ($AnalysisObj.per_domain_notes) { '<ul>' + (@($AnalysisObj.per_domain_notes) | ForEach-Object { '<li><strong>' + [System.Web.HttpUtility]::HtmlEncode($_.domain) + '</strong>: ' + [System.Web.HttpUtility]::HtmlEncode($_.notes) + '</li>' }) -join '' + '</ul>' } else { '<p>(none)</p>' }
+  $reportHtml = Convert-MarkdownToHtml -md $AnalysisObj.report_markdown
+  function Get-MetaHtmlLocal {
+    param($meta, $usage)
+    $lines = @()
+    if ($meta) {
+      foreach ($p in $meta.PSObject.Properties) { $lines += ($p.Name + ': ' + [System.Web.HttpUtility]::HtmlEncode(($p.Value -as [string]))) }
+    }
+    if ($usage) {
+      foreach ($p in $usage.PSObject.Properties) { $lines += ('usage.' + $p.Name + ': ' + [System.Web.HttpUtility]::HtmlEncode(($p.Value -as [string]))) }
+    }
+    if ($lines.Count -eq 0) { return '<p>(none)</p>' }
+    return '<pre class="meta">' + ([System.Web.HttpUtility]::HtmlEncode(($lines -join "`n"))) + '</pre>'
+  }
+  $metaHtml = Get-MetaHtmlLocal -meta $AnalysisObj.meta -usage $AnalysisObj.usage
+  $out = $tmpl.Replace('{{OVERALL_STATUS}}', $statusChip)
+  $out = $out.Replace('{{SUMMARY}}', [System.Web.HttpUtility]::HtmlEncode($AnalysisObj.summary))
+  $out = $out.Replace('{{KEY_FINDINGS}}', $keyFindingsHtml)
+  $out = $out.Replace('{{REMEDIATIONS}}', $remTable)
+  $out = $out.Replace('{{PER_DOMAIN_NOTES}}', $perDomain)
+  $out = $out.Replace('{{REPORT_MARKDOWN_HTML}}', $reportHtml)
+  $out = $out.Replace('{{META}}', $metaHtml)
+  $indexPath = Join-Path $AnalysisDir 'index.html'
+  $out | Out-File -FilePath $indexPath -Encoding utf8 -Force
+}
+
 function Get-DomainReportHtml {
   param(
     [string]$RelAssetsPath,
@@ -2149,7 +2742,7 @@ function Get-DomainReportHtml {
 
   $backLinkTop = if ($IncludeBackLink) { '    <a href="../index.html" class="nav-link">&#8592; Back to Summary</a>' } else { '' }
   $backLinkBottom = if ($IncludeBackLink) { '        <p><a href="../index.html">&#8592; Back to Summary</a></p>' } else { '' }
-
+  
   $html = @"
 <!DOCTYPE html>
 <html lang="en">
@@ -2177,8 +2770,8 @@ $backLinkTop
       $issues += [PSCustomObject]@{ Status='FAIL'; Icon='&#10060;'; Text = "$($result.Section): $($result.Data.Reason)" }
     } elseif ($result.Status -eq 'WARN') {
       $issues += [PSCustomObject]@{ Status='WARN'; Icon='&#9888;&#65039;'; Text = "$($result.Section): $($result.Data.Reason)" }
+      }
     }
-  }
   if ($issues.Count -gt 0) {
     $boxClass = if ($hasFail) { "issues-box-fail" } else { "issues-box" }
     $html += @"
@@ -2201,7 +2794,7 @@ $(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtil
   # Summary table
   $html += "<h2>Summary</h2>"
   $html += "<table><tr><th style='width: 200px;'>Check</th><th style='width: 120px;'>Status</th><th>Details</th></tr>"
-
+  
   $renderStatusCell = {
     param($status)
     $cls = switch ($status) {
@@ -2223,7 +2816,7 @@ $(($issues | ForEach-Object { "            <li>$($_.Icon) $([System.Web.HttpUtil
     $text = switch ($status) { 'OK' { 'PASS' } default { $status } }
     return "<td class='$cls'>$icon$text</td>"
   }
-
+  
   if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
     $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
     $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
@@ -2436,7 +3029,10 @@ function Write-IndexPage {
   }
 
   $html += @"
-  <h2>Detailed Results</h2>
+  <div style="display:flex; justify-content: space-between; align-items:center; gap:12px;">
+    <h2 style="margin:0;">Detailed Results</h2>
+    <a class="btn" href="analysis/index.html" style="display:inline-block; padding:8px 12px; text-decoration:none;">View analysis &amp; remediation recommendations</a>
+  </div>
   <table>
         <thead>
             <tr>
@@ -2859,7 +3455,7 @@ if ($BulkFile) {
     if ($FullHtmlExport) {
         # Create enhanced CSV with individual reason columns
         # Sanitize function to remove tabs, newlines, and other problematic characters
-        function Sanitize-CsvField($value) {
+        function ConvertTo-CsvSafe($value) {
             if ($null -eq $value) { return "" }
             # Replace tabs with spaces, remove newlines, replace semicolons with commas, and trim
             return $value.ToString() -replace "`t", " " -replace "`r`n", " " -replace "`n", " " -replace "`r", " " -replace ";", ","
@@ -2867,28 +3463,28 @@ if ($BulkFile) {
         
         $csvData = $allResults | ForEach-Object {
             [PSCustomObject]@{
-                Domain = Sanitize-CsvField $_.Domain
-                Domain_Exists = Sanitize-CsvField $_.MXResult.Data.DomainExists
-                Status = Sanitize-CsvField $_.Summary.Status
-                MX_Records = Sanitize-CsvField $_.Summary.MX_Records_Present
-                SPF_Status = Sanitize-CsvField $_.SPFResult.Status
-                SPF_Reason = Sanitize-CsvField $_.SPFResult.Data.Reason
-                DKIM_Status = Sanitize-CsvField $_.DKIMResult.Status
-                DKIM_Reason = Sanitize-CsvField $_.DKIMResult.Data.Reason
-                DMARC_Status = Sanitize-CsvField $_.DMARCResult.Status
-                DMARC_Reason = Sanitize-CsvField $_.DMARCResult.Data.Reason
-                MTA_STS_Status = Sanitize-CsvField $_.MTAStsResult.Status
-                MTA_STS_Reason = Sanitize-CsvField $_.MTAStsResult.Data.Reason
-                TLS_RPT_Status = Sanitize-CsvField $_.TLSResult.Status
-                TLS_RPT_Reason = Sanitize-CsvField $_.TLSResult.Data.Reason
-                SPF_Present = Sanitize-CsvField $_.Summary.SPF_Present
-                SPF_Healthy = Sanitize-CsvField $_.Summary.SPF_Healthy
-                DKIM_ValidSelector = Sanitize-CsvField $_.Summary.DKIM_ValidSelector
-                MTA_STS_DNS_Present = Sanitize-CsvField $_.Summary.MTA_STS_DNS_Present
-                MTA_STS_Enforced = Sanitize-CsvField $_.Summary.MTA_STS_Enforced
-                DMARC_Present = Sanitize-CsvField $_.Summary.DMARC_Present
-                DMARC_Enforced = Sanitize-CsvField $_.Summary.DMARC_Enforced
-                TLS_RPT_Present = Sanitize-CsvField $_.Summary.TLS_RPT_Present
+                Domain = ConvertTo-CsvSafe $_.Domain
+                Domain_Exists = ConvertTo-CsvSafe $_.MXResult.Data.DomainExists
+                Status = ConvertTo-CsvSafe $_.Summary.Status
+                MX_Records = ConvertTo-CsvSafe $_.Summary.MX_Records_Present
+                SPF_Status = ConvertTo-CsvSafe $_.SPFResult.Status
+                SPF_Reason = ConvertTo-CsvSafe $_.SPFResult.Data.Reason
+                DKIM_Status = ConvertTo-CsvSafe $_.DKIMResult.Status
+                DKIM_Reason = ConvertTo-CsvSafe $_.DKIMResult.Data.Reason
+                DMARC_Status = ConvertTo-CsvSafe $_.DMARCResult.Status
+                DMARC_Reason = ConvertTo-CsvSafe $_.DMARCResult.Data.Reason
+                MTA_STS_Status = ConvertTo-CsvSafe $_.MTAStsResult.Status
+                MTA_STS_Reason = ConvertTo-CsvSafe $_.MTAStsResult.Data.Reason
+                TLS_RPT_Status = ConvertTo-CsvSafe $_.TLSResult.Status
+                TLS_RPT_Reason = ConvertTo-CsvSafe $_.TLSResult.Data.Reason
+                SPF_Present = ConvertTo-CsvSafe $_.Summary.SPF_Present
+                SPF_Healthy = ConvertTo-CsvSafe $_.Summary.SPF_Healthy
+                DKIM_ValidSelector = ConvertTo-CsvSafe $_.Summary.DKIM_ValidSelector
+                MTA_STS_DNS_Present = ConvertTo-CsvSafe $_.Summary.MTA_STS_DNS_Present
+                MTA_STS_Enforced = ConvertTo-CsvSafe $_.Summary.MTA_STS_Enforced
+                DMARC_Present = ConvertTo-CsvSafe $_.Summary.DMARC_Present
+                DMARC_Enforced = ConvertTo-CsvSafe $_.Summary.DMARC_Enforced
+                TLS_RPT_Present = ConvertTo-CsvSafe $_.Summary.TLS_RPT_Present
             }
         }
         $csvFileName = "bulk-results-$ts.csv"
@@ -2954,6 +3550,8 @@ if ($BulkFile) {
         $jsonData | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding utf8 -Force
         Write-Host "JSON exported to: $jsonPath" -ForegroundColor Green
     }
+
+    # ChatGPT analysis removed here; handled once later with banner
     
     # FullHtmlExport mode: create index + individual domain pages
     if ($FullHtmlExport) {
@@ -2973,6 +3571,111 @@ if ($BulkFile) {
         # Generate index page
         Write-IndexPage -RootPath $outputStructure.RootPath -AllResults $allResults `
                         -CsvFileName $csvFileName -JsonFileName $jsonFileName
+
+        # ChatGPT Analysis (if requested) - run exactly once here
+        if ($ChatGPT -and -not $script:__ChatGptRunCompleted) {
+            Write-Host "" -NoNewline; Write-Host "============================================================" -ForegroundColor Cyan
+            Write-Host "  Starting ChatGPT Analysis" -ForegroundColor Yellow
+            Write-Host "============================================================" -ForegroundColor Cyan
+            try {
+                # Only load OpenAI-related keys here to avoid re-printing Azure creds
+                Import-OpenAIEnv -EnvFilePath $EnvFile
+                # Show OpenAI env (masked)
+                $modelShown = if ($env:OPENAI_MODEL) { $env:OPENAI_MODEL } else { '(default)' }
+                Write-Host ("  [OK] OPENAI_MODEL: {0}" -f $modelShown) -ForegroundColor Green
+                if ($env:OPENAI_API_KEY) {
+                    $k=$env:OPENAI_API_KEY; $tail= if($k.Length -gt 6){$k.Substring($k.Length-6)}else{$k}
+                    Write-Host ("  [OK] OPENAI_API_KEY: ****{0}" -f $tail) -ForegroundColor Green
+                }
+                # Build and call
+                $analysisDir = Join-Path $outputStructure.RootPath 'analysis'
+                if (-not (Test-Path $analysisDir)) { New-Item -ItemType Directory -Path $analysisDir -Force | Out-Null }
+                if ([string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
+                    $failHtml = @"
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Analysis Unavailable</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  </head>
+<body>
+<div class="container">
+  <h1>Analysis Unavailable</h1>
+  <p>OpenAI API key is missing. Add OPENAI_API_KEY in .env and re-run with -ChatGPT.</p>
+</div>
+</body>
+</html>
+"@
+                    $failHtml | Out-File -FilePath (Join-Path $analysisDir 'index.html') -Encoding utf8 -Force
+                } else {
+                    $modelToUse = if ($env:OPENAI_MODEL) { $env:OPENAI_MODEL } else { 'gpt-4o-mini' }
+                    Write-Host ("  Using model: {0}" -f $modelToUse) -ForegroundColor Gray
+                    if ($ChatGPTHello) {
+                        Write-Host "  Sending hello test..." -ForegroundColor Gray
+                        $helloResp = Invoke-OpenAIHelloHttpClient -Model $modelToUse -TimeoutSeconds 60
+                        Write-Host "  [OK] Hello response received." -ForegroundColor Green
+                        $outText = $null
+                        if ($helloResp -and $helloResp.output -and $helloResp.output.Count -gt 0 -and $helloResp.output[0].content -and $helloResp.output[0].content.Count -gt 0 -and $helloResp.output[0].content[0].text) {
+                            $outText = $helloResp.output[0].content[0].text
+                        } elseif ($helloResp -and $helloResp.output_text) {
+                            $outText = $helloResp.output_text
+                        } else {
+                            try { $outText = ($helloResp | ConvertTo-Json -Depth 20) } catch { $outText = "(no text in response)" }
+                        }
+                        Write-Host ("  Model says: {0}" -f $outText) -ForegroundColor Cyan
+                        $script:__ChatGptRunCompleted = $true
+                        return
+                    }
+                    $compressed = Compress-ResultsForAI -AllResults $allResults
+                    $agentPath = Join-Path $PSScriptRoot 'prompts/agent.md'
+                    $schemaPath = Join-Path $PSScriptRoot 'schema/analysis.schema.json'
+                    $analysisResp = Invoke-OpenAIAnalysis -Compressed $compressed -AgentPath $agentPath -SchemaPath $schemaPath -Model $modelToUse -MaxOutputTokens ([int]([int]$env:OPENAI_MAX_OUTPUT_TOKENS | ForEach-Object { if ($_ -gt 0) { $_ } else { 8000 } })) -TimeoutSeconds ([int]([int]$env:OPENAI_TIMEOUT_SECONDS | ForEach-Object { if ($_ -gt 0) { $_ } else { 60 } }))
+                    # Dump full response JSON for debugging and audits
+                    try {
+                        $respJsonPath = Join-Path $analysisDir 'response.json'
+                        ($analysisResp.raw | ConvertTo-Json -Depth 100) | Out-File -FilePath $respJsonPath -Encoding utf8 -Force
+                    } catch {}
+                    # Prefer parsed object if available (robust parsing handles quoted JSON)
+                    $analysisText = $analysisResp.text
+                    $analysisObj = $analysisResp.obj
+                    if (-not $analysisObj) { try { $analysisObj = $analysisText | ConvertFrom-Json -Depth 100 } catch {} }
+                    if ($null -eq $analysisObj) {
+                        $failHtml = @"
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Analysis Invalid</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="container">
+  <h1>Analysis Invalid</h1>
+  <p>Model did not return valid JSON.</p>
+</div>
+</body>
+</html>
+"@
+                        $failHtml | Out-File -FilePath (Join-Path $analysisDir 'index.html') -Encoding utf8 -Force
+                        try { $textPath = Join-Path $analysisDir 'response_text.txt'; $analysisText | Out-File -FilePath $textPath -Encoding utf8 -Force } catch {}
+                    } else {
+                        ($analysisText) | Out-File -FilePath (Join-Path $analysisDir 'analysis.json') -Encoding utf8 -Force
+                        $templatePath = Join-Path $PSScriptRoot 'templates/analysis.html'
+                        Write-AnalysisReport -AnalysisDir $analysisDir -TemplatePath $templatePath -AnalysisObj $analysisObj
+                        Write-Host "  [OK] ChatGPT analysis written to analysis/index.html" -ForegroundColor Green
+                        $script:__ChatGptRunCompleted = $true
+                    }
+                }
+            } catch {
+                Write-Host ("  [WARN] ChatGPT analysis failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+                $script:__ChatGptRunCompleted = $true
+            }
+        }
+
+        # If ChatGPT analysis exists, add a note
+        $analysisIndex = Join-Path $outputStructure.RootPath 'analysis/index.html'
+        if (Test-Path $analysisIndex) { Write-Host "AI analysis available: $analysisIndex" -ForegroundColor Cyan }
         
         # Create clickable file link for modern terminals
         $indexPath = Join-Path $outputStructure.RootPath "index.html"
