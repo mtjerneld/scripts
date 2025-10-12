@@ -13,6 +13,9 @@
 # Ignore all subdirectories (output folders, test folders, etc.)
 */
 !.vscode/
+!templates/
+!schema/
+!prompts/
 
 # But keep the example file
 !domains.txt
