@@ -127,18 +127,19 @@ When interpreting:
      * Optional note: "Domains confirmed as non-sending can move directly to p=reject and -all after validation"
      
      **P1 (High — 2–4 weeks)**
-     * Transition active domains from p=none → p=quarantine → p=reject (monitor between steps)
-     * Fix SPF/DKIM issues on domains with problems
-     * Deploy MTA-STS on all mail-receiving domains (mode=testing → mode=enforce)
-     * Deploy TLS-RPT for encryption monitoring and visibility
-     * 3-4 action bullets
+     * Transition DMARC on active domains from p=none → p=quarantine → p=reject (monitor aggregate reports between each step)
+     * Fix SPF/DKIM issues on domains with configuration problems
+     * Deploy MTA-STS on all mail-receiving domains (start with mode=testing, monitor, then mode=enforce)
+     * Deploy TLS-RPT for encryption monitoring and visibility into delivery issues
+     * 3-4 action bullets, always specify which technology (DMARC/SPF/DKIM/MTA-STS/TLS-RPT)
      
      **P2 (Medium — 1–3 months)**
-     * Establish routine monitoring of DMARC aggregate reports (rua)
-     * Set up regular review of TLS-RPT delivery reports
-     * Implement periodic SPF lookup audits (prevent exceeding RFC limit)
-     * Create documented procedures for DNS changes and security reviews
+     * Establish routine monitoring of DMARC aggregate reports (rua) for ongoing threat detection
+     * Set up regular review process for TLS-RPT delivery reports to identify encryption issues
+     * Implement periodic SPF lookup audits to prevent exceeding RFC 10-lookup limit
+     * Create documented procedures for DNS security changes and quarterly reviews
      * 2-3 action bullets focused on ONGOING processes, not initial deployment
+     * Always be specific about technology names in recommendations
      
      **CRITICAL: Add a blank line BEFORE each P0/P1/P2 header (except P0)**
    - `## Conclusion` – 2-3 sentences focusing on CURRENT RISKS and urgency, blank line, then AI disclaimer on new paragraph

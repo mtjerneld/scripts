@@ -2724,21 +2724,18 @@ function Write-IndexPage {
   $checkSummary = "        <p><span class='$mxIconClass'></span> MX Records: $mxPass/$totalDomains | <span class='$spfIconClass'></span> SPF: $spfPass/$totalDomains | <span class='$dkimIconClass'></span> DKIM: $dkimPass/$dkimApplicable</p>`n"
   $checkSummary += "        <p><span class='$dmarcIconClass'></span> DMARC: $dmarcPass/$totalDomains | <span class='$mtaStsIconClass'></span> MTA-STS: $mtaStsPass/$mtaStsApplicable | <span class='$tlsIconClass'></span> TLS-RPT: $tlsPass/$tlsApplicable</p>"
 
-  # Build download links if CSV or JSON available
-  $downloadLinks = ""
-  if ($CsvFileName -or $JsonFileName) {
-    $downloadLinks = "    <div class='download-links'>`n"
-    $downloadLinks += "        <strong>Download:</strong>`n"
-    if ($CsvFileName) {
-      $encodedCsvName = [System.Web.HttpUtility]::HtmlEncode($CsvFileName)
-      $downloadLinks += "        <a class='csv-link' href='" + $encodedCsvName + "'>CSV Report</a>`n"
-    }
-    if ($JsonFileName) {
-      $encodedJsonName = [System.Web.HttpUtility]::HtmlEncode($JsonFileName)
-      $downloadLinks += "        <a class='json-link' href='" + $encodedJsonName + "'>JSON Export</a>`n"
-    }
-    $downloadLinks += "    </div>`n"
+  # Build action buttons (download links + analysis link)
+  $downloadLinks = "    <div class='action-buttons'>`n"
+  if ($CsvFileName) {
+    $encodedCsvName = [System.Web.HttpUtility]::HtmlEncode($CsvFileName)
+    $downloadLinks += "        <a class='btn btn-download' href='" + $encodedCsvName + "'>Download CSV</a>`n"
   }
+  if ($JsonFileName) {
+    $encodedJsonName = [System.Web.HttpUtility]::HtmlEncode($JsonFileName)
+    $downloadLinks += "        <a class='btn btn-download' href='" + $encodedJsonName + "'>Download JSON</a>`n"
+  }
+  $downloadLinks += "        <a class='btn btn-primary' href='analysis/index.html'>View Analysis &amp; Remediation</a>`n"
+  $downloadLinks += "    </div>`n"
 
   # Helper to render status badge - build strings without nested expansion
   function Get-StatusBadgeHtml {

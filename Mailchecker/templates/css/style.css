@@ -435,43 +435,67 @@ a:hover {
     border-radius: 6px;
 }
 
-/* Download links */
-.download-links {
+/* Action buttons (download + analysis) */
+.action-buttons {
     margin: var(--space-4) 0;
     padding: var(--space-3) var(--space-4);
     background-color: var(--pri-50);
     border-radius: var(--radius-sm);
     border: 1px solid var(--pri-100);
+    display: flex;
+    gap: var(--space-3);
+    align-items: center;
+    flex-wrap: wrap;
 }
 
-.download-links strong {
-    color: var(--n800);
-}
-
-.download-links a {
+.btn-download {
     display: inline-block;
-    margin: var(--space-1) var(--space-2) var(--space-1) 0;
     padding: .6rem 1rem;
-    background-color: var(--pri-600);
-    color: white;
+    background-color: white;
+    color: var(--pri-600);
+    border: 1px solid var(--pri-200);
     border-radius: var(--radius-sm);
     text-decoration: none;
     font-weight: 600;
-    transition: background-color 0.2s, box-shadow 0.2s;
+    transition: all 0.2s;
 }
 
-.download-links a.csv-link::before {
+.btn-download:hover {
+    background-color: var(--pri-50);
+    border-color: var(--pri-300);
+    box-shadow: var(--shadow-sm);
+    text-decoration: none;
+}
+
+.btn-primary {
+    display: inline-block;
+    padding: .6rem 1rem;
+    background-color: var(--pri-600);
+    color: white;
+    border: 1px solid var(--pri-600);
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.btn-primary:hover {
+    background-color: var(--pri-700);
+    border-color: var(--pri-700);
+    box-shadow: var(--shadow-sm);
+    text-decoration: none;
+}
+
+.action-buttons .btn-download:nth-of-type(1)::before {
     content: '📊 ';
 }
 
-.download-links a.json-link::before {
+.action-buttons .btn-download:nth-of-type(2)::before {
     content: '📄 ';
 }
 
-.download-links a:hover {
-    background-color: var(--pri-700);
-    box-shadow: var(--shadow-sm);
-    text-decoration: none;
+.action-buttons .btn-primary::before {
+    content: '🔍 ';
 }
 
 /* Metadata */
