@@ -315,20 +315,29 @@ function Invoke-AzureUpload {
             $nowUtc = [DateTime]::UtcNow
             $isValid = $true
             if ($qs.ContainsKey('se')) {
-                $se = [DateTime]::Parse($qs['se'], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
-                if ($se -le $nowUtc) { $isValid = $false }
+                $se = [DateTime]::Parse($qs['se'], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime()
+                $minutesUntilExpiry = ($se - $nowUtc).TotalMinutes
+                Write-Verbose "SAS expires in $([Math]::Round($minutesUntilExpiry, 1)) minutes"
+                # Invalidate if expired or expires within 5 minutes
+                if ($minutesUntilExpiry -le 5) { 
+                    $isValid = $false 
+                    Write-Host "  [WARN] Existing SAS expires in $([Math]::Round($minutesUntilExpiry, 1)) minutes" -ForegroundColor Yellow
+                }
             }
             if ($qs.ContainsKey('st') -and $isValid) {
-                $st = [DateTime]::Parse($qs['st'], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)
+                $st = [DateTime]::Parse($qs['st'], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime()
                 # Allow small clock skew tolerance
                 if ($st -gt $nowUtc.AddMinutes(5)) { $isValid = $false }
             }
             if (-not $isValid) {
-                Write-Host "  [WARN] Existing AZURE_STORAGE_SAS appears invalid or expired; will generate a new SAS." -ForegroundColor Yellow
+                Write-Host "  [INFO] Will generate a new SAS token" -ForegroundColor Yellow
                 $env:AZURE_STORAGE_SAS = $null
             }
         } catch {
-            # If parsing fails, ignore (will use as-is)
+            # If parsing fails, assume invalid and clear to regenerate
+            Write-Host "  [WARN] Failed to validate existing SAS token: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "  [INFO] Will generate a new SAS token" -ForegroundColor Yellow
+            $env:AZURE_STORAGE_SAS = $null
         }
     }
 
@@ -1757,7 +1766,8 @@ function Convert-MarkdownToHtml {
   if ([string]::IsNullOrWhiteSpace($Markdown)) { return "" }
   
   # First, extract and convert tables before HTML encoding
-  $tablePattern = '(?ms)^\|(.+?)\|[\r\n]+\|[-:\s|]+\|[\r\n]+((?:\|.+?\|[\r\n]+)+)'
+  # More flexible pattern that handles optional blank lines
+  $tablePattern = '(?ms)^\|(.+?)\|[\r\n]+\|[-:\s|]+\|[\r\n]+((?:[\r\n]*\|.+?\|[\r\n]*)+)'
   $tables = @{}
   $tableIndex = 0
   $Markdown = [regex]::Replace($Markdown, $tablePattern, {
@@ -1765,15 +1775,25 @@ function Convert-MarkdownToHtml {
     $tableIndex++
     $placeholder = "___TABLE_PLACEHOLDER_$tableIndex___"
     
-    # Parse table
-    $lines = $match.Value -split '[\r\n]+' | Where-Object { $_ -match '\|' }
+    # Parse table - get all lines with pipes
+    $lines = $match.Value -split '[\r\n]+' | Where-Object { $_ -match '\|' -and $_.Trim() }
     if ($lines.Count -lt 2) { return $match.Value }
     
     $headerLine = $lines[0].Trim()
     $headers = ($headerLine -split '\|' | Where-Object { $_.Trim() }) | ForEach-Object { $_.Trim() }
     
-    # Skip separator line, process data rows
-    $dataLines = $lines[2..($lines.Count-1)]
+    # Find separator line and skip to data rows
+    $separatorIdx = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+      if ($lines[$i] -match '^\|[\s\-:|]+\|$') {
+        $separatorIdx = $i
+        break
+      }
+    }
+    
+    if ($separatorIdx -eq -1) { return $match.Value }
+    
+    $dataLines = $lines[($separatorIdx + 1)..($lines.Count - 1)]
     
     $tableHtml = "<table>`n<thead><tr>"
     foreach ($h in $headers) {
@@ -1784,6 +1804,7 @@ function Convert-MarkdownToHtml {
     foreach ($line in $dataLines) {
       if ([string]::IsNullOrWhiteSpace($line)) { continue }
       $cells = ($line -split '\|' | Where-Object { $_.Trim() }) | ForEach-Object { $_.Trim() }
+      if ($cells.Count -eq 0) { continue }
       $tableHtml += "<tr>"
       foreach ($cell in $cells) {
         $tableHtml += "<td>$cell</td>"
@@ -1900,7 +1921,123 @@ function Compress-ResultsForAI {
       # Skip malformed entry
     }
   }
-  return @{ generated = (Get-Date).ToString('u'); total_domains = $domains.Count; domains = $domains }
+  
+  # Calculate summary statistics for deterministic reporting
+  $stats = @{
+    domain_total = $domains.Count
+    dmarc = @{
+      missing = 0
+      p_none = 0
+      p_quarantine = 0
+      p_reject = 0
+      fail = 0
+      warn = 0
+      pass = 0
+    }
+    spf = @{
+      missing = 0
+      fail = 0
+      warn = 0
+      pass = 0
+    }
+    dkim = @{
+      missing = 0
+      fail = 0
+      warn = 0
+      pass = 0
+      na = 0
+    }
+    mta_sts = @{
+      missing = 0
+      fail = 0
+      warn = 0
+      pass = 0
+      na = 0
+    }
+    tls_rpt = @{
+      missing = 0
+      fail = 0
+      warn = 0
+      pass = 0
+      na = 0
+    }
+  }
+  
+  foreach ($d in $domains) {
+    # DMARC - count based on status, track reason for context
+    $dmarcStatus = $d.checks.dmarc.status
+    $dmarcReason = [string]$d.checks.dmarc.reason
+    if ($dmarcStatus -eq 'PASS' -or $dmarcStatus -eq 'OK') { 
+      $stats.dmarc.pass++
+      if ($dmarcReason -match 'p=reject') { $stats.dmarc.p_reject++ }
+    }
+    elseif ($dmarcStatus -eq 'WARN') { 
+      $stats.dmarc.warn++
+      if ($dmarcReason -match 'p=none') { $stats.dmarc.p_none++ }
+      if ($dmarcReason -match 'p=quarantine') { $stats.dmarc.p_quarantine++ }
+    }
+    elseif ($dmarcStatus -eq 'FAIL') { 
+      $stats.dmarc.fail++
+      if ($dmarcReason -match 'not found|missing') { $stats.dmarc.missing++ }
+    }
+    
+    # SPF - count based on status
+    $spfStatus = $d.checks.spf.status
+    $spfReason = [string]$d.checks.spf.reason
+    if ($spfStatus -eq 'PASS' -or $spfStatus -eq 'OK') { $stats.spf.pass++ }
+    elseif ($spfStatus -eq 'WARN') { $stats.spf.warn++ }
+    elseif ($spfStatus -eq 'FAIL') { 
+      $stats.spf.fail++
+      if ($spfReason -match 'not found|missing') { $stats.spf.missing++ }
+    }
+    
+    # Check if domain has MX records (for DKIM/MTA-STS/TLS-RPT applicability)
+    $hasMX = $false
+    if ($d.mx -and $d.mx.providers -and @($d.mx.providers).Count -gt 0) {
+      $hasMX = $true
+    }
+    
+    # DKIM - only applicable if domain has MX
+    if (-not $hasMX) {
+      $stats.dkim.na++
+    } else {
+      $dkimStatus = $d.checks.dkim.status
+      $dkimReason = [string]$d.checks.dkim.reason
+      if ($dkimStatus -eq 'PASS' -or $dkimStatus -eq 'OK') { $stats.dkim.pass++ }
+      elseif ($dkimStatus -eq 'WARN') { $stats.dkim.warn++ }
+      elseif ($dkimStatus -eq 'FAIL') { 
+        $stats.dkim.fail++
+        if ($dkimReason -match 'not found|no valid|missing') { $stats.dkim.missing++ }
+      }
+    }
+    
+    # MTA-STS - only applicable if domain has MX
+    if (-not $hasMX) {
+      $stats.mta_sts.na++
+    } else {
+      $mtaStsStatus = $d.checks.mta_sts.status
+      if ($mtaStsStatus -eq 'PASS' -or $mtaStsStatus -eq 'OK') { $stats.mta_sts.pass++ }
+      elseif ($mtaStsStatus -eq 'WARN') { $stats.mta_sts.warn++ }
+      elseif ($mtaStsStatus -eq 'FAIL') { $stats.mta_sts.fail++ }
+    }
+    
+    # TLS-RPT - only applicable if domain has MX
+    if (-not $hasMX) {
+      $stats.tls_rpt.na++
+    } else {
+      $tlsRptStatus = $d.checks.tls_rpt.status
+      if ($tlsRptStatus -eq 'PASS' -or $tlsRptStatus -eq 'OK') { $stats.tls_rpt.pass++ }
+      elseif ($tlsRptStatus -eq 'WARN') { $stats.tls_rpt.warn++ }
+      elseif ($tlsRptStatus -eq 'FAIL') { $stats.tls_rpt.fail++ }
+    }
+  }
+  
+  return @{ 
+    generated = (Get-Date).ToString('u')
+    total_domains = $domains.Count
+    calculated = $stats
+    domains = $domains
+  }
 }
 
 function ConvertTo-PlainObject {
@@ -1980,10 +2117,10 @@ function Invoke-OpenAIAnalysis {
   $minimalSchema = [ordered]@{
     type = 'object'
     properties = [ordered]@{
-      summary         = @{ type = 'string'; maxLength = 800 }
+      summary         = @{ type = 'string'; maxLength = 650 }
       overall_status  = @{ type = 'string'; enum = @('PASS','WARN','FAIL') }
-      key_findings    = @{ type = 'array'; items = @{ type = 'string'; maxLength = 400 }; minItems = 3; maxItems = 8 }
-      report_markdown = @{ type = 'string'; maxLength = 12000 }
+      key_findings    = @{ type = 'array'; items = @{ type = 'string'; maxLength = 220 }; minItems = 3; maxItems = 5 }
+      report_markdown = @{ type = 'string'; maxLength = 6000 }
     }
     required = @('summary','overall_status','key_findings','report_markdown')
     additionalProperties = $false
@@ -2000,11 +2137,22 @@ function Invoke-OpenAIAnalysis {
       }
     }
   }
+  # Check if model is a reasoning model (gpt-5 series)
+  $isReasoningModel = $modelToUse -match '^gpt-5'
+  
+  # Set verbosity based on model type
+  $verbosityLevel = if ($isReasoningModel) { 'low' } else { 'medium' }
+  
   $bodyObj = [ordered]@{
     model             = $modelToUse
-    max_output_tokens = $effectiveMaxOutput
-    text              = [ordered]@{ format = [ordered]@{ type='json_schema'; name='analysis'; strict=$true; schema=$minimalSchema }; verbosity = 'low' }
+    max_output_tokens = [Math]::Min($effectiveMaxOutput, 2400)
+    text              = [ordered]@{ format = [ordered]@{ type='json_schema'; name='analysis'; strict=$true; schema=$minimalSchema }; verbosity = $verbosityLevel }
     input             = $inputBlocks
+  }
+  
+  # Only add reasoning parameter for reasoning models
+  if ($isReasoningModel) {
+    $bodyObj['reasoning'] = [ordered]@{ effort = 'low' }
   }
   # Normalize content-part types to input_text for Responses API
   try {
@@ -2031,7 +2179,7 @@ function Invoke-OpenAIAnalysis {
   # Safety check to ensure we only ever post to the official endpoint
   if ($url -notmatch '^https://api\.openai\.com/v1/responses$') { throw ("Safety check failed: URL ({0}) is not OpenAI's official endpoint." -f $url) }
   Write-Host ("  Endpoint: {0}" -f $url) -ForegroundColor Gray
-  Write-Host ("  Submitting request to OpenAI (input≈{0} tokens, max_output={1}, timeout={2}s, body={3} bytes)..." -f $inputTokens, $effectiveMaxOutput, $timeout, $bodyBytes) -ForegroundColor Gray
+  Write-Host ("  Submitting request to OpenAI (input~{0} tokens, max_output={1}, timeout={2}s, body={3} bytes)..." -f $inputTokens, $effectiveMaxOutput, $timeout, $bodyBytes) -ForegroundColor Gray
   try {
     # Use HttpClient (PS5-stable) for the main call as well
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
@@ -2123,15 +2271,18 @@ function ConvertFrom-OpenAIResponseJson {
   param(
     [Parameter(Mandatory=$true)] $respObj
   )
-  if ($respObj.status -eq 'incomplete') {
-    $reason = $respObj.incomplete_details.reason
-    throw ("Model status=incomplete (reason={0}) - JSON may be truncated." -f $reason)
-  }
+  # Try to find a completed message first, even if overall status is incomplete
   $jsonText = ($respObj.output |
-    Where-Object { $_.type -eq 'message' } |
+    Where-Object { $_.type -eq 'message' -and $_.status -eq 'completed' } |
     Select-Object -First 1 -ExpandProperty content |
     Where-Object { $_.type -eq 'output_text' } |
     Select-Object -First 1 -ExpandProperty text)
+  
+  # If no completed message found and overall status is incomplete, throw error
+  if (-not $jsonText -and $respObj.status -eq 'incomplete') {
+    $reason = $respObj.incomplete_details.reason
+    throw ("Model status=incomplete (reason={0}) - no completed message found." -f $reason)
+  }
 
   if (-not $jsonText) { throw 'No output_text found in response.' }
 
@@ -2272,16 +2423,9 @@ function Write-AnalysisReport {
       'FAIL' { 'status-chip fail' }
       default { 'status-chip info' }
     }
-    $emoji = switch ($status) {
-      'PASS' { '✅' }
-      'OK'   { '✅' }
-      'WARN' { '⚠️' }
-      'FAIL' { '❌' }
-      default { 'ℹ️' }
-    }
     $label = if ($status -eq 'OK') { 'PASS' } else { $status }
     $encoded = [System.Web.HttpUtility]::HtmlEncode($label)
-    return ('<span class="' + $cls + '">' + $emoji + ' ' + $encoded + '</span>')
+    return ('<span class="' + $cls + '">' + $encoded + '</span>')
   }
   $statusChip = Get-StatusChipHtmlLocal $AnalysisObj.overall_status
   
@@ -2300,11 +2444,12 @@ function Write-AnalysisReport {
   
   $fullReportSection = ''
   if ($AnalysisObj.report_markdown -and $AnalysisObj.report_markdown.Trim().Length -gt 0) {
-    $reportHtml = Convert-MarkdownToHtml -Markdown $AnalysisObj.report_markdown
+    # Encode markdown for safe embedding in HTML data attribute
+    $markdownEncoded = [System.Web.HttpUtility]::HtmlEncode($AnalysisObj.report_markdown)
     $fullReportSection = @"
     <section id="full-report">
       <h2>Full Report</h2>
-      <div class="md">$reportHtml</div>
+      <div class="md" data-markdown="$markdownEncoded"></div>
     </section>
 
 "@
@@ -2329,7 +2474,9 @@ function Write-AnalysisReport {
 "@
   }
   $metaHtml = Get-MetaHtmlLocal -meta $AnalysisObj.meta -usage $AnalysisObj.usage
-  $out = $tmpl.Replace('{{OVERALL_STATUS}}', $statusChip)
+  $reportDate = (Get-Date).ToString('yyyy-MM-dd')
+  $out = $tmpl.Replace('{{REPORT_DATE}}', $reportDate)
+  $out = $out.Replace('{{OVERALL_STATUS}}', $statusChip)
   $out = $out.Replace('{{SUMMARY}}', [System.Web.HttpUtility]::HtmlEncode($AnalysisObj.summary))
   $out = $out.Replace('{{KEY_FINDINGS_SECTION}}', $keyFindingsSection)
   $out = $out.Replace('{{FULL_REPORT_SECTION}}', $fullReportSection)
@@ -2539,12 +2686,20 @@ function Write-IndexPage {
   $warnCount = $warnResults.Count
   $failCount = $failResults.Count
   
-  # Count status per check type
+  # Count status per check type (excluding N/A from totals for applicable checks)
   $mxPass = @($AllResults | Where-Object { $_.MXResult.Status -eq 'PASS' -or $_.MXResult.Status -eq 'OK' }).Count
   $spfPass = @($AllResults | Where-Object { $_.SPFResult.Status -eq 'PASS' }).Count
+  
+  # For DKIM, MTA-STS, TLS-RPT: only count applicable domains (exclude N/A)
+  $dkimApplicable = @($AllResults | Where-Object { $_.DKIMResult.Status -ne 'N/A' }).Count
   $dkimPass = @($AllResults | Where-Object { $_.DKIMResult.Status -eq 'PASS' }).Count
+  
+  $mtaStsApplicable = @($AllResults | Where-Object { $_.MTAStsResult.Status -ne 'N/A' }).Count
   $mtaStsPass = @($AllResults | Where-Object { $_.MTAStsResult.Status -eq 'PASS' }).Count
+  
   $dmarcPass = @($AllResults | Where-Object { $_.DMARCResult.Status -eq 'PASS' }).Count
+  
+  $tlsApplicable = @($AllResults | Where-Object { $_.TLSResult.Status -ne 'N/A' }).Count
   $tlsPass = @($AllResults | Where-Object { $_.TLSResult.Status -eq 'PASS' }).Count
   
   # Determine icon class for each check type based on worst status
@@ -2565,9 +2720,9 @@ function Write-IndexPage {
   $mtaStsIconClass = Get-CheckIconClass ($AllResults | ForEach-Object { $_.MTAStsResult.Status })
   $tlsIconClass = Get-CheckIconClass ($AllResults | ForEach-Object { $_.TLSResult.Status })
 
-  # Build check summary
-  $checkSummary = "        <p><span class='$mxIconClass'></span> MX Records: $mxPass/$totalDomains | <span class='$spfIconClass'></span> SPF: $spfPass/$totalDomains | <span class='$dkimIconClass'></span> DKIM: $dkimPass/$totalDomains</p>`n"
-  $checkSummary += "        <p><span class='$dmarcIconClass'></span> DMARC: $dmarcPass/$totalDomains | <span class='$mtaStsIconClass'></span> MTA-STS: $mtaStsPass/$totalDomains | <span class='$tlsIconClass'></span> TLS-RPT: $tlsPass/$totalDomains</p>"
+  # Build check summary (show applicable counts for N/A-eligible checks)
+  $checkSummary = "        <p><span class='$mxIconClass'></span> MX Records: $mxPass/$totalDomains | <span class='$spfIconClass'></span> SPF: $spfPass/$totalDomains | <span class='$dkimIconClass'></span> DKIM: $dkimPass/$dkimApplicable</p>`n"
+  $checkSummary += "        <p><span class='$dmarcIconClass'></span> DMARC: $dmarcPass/$totalDomains | <span class='$mtaStsIconClass'></span> MTA-STS: $mtaStsPass/$mtaStsApplicable | <span class='$tlsIconClass'></span> TLS-RPT: $tlsPass/$tlsApplicable</p>"
 
   # Build download links if CSV or JSON available
   $downloadLinks = ""
@@ -3131,6 +3286,14 @@ if ($BulkFile) {
                         return
                     }
                     $compressed = Compress-ResultsForAI -AllResults $allResults
+                    Write-Host "  Calculated Statistics:" -ForegroundColor Cyan
+                    $c = $compressed.calculated
+                    Write-Host ("    Domains: {0,3} total" -f $c.domain_total) -ForegroundColor Gray
+                    Write-Host ("    DMARC:   {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass" -f $c.dmarc.fail, $c.dmarc.missing, $c.dmarc.warn, $c.dmarc.pass) -ForegroundColor Gray
+                    Write-Host ("    SPF:     {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass" -f $c.spf.fail, $c.spf.missing, $c.spf.warn, $c.spf.pass) -ForegroundColor Gray
+                    Write-Host ("    DKIM:    {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.dkim.fail, $c.dkim.warn, $c.dkim.pass, $c.dkim.na) -ForegroundColor Gray
+                    Write-Host ("    MTA-STS: {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.mta_sts.fail, $c.mta_sts.warn, $c.mta_sts.pass, $c.mta_sts.na) -ForegroundColor Gray
+                    Write-Host ("    TLS-RPT: {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.tls_rpt.fail, $c.tls_rpt.warn, $c.tls_rpt.pass, $c.tls_rpt.na) -ForegroundColor Gray
                     $agentPath = Join-Path $PSScriptRoot 'prompts/agent.md'
                     $schemaPath = Join-Path $PSScriptRoot 'schema/analysis.schema.json'
                     $analysisResp = Invoke-OpenAIAnalysis -Compressed $compressed -AgentPath $agentPath -SchemaPath $schemaPath -Model $modelToUse -MaxOutputTokens ([int]([int]$env:OPENAI_MAX_OUTPUT_TOKENS | ForEach-Object { if ($_ -gt 0) { $_ } else { 8000 } })) -TimeoutSeconds ([int]([int]$env:OPENAI_TIMEOUT_SECONDS | ForEach-Object { if ($_ -gt 0) { $_ } else { 60 } }))
@@ -3159,8 +3322,12 @@ if ($BulkFile) {
                     $analysisText = $analysisResp.text
                     $analysisObj = $analysisResp.obj
                     if (-not $analysisObj) { 
-                        try { 
-                            $analysisObj = $analysisText | ConvertFrom-Json -Depth 100 
+                        try {
+                            if ($PSVersionTable.PSVersion.Major -ge 7) {
+                                $analysisObj = $analysisText | ConvertFrom-Json -Depth 100
+                            } else {
+                                $analysisObj = $analysisText | ConvertFrom-Json
+                            }
                         } catch { 
                             Write-Host ("  [WARN] Failed to parse analysis JSON: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
                         }
@@ -3175,12 +3342,13 @@ if ($BulkFile) {
                     } else {
                         Write-Host "  [OK] Analysis parsed successfully" -ForegroundColor Green
                         # Validate field lengths against schema
-                        if ($analysisObj.report_markdown -and $analysisObj.report_markdown.Length -gt 12000) {
-                            Write-Host ("  [WARN] report_markdown exceeds limit ({0} > 12000 chars)" -f $analysisObj.report_markdown.Length) -ForegroundColor Yellow
+                        if ($analysisObj.report_markdown -and $analysisObj.report_markdown.Length -gt 6000) {
+                            Write-Host ("  [WARN] report_markdown exceeds limit ({0} > 6000 chars)" -f $analysisObj.report_markdown.Length) -ForegroundColor Yellow
                         }
-                        if ($analysisObj.summary -and $analysisObj.summary.Length -gt 800) {
-                            Write-Host ("  [WARN] summary exceeds limit ({0} > 800 chars)" -f $analysisObj.summary.Length) -ForegroundColor Yellow
+                        if ($analysisObj.summary -and $analysisObj.summary.Length -gt 650) {
+                            Write-Host ("  [WARN] summary exceeds limit ({0} > 650 chars)" -f $analysisObj.summary.Length) -ForegroundColor Yellow
                         }
+                        Write-Host ("  Content: summary={0} chars, findings={1}, markdown={2} chars" -f $analysisObj.summary.Length, $analysisObj.key_findings.Count, $analysisObj.report_markdown.Length) -ForegroundColor Gray
                         ($analysisText) | Out-File -FilePath (Join-Path $analysisDir 'analysis.json') -Encoding utf8 -Force
                         $templatePath = Join-Path $PSScriptRoot 'templates/html/analysis.html'
                         Write-AnalysisReport -AnalysisDir $analysisDir -TemplatePath $templatePath -AnalysisObj $analysisObj

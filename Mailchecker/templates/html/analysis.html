@@ -3,23 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Email Security &mdash; AI Analysis</title>
+  <title>Email Security Assessment &mdash; {{REPORT_DATE}}</title>
   <link rel="stylesheet" href="../assets/style.css">
   <link rel="stylesheet" href="../assets/analysis.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
   <script defer src="../assets/analysis.js"></script>
 </head>
 <body>
   <div class="container">
     <a href="../index.html" class="nav-link">Back to Summary</a>
     
-    <h1>Email Security &mdash; AI Analysis</h1>
+    <h1>Email Security Assessment &mdash; {{REPORT_DATE}}</h1>
 
     <div class="summary-stats">
-      <h2>Summary</h2>
-      <div class="flex-center">
+      <div class="flex-between">
+        <h2>Summary</h2>
         {{OVERALL_STATUS}}
-        <div class="summary">{{SUMMARY}}</div>
       </div>
+      <div class="summary">{{SUMMARY}}</div>
     </div>
 
 {{KEY_FINDINGS_SECTION}}

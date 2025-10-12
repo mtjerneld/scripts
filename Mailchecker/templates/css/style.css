@@ -146,8 +146,19 @@ h3 {
 
 .summary-stats h2 {
     color: white;
-    border-bottom: 2px solid rgba(255,255,255,0.3);
+    border-bottom: none;
     margin-top: 0;
+    margin-bottom: var(--space-3);
+}
+
+.summary-stats .flex-between {
+    border-bottom: 2px solid rgba(255,255,255,0.3);
+    padding-bottom: var(--space-2);
+    margin-bottom: var(--space-3);
+}
+
+.summary-stats .flex-between h2 {
+    margin-bottom: 0;
 }
 
 .summary-stats p {
@@ -626,6 +637,19 @@ a:hover {
 .stat-subtitle {
     font-size: 12px;
     margin-top: 5px;
+}
+
+/* Stat card titles with icons */
+.stat-card .stat-title-pass::before {
+    content: '✅ ';
+}
+
+.stat-card .stat-title-warn::before {
+    content: '⚠️ ';
+}
+
+.stat-card .stat-title-fail::before {
+    content: '❌ ';
 }
 
 /* Legend colors (footer) */

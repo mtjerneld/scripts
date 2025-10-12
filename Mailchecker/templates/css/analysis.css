@@ -27,6 +27,12 @@
 .status-chip.warn { background: #fff4e5; color: #b26a00; }
 .status-chip.fail { background: #fde7e9; color: #b3261e; }
 
+/* Status chip icons using Unicode via CSS */
+.status-chip.ok::before, .status-chip.pass::before { content: '\2705\00a0'; }      /* ✅ + non-breaking space */
+.status-chip.warn::before { content: '\26a0\fe0f\00a0'; }                          /* ⚠️ + non-breaking space */
+.status-chip.fail::before { content: '\274c\00a0'; }                               /* ❌ + non-breaking space */
+.status-chip.info::before { content: '\2139\fe0f\00a0'; }                          /* ℹ️ + non-breaking space */
+
 /* Page header */
 .page-header { display: flex; justify-content: space-between; align-items: center; margin: 16px 0; }
 .page-header nav a { text-decoration: none; }
