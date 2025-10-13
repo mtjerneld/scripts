@@ -2070,9 +2070,13 @@ function Compress-ResultsForAI {
       $stats.mta_sts.na++
     } else {
       $mtaStsStatus = $d.checks.mta_sts.status
+      $mtaStsReason = [string]$d.checks.mta_sts.reason
       if ($mtaStsStatus -eq 'PASS' -or $mtaStsStatus -eq 'OK') { $stats.mta_sts.pass++ }
       elseif ($mtaStsStatus -eq 'WARN') { $stats.mta_sts.warn++ }
-      elseif ($mtaStsStatus -eq 'FAIL') { $stats.mta_sts.fail++ }
+      elseif ($mtaStsStatus -eq 'FAIL') { 
+        $stats.mta_sts.fail++
+        if ($mtaStsReason -match 'missing|not found') { $stats.mta_sts.missing++ }
+      }
     }
     
     # TLS-RPT - only applicable if domain has MX
@@ -2080,8 +2084,12 @@ function Compress-ResultsForAI {
       $stats.tls_rpt.na++
     } else {
       $tlsRptStatus = $d.checks.tls_rpt.status
+      $tlsRptReason = [string]$d.checks.tls_rpt.reason
       if ($tlsRptStatus -eq 'PASS' -or $tlsRptStatus -eq 'OK') { $stats.tls_rpt.pass++ }
-      elseif ($tlsRptStatus -eq 'WARN') { $stats.tls_rpt.warn++ }
+      elseif ($tlsRptStatus -eq 'WARN') { 
+        $stats.tls_rpt.warn++
+        if ($tlsRptReason -match 'missing|not found') { $stats.tls_rpt.missing++ }
+      }
       elseif ($tlsRptStatus -eq 'FAIL') { $stats.tls_rpt.fail++ }
     }
   }
@@ -2090,7 +2098,8 @@ function Compress-ResultsForAI {
     generated = (Get-Date).ToString('u')
     total_domains = $domains.Count
     calculated = $stats
-    domains = $domains
+    # TEMP TEST: Exclude domains array to reduce tokens and force AI to use calculated stats
+    # domains = $domains
   }
 }
 
@@ -2171,7 +2180,7 @@ function Invoke-OpenAIAnalysis {
   $minimalSchema = [ordered]@{
     type = 'object'
     properties = [ordered]@{
-      summary         = @{ type = 'string'; maxLength = 650 }
+      summary         = @{ type = 'string'; maxLength = 900 }
       overall_status  = @{ type = 'string'; enum = @('PASS','WARN','FAIL') }
       key_findings    = @{ type = 'array'; items = @{ type = 'string'; maxLength = 220 }; minItems = 3; maxItems = 5 }
       report_markdown = @{ type = 'string'; maxLength = 6000 }
@@ -2206,7 +2215,10 @@ function Invoke-OpenAIAnalysis {
   
   # Only add reasoning parameter for reasoning models
   if ($isReasoningModel) {
-    $bodyObj['reasoning'] = [ordered]@{ effort = 'low' }
+    # Options: 'low' (fast), 'medium' (balanced), 'high' (thorough)
+    # Higher effort = better quality checks but slower and more expensive
+    $reasoningEffort = if ($env:OPENAI_REASONING_EFFORT) { $env:OPENAI_REASONING_EFFORT } else { 'low' }
+    $bodyObj['reasoning'] = [ordered]@{ effort = $reasoningEffort }
   }
   # Normalize content-part types to input_text for Responses API
   try {
@@ -2216,16 +2228,17 @@ function Invoke-OpenAIAnalysis {
   $swBuild.Stop()
   Write-Host ("  Payload built in {0} ms" -f $swBuild.ElapsedMilliseconds) -ForegroundColor Gray
   # Dump payload for debugging (compact and pretty variants, no BOM)
-  try {
-    $dumpPath = Join-Path (Get-Location) 'openai-payload.json'
-    $prettyPath = Join-Path (Get-Location) 'openai-payload.pretty.json'
-    [System.IO.File]::WriteAllText($dumpPath, $bodyJson, (New-Object System.Text.UTF8Encoding($false)))
-    try {
-      $pretty = $bodyObj | ConvertTo-Json -Depth 100
-      [System.IO.File]::WriteAllText($prettyPath, $pretty, (New-Object System.Text.UTF8Encoding($false)))
-    } catch {}
-    Write-Host ("  Payload dumped to {0} (pretty: {1})" -f $dumpPath, $prettyPath) -ForegroundColor Gray
-  } catch {}
+  # DISABLED: Not needed unless debugging
+  # try {
+  #   $dumpPath = Join-Path (Get-Location) 'openai-payload.json'
+  #   $prettyPath = Join-Path (Get-Location) 'openai-payload.pretty.json'
+  #   [System.IO.File]::WriteAllText($dumpPath, $bodyJson, (New-Object System.Text.UTF8Encoding($false)))
+  #   try {
+  #     $pretty = $bodyObj | ConvertTo-Json -Depth 100
+  #     [System.IO.File]::WriteAllText($prettyPath, $pretty, (New-Object System.Text.UTF8Encoding($false)))
+  #   } catch {}
+  #   Write-Host ("  Payload dumped to {0} (pretty: {1})" -f $dumpPath, $prettyPath) -ForegroundColor Gray
+  # } catch {}
 
   # Get timeout configuration
   $timeout = if ($env:OPENAI_TIMEOUT_SECONDS) { [int]$env:OPENAI_TIMEOUT_SECONDS } else { $TimeoutSeconds }
@@ -2434,7 +2447,8 @@ function Invoke-OpenAIHelloHttpClient {
     )
   }
   $payloadJson = $payloadObj | ConvertTo-Json -Depth 20 -Compress
-  try { [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'openai-hello.json'), $payloadJson, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  # DISABLED: Payload dump not needed unless debugging
+  # try { [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'openai-hello.json'), $payloadJson, (New-Object System.Text.UTF8Encoding($false))) } catch {}
 
   Add-Type -AssemblyName System.Net.Http
   $handler = New-Object System.Net.Http.HttpClientHandler
@@ -3376,9 +3390,9 @@ if ($Html -or $FullHtmlExport) {
                     Write-Host ("    MX:      {0,3} with MX, {1,3} send-only, {2,3} SERVFAIL" -f $c.mx.has_mx, $c.mx.no_mx, $c.mx.servfail) -ForegroundColor Gray
                     Write-Host ("    DMARC:   {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass; {4,3} pct<100, {5,3} no rua/ruf" -f $c.dmarc.fail, $c.dmarc.missing, $c.dmarc.warn, $c.dmarc.pass, $c.dmarc.pct_partial, $c.dmarc.no_reporting) -ForegroundColor Gray
                     Write-Host ("    SPF:     {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass" -f $c.spf.fail, $c.spf.missing, $c.spf.warn, $c.spf.pass) -ForegroundColor Gray
-                    Write-Host ("    DKIM:    {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.dkim.fail, $c.dkim.warn, $c.dkim.pass, $c.dkim.na) -ForegroundColor Gray
-                    Write-Host ("    MTA-STS: {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.mta_sts.fail, $c.mta_sts.warn, $c.mta_sts.pass, $c.mta_sts.na) -ForegroundColor Gray
-                    Write-Host ("    TLS-RPT: {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.tls_rpt.fail, $c.tls_rpt.warn, $c.tls_rpt.pass, $c.tls_rpt.na) -ForegroundColor Gray
+                    Write-Host ("    DKIM:    {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass, {4,3} N/A (no MX)" -f $c.dkim.fail, $c.dkim.missing, $c.dkim.warn, $c.dkim.pass, $c.dkim.na) -ForegroundColor Gray
+                    Write-Host ("    MTA-STS: {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass, {4,3} N/A (no MX)" -f $c.mta_sts.fail, $c.mta_sts.missing, $c.mta_sts.warn, $c.mta_sts.pass, $c.mta_sts.na) -ForegroundColor Gray
+                    Write-Host ("    TLS-RPT: {0,3} fail, {1,3} warn (inc. {2} missing), {3,3} pass, {4,3} N/A (no MX)" -f $c.tls_rpt.fail, $c.tls_rpt.warn, $c.tls_rpt.missing, $c.tls_rpt.pass, $c.tls_rpt.na) -ForegroundColor Gray
                     $agentPath = Join-Path $PSScriptRoot 'prompts/agent.md'
                     $schemaPath = Join-Path $PSScriptRoot 'schema/analysis.schema.json'
                     $analysisResp = Invoke-OpenAIAnalysis -Compressed $compressed -AgentPath $agentPath -SchemaPath $schemaPath -Model $modelToUse -MaxOutputTokens ([int]([int]$env:OPENAI_MAX_OUTPUT_TOKENS | ForEach-Object { if ($_ -gt 0) { $_ } else { 8000 } })) -TimeoutSeconds ([int]([int]$env:OPENAI_TIMEOUT_SECONDS | ForEach-Object { if ($_ -gt 0) { $_ } else { 60 } }))
