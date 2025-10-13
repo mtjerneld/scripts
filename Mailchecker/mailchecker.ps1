@@ -58,8 +58,8 @@ param(
   [switch]$ChatGPT,
   
   [Parameter(Mandatory=$false)]
-  [switch]$Help
-  ,
+  [switch]$Help,
+  
   [Parameter(Mandatory=$false)]
   [switch]$ChatGPTHello
 )
@@ -75,8 +75,8 @@ MAILCHECKER - Email Security Configuration Checker
 ===================================================
 
 SYNOPSIS
-    .\mailchecker.ps1 -Domain <domain> [-Selectors <list>] [-Html]
-    .\mailchecker.ps1 -BulkFile <file> [-FullHtmlExport] [-OpenReport] [-Json] [-ChatGPT]
+    .\mailchecker.ps1 -Domain <domain> [-Selectors <list>] [-Html | -FullHtmlExport] [-ChatGPT] [-OpenReport]
+    .\mailchecker.ps1 -BulkFile <file> [-FullHtmlExport] [-Json] [-ChatGPT] [-OpenReport]
 
 DESCRIPTION
     Checks email security: MX, SPF, DKIM, MTA-STS, DMARC, TLS-RPT
@@ -89,15 +89,15 @@ KEY PARAMETERS
     -DnsServer <servers>     DNS servers to use (default: 8.8.8.8, 1.1.1.1)
     
 OUTPUT OPTIONS
-    -Html                    Generate HTML report for single domain (outputs to: output/)
-    -FullHtmlExport         [RECOMMENDED] Complete export: index, domain reports, CSV, assets
-    -Json                    Add JSON export (with -FullHtmlExport)
+    -Html                    Generate simple HTML report (single file, embedded assets, single domain only)
+    -FullHtmlExport         [RECOMMENDED] Complete export with assets directory (single domain or bulk)
+    -Json                    Add JSON export (bulk mode only, with -FullHtmlExport)
     -OutputPath <path>       Output directory (default: output/)
-    -OpenReport              Auto-open report in browser (with -FullHtmlExport)
-    -ChatGPT                 Generate AI analysis with remediation plan (requires OPENAI_API_KEY in .env)
+    -OpenReport              Auto-open report in browser (requires -FullHtmlExport)
+    -ChatGPT                 Generate AI analysis with remediation plan (requires -FullHtmlExport and OPENAI_API_KEY in .env)
     
 AZURE CLOUD UPLOAD
-    -UploadToAzure          Upload report to Azure Blob Storage (requires -FullHtmlExport)
+    -UploadToAzure          Upload report to Azure Blob Storage (requires -FullHtmlExport, works for single domain or bulk)
     -AzureRunId <id>        Custom Run ID for upload (auto-generated if not specified)
     -EnvFile <path>         Path to .env file (default: .env)
 
@@ -121,19 +121,19 @@ QUICK EXAMPLES
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure -AzureRunId "2025-audit"
 
 DEFAULT OUTPUT STRUCTURE (output/domains-20251008-142315/)
-    index.html              Main summary with links
-    bulk-results-*.csv      CSV export
-    results.json            JSON export (if -Json)
+      index.html              Main summary with links
+      bulk-results-*.csv      CSV export
+      results.json            JSON export (if -Json)
     analysis/
       index.html            AI-generated analysis (if -ChatGPT)
-    assets/
-      style.css             Modern responsive styles
-      app.js                Interactive features
+      assets/
+        style.css             Modern responsive styles
+        app.js                Interactive features
       analysis.css          AI analysis styles
       analysis.js           AI analysis scripts
-    domains/
-      example.com.html      Individual reports
-      ...
+      domains/
+        example.com.html      Individual reports
+        ...
 
 INPUT FILE FORMAT (domains.txt)
     example.com
@@ -510,9 +510,6 @@ if (-not $Domain -and -not $BulkFile) {
 if ($UploadToAzure) {
     if (-not $FullHtmlExport) {
         throw "-UploadToAzure requires -FullHtmlExport to generate the report structure"
-    }
-    if (-not $BulkFile) {
-        throw "-UploadToAzure is only supported with -BulkFile (bulk mode)"
     }
     # Early AzCopy availability check before any scanning/export work
     Write-Host "\nAzure upload requested: verifying AzCopy tool before scanning..." -ForegroundColor Yellow
@@ -1914,7 +1911,11 @@ function Compress-ResultsForAI {
           mta_sts = @{ status = [string]$r.MTAStsResult.Status }
           tls_rpt = @{ status = [string]$r.TLSResult.Status }
         }
-        mx      = @{ providers = $mxProviders }
+        mx      = @{ 
+          providers = $mxProviders
+          status = [string]$r.MXResult.Status
+          reason = (Truncate([string]$r.MXResult.Data.Reason))
+        }
         issues  = $issues
       }
     } catch {
@@ -1925,6 +1926,11 @@ function Compress-ResultsForAI {
   # Calculate summary statistics for deterministic reporting
   $stats = @{
     domain_total = $domains.Count
+    mx = @{
+      has_mx = 0       # Domains with MX records
+      no_mx = 0        # Domains without MX (send-only)
+      servfail = 0     # Domains with DNS SERVFAIL errors
+    }
     dmarc = @{
       missing = 0
       p_none = 0
@@ -1964,6 +1970,19 @@ function Compress-ResultsForAI {
   }
   
   foreach ($d in $domains) {
+    # MX - categorize domain MX status
+    $mxReason = [string]$d.mx.reason
+    if ($mxReason -match 'DNS misconfigured|SERVFAIL') {
+      $stats.mx.servfail++
+    } elseif ($mxReason -match 'send-only|No MX') {
+      $stats.mx.no_mx++
+    } elseif ($d.mx.providers -and @($d.mx.providers).Count -gt 0) {
+      $stats.mx.has_mx++
+    } else {
+      # Fallback: no providers = no MX
+      $stats.mx.no_mx++
+    }
+    
     # DMARC - count based on status, track reason for context
     $dmarcStatus = $d.checks.dmarc.status
     $dmarcReason = [string]$d.checks.dmarc.reason
@@ -2488,7 +2507,7 @@ function Write-AnalysisReport {
 function Get-DomainReportHtml {
   param(
     [string]$RelAssetsPath,
-    [bool]$IncludeBackLink,
+    [switch]$IncludeBackLink,
     [string]$Domain,
     [pscustomobject]$Summary,
     $mxResult,
@@ -2498,6 +2517,7 @@ function Get-DomainReportHtml {
     $dmarcResult,
     $tlsResult
   )
+  
   $now = (Get-Date).ToString('u')
 
   # Load template
@@ -2593,7 +2613,8 @@ $(($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlE
   $html = $html -replace '\{\{SUMMARY_TABLE\}\}', $summaryTable
   $html = $html -replace '\{\{SECTIONS\}\}', $sections
   
-  return $html
+  # Explicitly return string
+  return [string]$html
 }
 
 function Write-DomainReportPage {
@@ -2613,7 +2634,7 @@ function Write-DomainReportPage {
   $safeDomain = $Domain -replace '[^a-z0-9.-]', '_'
   $domainPath = Join-Path $OutputPath "$safeDomain.html"
   
-  $html = Get-DomainReportHtml -RelAssetsPath "../assets" -IncludeBackLink $true -Domain $Domain -Summary $Summary -mxResult $mxResult -spfResult $spfResult -dkimResult $dkimResult -mtaStsResult $mtaStsResult -dmarcResult $dmarcResult -tlsResult $tlsResult
+  $html = Get-DomainReportHtml -RelAssetsPath "../assets" -IncludeBackLink:$true -Domain $Domain -Summary $Summary -mxResult $mxResult -spfResult $spfResult -dkimResult $dkimResult -mtaStsResult $mtaStsResult -dmarcResult $dmarcResult -tlsResult $tlsResult
 
   # html already complete from helper
 
@@ -2651,11 +2672,16 @@ function Write-HtmlReport {
     Write-Host ("[WARN] Could not create/write assets for single HTML: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
   }
 
-  $html = Get-DomainReportHtml -RelAssetsPath "assets" -IncludeBackLink $false -Domain $Domain -Summary $Summary -mxResult $mxResult -spfResult $spfResult -dkimResult $dkimResult -mtaStsResult $mtaStsResult -dmarcResult $dmarcResult -tlsResult $tlsResult
+  $html = Get-DomainReportHtml -RelAssetsPath "assets" -IncludeBackLink:$false -Domain $Domain -Summary $Summary -mxResult $mxResult -spfResult $spfResult -dkimResult $dkimResult -mtaStsResult $mtaStsResult -dmarcResult $dmarcResult -tlsResult $tlsResult
 
   try {
     $html | Out-File -FilePath $Path -Encoding utf8 -Force
-    Write-Host "Wrote HTML report to: $Path" -ForegroundColor Green
+    # Make path clickable in modern terminals (Windows Terminal, VS Code)
+    $fullPath = (Resolve-Path $Path).Path
+    $fileUrl = "file:///$($fullPath -replace '\\','/')"
+    $esc = [char]27
+    $clickableLink = "$esc]8;;$fileUrl$esc\$Path$esc]8;;$esc\"
+    Write-Host "Wrote HTML report to: $clickableLink" -ForegroundColor Green
   } catch {
     Write-Host ("Failed to write HTML report to {0}: {1}" -f $Path, $_) -ForegroundColor Red
   }
@@ -2726,12 +2752,12 @@ function Write-IndexPage {
 
   # Build action buttons (download links + analysis link)
   $downloadLinks = "    <div class='action-buttons'>`n"
-  if ($CsvFileName) {
-    $encodedCsvName = [System.Web.HttpUtility]::HtmlEncode($CsvFileName)
+    if ($CsvFileName) {
+      $encodedCsvName = [System.Web.HttpUtility]::HtmlEncode($CsvFileName)
     $downloadLinks += "        <a class='btn btn-download' href='" + $encodedCsvName + "'>Download CSV</a>`n"
-  }
-  if ($JsonFileName) {
-    $encodedJsonName = [System.Web.HttpUtility]::HtmlEncode($JsonFileName)
+    }
+    if ($JsonFileName) {
+      $encodedJsonName = [System.Web.HttpUtility]::HtmlEncode($JsonFileName)
     $downloadLinks += "        <a class='btn btn-download' href='" + $encodedJsonName + "'>Download JSON</a>`n"
   }
   $downloadLinks += "        <a class='btn btn-primary' href='analysis/index.html'>View Analysis &amp; Remediation</a>`n"
@@ -2873,7 +2899,12 @@ function Write-IndexPage {
 
   try {
     $html | Out-File -FilePath $indexPath -Encoding utf8 -Force
-    Write-Host "Wrote index report to: $indexPath" -ForegroundColor Green
+    # Make path clickable in modern terminals
+    $fullPath = (Resolve-Path $indexPath).Path
+    $fileUrl = "file:///$($fullPath -replace '\\','/')"
+    $esc = [char]27
+    $clickableLink = "$esc]8;;$fileUrl$esc\$indexPath$esc]8;;$esc\"
+    Write-Host "Wrote index report to: $clickableLink" -ForegroundColor Green
   } catch {
     Write-Host ("Failed to write index report: {0}" -f $_) -ForegroundColor Red
   }
@@ -3159,7 +3190,12 @@ if ($BulkFile) {
         $csvFileName = "bulk-results-$ts.csv"
         $csvPath = Join-Path $resolvedOutputPath $csvFileName
         $csvData | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 -Delimiter ','
-        Write-Host "CSV exported to: $csvPath" -ForegroundColor Green
+        # Make path clickable
+        $fullPath = (Resolve-Path $csvPath).Path
+        $fileUrl = "file:///$($fullPath -replace '\\','/')"
+        $esc = [char]27
+        $clickableLink = "$esc]8;;$fileUrl$esc\$csvPath$esc]8;;$esc\"
+        Write-Host "CSV exported to: $clickableLink" -ForegroundColor Green
     }
     
     # Export JSON if requested
@@ -3217,7 +3253,12 @@ if ($BulkFile) {
         }
         
         $jsonData | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding utf8 -Force
-        Write-Host "JSON exported to: $jsonPath" -ForegroundColor Green
+        # Make path clickable
+        $fullPath = (Resolve-Path $jsonPath).Path
+        $fileUrl = "file:///$($fullPath -replace '\\','/')"
+        $esc = [char]27
+        $clickableLink = "$esc]8;;$fileUrl$esc\$jsonPath$esc]8;;$esc\"
+        Write-Host "JSON exported to: $clickableLink" -ForegroundColor Green
     }
 
     # ChatGPT analysis removed here; handled once later with banner
@@ -3286,6 +3327,7 @@ if ($BulkFile) {
                     Write-Host "  Calculated Statistics:" -ForegroundColor Cyan
                     $c = $compressed.calculated
                     Write-Host ("    Domains: {0,3} total" -f $c.domain_total) -ForegroundColor Gray
+                    Write-Host ("    MX:      {0,3} with MX, {1,3} send-only, {2,3} SERVFAIL" -f $c.mx.has_mx, $c.mx.no_mx, $c.mx.servfail) -ForegroundColor Gray
                     Write-Host ("    DMARC:   {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass" -f $c.dmarc.fail, $c.dmarc.missing, $c.dmarc.warn, $c.dmarc.pass) -ForegroundColor Gray
                     Write-Host ("    SPF:     {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass" -f $c.spf.fail, $c.spf.missing, $c.spf.warn, $c.spf.pass) -ForegroundColor Gray
                     Write-Host ("    DKIM:    {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.dkim.fail, $c.dkim.warn, $c.dkim.pass, $c.dkim.na) -ForegroundColor Gray
@@ -3349,7 +3391,13 @@ if ($BulkFile) {
                         ($analysisText) | Out-File -FilePath (Join-Path $analysisDir 'analysis.json') -Encoding utf8 -Force
                         $templatePath = Join-Path $PSScriptRoot 'templates/html/analysis.html'
                         Write-AnalysisReport -AnalysisDir $analysisDir -TemplatePath $templatePath -AnalysisObj $analysisObj
-                        Write-Host "  [OK] ChatGPT analysis written to analysis/index.html" -ForegroundColor Green
+                        # Make path clickable
+                        $analysisIndexPath = Join-Path $analysisDir 'index.html'
+                        $fullPath = (Resolve-Path $analysisIndexPath).Path
+                        $fileUrl = "file:///$($fullPath -replace '\\','/')"
+                        $esc = [char]27
+                        $clickableLink = "$esc]8;;$fileUrl$esc\analysis/index.html$esc]8;;$esc\"
+                        Write-Host "  [OK] ChatGPT analysis written to $clickableLink" -ForegroundColor Green
                         $script:__ChatGptRunCompleted = $true
                     }
                 }
@@ -3433,10 +3481,13 @@ if ($BulkFile) {
     
 } else {
     # Single domain mode: existing behavior with full console output
-    $result = Invoke-DomainCheck -Domain $Domain -Selectors $Selectors -QuietMode $false
+    $result = Invoke-DomainCheck -Domain $Domain -Selectors $Selectors
+    
+    # Wrap result in array for consistency with bulk mode
+    $allResults = @($result)
     
     # Generate HTML report if requested
-    if ($Html) {
+    if ($Html -or $FullHtmlExport) {
         # Determine output path
         if ([string]::IsNullOrWhiteSpace($OutputPath)) {
             $resolvedOutputPath = "output"
@@ -3455,6 +3506,105 @@ if ($BulkFile) {
             }
         }
         
+        if ($FullHtmlExport) {
+            # Full HTML export: create structured output with assets
+            $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+            $safeDomain = $Domain -replace '[^a-z0-9.-]','-'
+            $reportDir = Join-Path $resolvedOutputPath "$safeDomain-$ts"
+            
+            # Create output structure
+            $outputStructure = New-OutputStructure -RootPath $reportDir
+            
+            # Copy assets
+            Write-AssetsFiles -AssetsPath $outputStructure.AssetsPath
+            
+            # Write domain report as index.html
+            $indexPath = Join-Path $outputStructure.RootPath "index.html"
+            # Call function the same way bulk mode does
+            $htmlResult = Get-DomainReportHtml -RelAssetsPath "assets" -IncludeBackLink:$false -Domain $Domain -Summary $result.Summary -mxResult $result.MXResult -spfResult $result.SPFResult -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult -dmarcResult $result.DMARCResult -tlsResult $result.TLSResult
+            
+            $htmlResult | Out-File -FilePath $indexPath -Encoding utf8 -Force
+            # Make path clickable
+            $fullPath = (Resolve-Path $indexPath).Path
+            $fileUrl = "file:///$($fullPath -replace '\\','/')"
+            $esc = [char]27
+            $clickableLink = "$esc]8;;$fileUrl$esc\$indexPath$esc]8;;$esc\"
+            Write-Host "`nFull HTML report created at: $clickableLink" -ForegroundColor Green
+            
+            # ChatGPT analysis (if requested)
+            if ($ChatGPT) {
+                Write-Host "`n" -NoNewline
+                Write-Host "============================================================" -ForegroundColor Cyan
+                Write-Host "  ChatGPT Analysis & Remediation Plan" -ForegroundColor Yellow
+                Write-Host "============================================================" -ForegroundColor Cyan
+                
+                try {
+                    $compressed = Compress-ResultsForAI -AllResults $allResults
+                    Write-Host "  Calculated Statistics:" -ForegroundColor Cyan
+                    $c = $compressed.calculated
+                    Write-Host ("    Domains: {0,3} total" -f $c.domain_total) -ForegroundColor Gray
+                    Write-Host ("    MX:      {0,3} with MX, {1,3} send-only, {2,3} SERVFAIL" -f $c.mx.has_mx, $c.mx.no_mx, $c.mx.servfail) -ForegroundColor Gray
+                    
+                    $agentPath = Join-Path $PSScriptRoot 'prompts/agent.md'
+                    $schemaPath = Join-Path $PSScriptRoot 'schema/analysis.schema.json'
+                    $analysisDir = Join-Path $outputStructure.RootPath 'analysis'
+                    New-Item -ItemType Directory -Path $analysisDir -Force | Out-Null
+                    
+                    $analysisResp = Invoke-OpenAIAnalysis -Compressed $compressed -AgentPath $agentPath -SchemaPath $schemaPath -Model $modelToUse -MaxOutputTokens 8000 -TimeoutSeconds 60
+                    
+                    if ($analysisResp -and $analysisResp.parsed) {
+                        $analysisObj = $analysisResp.parsed
+                        $analysisText = ($analysisObj | ConvertTo-Json -Depth 20)
+                        Write-Host ("  Content: summary={0} chars, findings={1}, markdown={2} chars" -f $analysisObj.summary.Length, $analysisObj.key_findings.Count, $analysisObj.report_markdown.Length) -ForegroundColor Gray
+                        ($analysisText) | Out-File -FilePath (Join-Path $analysisDir 'analysis.json') -Encoding utf8 -Force
+                        $templatePath = Join-Path $PSScriptRoot 'templates/html/analysis.html'
+                        Write-AnalysisReport -AnalysisDir $analysisDir -TemplatePath $templatePath -AnalysisObj $analysisObj
+                        
+                        # Make path clickable
+                        $analysisIndexPath = Join-Path $analysisDir 'index.html'
+                        $fullPath = (Resolve-Path $analysisIndexPath).Path
+                        $fileUrl = "file:///$($fullPath -replace '\\','/')"
+                        $esc = [char]27
+                        $clickableLink = "$esc]8;;$fileUrl$esc\analysis/index.html$esc]8;;$esc\"
+                        Write-Host "  [OK] ChatGPT analysis written to $clickableLink" -ForegroundColor Green
+                    }
+                } catch {
+                    Write-Host ("  [WARN] ChatGPT analysis failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+                }
+            }
+            
+            # Azure Upload (if requested)
+            if ($UploadToAzure) {
+                try {
+                    Write-Host "`n" -NoNewline
+                    Write-Host "============================================================" -ForegroundColor Cyan
+                    Write-Host "  Starting Azure Upload Process" -ForegroundColor Yellow
+                    Write-Host "============================================================" -ForegroundColor Cyan
+                    Write-Host ""
+                    
+                    # Load environment variables
+                    Import-EnvFile -EnvFilePath $EnvFile
+                    
+                    # Generate or use provided Run ID
+                    Write-Host "`nGenerating Run ID..." -ForegroundColor Yellow
+                    $runId = New-AzureRunId -CustomRunId $AzureRunId
+                    
+                    # Upload to Azure
+                    Invoke-AzureUpload -SourcePath $outputStructure.RootPath -RunId $runId
+                    
+                } catch {
+                    Write-Host "`n❌ Azure upload failed: $($_.Exception.Message)" -ForegroundColor Red
+                    Write-Host "Local report is still available at: $indexPath" -ForegroundColor Yellow
+                    # Don't throw - we still have a local report
+                }
+            }
+            
+            # Open if requested
+            if ($OpenReport) {
+                Start-Process $indexPath
+            }
+        } else {
+            # Simple HTML: single file with embedded assets (backward compatible)
         $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
         $safeDomain = $Domain -replace '[^a-z0-9.-]','-'
         $outPath = Join-Path $resolvedOutputPath "$safeDomain-$ts.html"
@@ -3462,6 +3612,7 @@ if ($BulkFile) {
                        -mxResult $result.MXResult -spfResult $result.SPFResult `
                        -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult `
                        -dmarcResult $result.DMARCResult -tlsResult $result.TLSResult
+        }
     }
 }
 

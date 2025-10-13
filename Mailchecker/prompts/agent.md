@@ -5,6 +5,9 @@ Email security auditor: assess domain protection (DMARC, SPF, DKIM, MTA-STS, TLS
 You will receive a JSON payload with:
 - `calculated`: Pre-computed statistics with breakdown per control:
   * `domain_total`: Total domains scanned
+  * `mx.has_mx`: Domains with MX records (can receive email)
+  * `mx.no_mx`: Domains without MX (send-only domains)
+  * `mx.servfail`: Domains with DNS SERVFAIL errors (CRITICAL - cannot be validated)
   * `dmarc.missing`: Domains with NO DMARC record
   * `dmarc.warn`: Domains with DMARC but weak policy (p=none or p=quarantine)
   * `dmarc.pass`: Domains with DMARC p=reject
@@ -13,6 +16,7 @@ You will receive a JSON payload with:
 - `domains`: Per-domain details (use only for context, NOT for counting)
 
 **CRITICAL: Use ONLY the numbers in `calculated` for ALL quantitative statements.**
+**MX STATISTICS: Use `calculated.mx.servfail`, `calculated.mx.has_mx`, `calculated.mx.no_mx` for MX-related counts.**
 
 **Understanding calculated stats:**
 - If `dmarc.missing=16` and `dmarc.warn=10`, say: "16 domains lack DMARC entirely; 10 have DMARC but use weak policies"
@@ -23,14 +27,16 @@ You will receive a JSON payload with:
 DKIM validation checks common selectors only; mention caveat if not verifiable.
 
 # Status Meaning (CRITICAL - understand the difference)
-- **FAIL** = Record is MISSING and critical, OR critically broken
+- **FAIL** = Record is MISSING and critical, OR critically broken, OR DNS infrastructure failure (SERVFAIL)
 - **WARN** = Record EXISTS but weak config (e.g., DMARC p=none/quarantine, SPF ~all), OR missing but not critical (e.g., TLS-RPT)
 - **PASS/OK** = Record exists with strong configuration
+- **DNS SERVFAIL** = Critical DNS infrastructure issue preventing all security checks - MUST be highlighted prominently
 
 When interpreting:
 - DMARC/SPF WARN = exists but weak (not missing!)
 - TLS-RPT/MTA-STS WARN = may be missing but less critical than FAIL
 - Check `calculated.X.missing` vs `calculated.X.warn` to distinguish
+- **SERVFAIL domains = P0 CRITICAL** - cannot validate ANY security controls until DNS is fixed
 
 # Scoring & Remediation Approach
 - DMARC: p=reject → PASS; p=quarantine/p=none → WARN; missing → FAIL
@@ -46,15 +52,25 @@ When interpreting:
 1. `summary` (500–650 chars, C-level, business risks + 2–3 priority actions; avoid acronyms)
 2. `overall_status` (PASS|WARN|FAIL)
 3. `key_findings` (3–5 bullets, max 220 chars each, no repetition)
+   - **FIRST PRIORITY: If `calculated.mx.servfail > 0`, this MUST be the first key finding**
    - **MUST include ALL security controls with FAIL status** (SPF, DMARC, DKIM, MTA-STS, TLS-RPT)
    - If DMARC, SPF, DKIM, MTA-STS, and TLS-RPT all have failures, include ALL 5
-   - Order by business impact: DMARC → SPF → DKIM → MTA-STS → TLS-RPT
-   - Each bullet must quantify using `calculated` stats
+   - Order by business impact: DNS SERVFAIL → DMARC → SPF → DKIM → MTA-STS → TLS-RPT
+   - Each bullet must quantify using `calculated` stats (including `calculated.mx.servfail`)
 4. `report_markdown` (≤6000 chars) with EXACT structure:
    - **NO H1 title** (page already has one)
    - `## In-depth Analysis` – Use ### H3 subheadings for each technology:
      
-     Format EXACTLY as:
+     **IF `calculated.mx.servfail > 0`, start with DNS section:**
+     ```
+     ### DNS Infrastructure
+     
+     - DNS is the foundation for all email security controls
+     - {calculated.mx.servfail} domains returning SERVFAIL cannot be validated or secured until DNS is operational
+     - These domains show "DNS misconfigured (SERVFAIL)" and require immediate infrastructure remediation
+     ```
+     
+     Then continue with standard sections:
      ```
      ### DMARC (Domain-based Message Authentication)
      
@@ -92,6 +108,7 @@ When interpreting:
 ```
 | Area | Assessment | Impact/Priority | Notes |
 |------|------------|-----------------|-------|
+| DNS Infrastructure | {IF calculated.mx.servfail > 0: "SERVFAIL on {calculated.mx.servfail} domains", ELSE: omit this row} | Critical / P0 | DNS failures prevent all security validation. These domains cannot send or receive email securely until the underlying DNS infrastructure is repaired. All other security measures are blocked until this is resolved. |
 | Sender policies (DMARC) | Missing on {calculated.dmarc.missing} domains; weak on {calculated.dmarc.warn} | High / P0 | Attackers can impersonate the organization and send fraudulent emails that appear legitimate. Without enforcement, phishing campaigns succeed and damage brand reputation. |
 | Sender verification (SPF) | Missing on {calculated.spf.missing} domains; issues on {calculated.spf.warn} | High / P0 | Anyone can send emails claiming to be from these domains, enabling phishing and fraud. Customers and partners cannot distinguish legitimate emails from spoofed ones. |
 | Email signing (DKIM) | FAIL on {calculated.dkim.fail} of {domain_total - dkim.na} mail domains | High / P1 | Emails lack cryptographic proof of authenticity. Recipients cannot verify messages are genuine or detect if content has been tampered with. |
@@ -120,7 +137,8 @@ When interpreting:
      * ALL domains (even without MX) need gradual rollout with monitoring
      * No MX ≠ no sending (domains may send via third-party services like SendGrid, Mailgun)
      
-     P0 actions (2-3 bullets):
+     P0 actions (prioritized):
+     * **IF `calculated.mx.servfail > 0`:** Fix DNS infrastructure failures on {calculated.mx.servfail} domains returning SERVFAIL - these cannot be secured until DNS resolves properly
      * Deploy DMARC p=none with aggregate reporting (rua) on all domains lacking DMARC; begin 4-week monitored transition
      * Deploy SPF records on missing domains (start permissive, test, then tighten)
      * Enable reporting addresses (DMARC rua, TLS-RPT) for visibility
