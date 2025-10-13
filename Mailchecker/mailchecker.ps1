@@ -121,19 +121,19 @@ QUICK EXAMPLES
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure -AzureRunId "2025-audit"
 
 DEFAULT OUTPUT STRUCTURE (output/domains-20251008-142315/)
-      index.html              Main summary with links
-      bulk-results-*.csv      CSV export
-      results.json            JSON export (if -Json)
+    index.html              Main summary with links
+    bulk-results-*.csv      CSV export
+    results.json            JSON export (if -Json)
     analysis/
       index.html            AI-generated analysis (if -ChatGPT)
-      assets/
-        style.css             Modern responsive styles
-        app.js                Interactive features
+    assets/
+      style.css             Modern responsive styles
+      app.js                Interactive features
       analysis.css          AI analysis styles
       analysis.js           AI analysis scripts
-      domains/
-        example.com.html      Individual reports
-        ...
+    domains/
+      example.com.html      Individual reports
+      ...
 
 INPUT FILE FORMAT (domains.txt)
     example.com
@@ -733,12 +733,22 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0) {
   
   # Count direct lookups (mechanisms that trigger DNS lookups)
   $directCount = 0
-  $directCount += ([regex]::Matches($spf, '(?i)include:')).Count
-  $directCount += ([regex]::Matches($spf, '(?i)a(?=\s|:|$)')).Count
-  $directCount += ([regex]::Matches($spf, '(?i)mx(?=\s|:|$)')).Count
-  $directCount += ([regex]::Matches($spf, '(?i)ptr(?=\s|:|$)')).Count
-  $directCount += ([regex]::Matches($spf, '(?i)exists:')).Count
-  $directCount += ([regex]::Matches($spf, '(?i)redirect=')).Count
+  $includeCount = ([regex]::Matches($spf, '(?i)\binclude:')).Count
+  $aCount = ([regex]::Matches($spf, '(?i)(?<=\s)a(?=\s|:|$)')).Count     # Require whitespace before 'a' to avoid matching IPv6
+  $mxCountLocal = ([regex]::Matches($spf, '(?i)(?<=\s)mx(?=\s|:|$)')).Count
+  $ptrCount = ([regex]::Matches($spf, '(?i)(?<=\s)ptr(?=\s|:|$)')).Count
+  $existsCount = ([regex]::Matches($spf, '(?i)\bexists:')).Count
+  $redirectCount = ([regex]::Matches($spf, '(?i)\bredirect=')).Count
+  
+  $directCount = $includeCount + $aCount + $mxCountLocal + $ptrCount + $existsCount + $redirectCount
+  
+  # Debug logging for IP-only SPF records that shouldn't have lookups
+  if ($directCount -gt 0 -and $spf -match 'improve\.nordlo|zetup\.se') {
+    Write-Verbose "DEBUG: SPF record analysis for nested include:"
+    Write-Verbose "  Record: $($spf.Substring(0, [Math]::Min(150, $spf.Length)))..."
+    Write-Verbose "  Counts: include=$includeCount, a=$aCount, mx=$mxCountLocal, ptr=$ptrCount, exists=$existsCount, redirect=$redirectCount"
+    Write-Verbose "  Direct total: $directCount"
+  }
   
   $totalCount = $directCount
   $details = @()
@@ -751,6 +761,15 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0) {
       $incResult = Get-SpfLookupsDetailed $incSpf $checked ($depth + 1)
       $incTotal = 1 + $incResult.Total  # 1 for the include itself + recursive lookups
       $totalCount += $incResult.Total
+      
+      # Debug logging for specific domains
+      if ($incDom -match 'improve\.nordlo|zetup\.se') {
+        Write-Verbose "DEBUG Include: $incDom"
+        Write-Verbose "  Retrieved SPF (full): $incSpf"
+        Write-Verbose "  Counts in this record: include=$($incResult.Details.Count), direct_lookups=$directCount"
+        Write-Verbose "  Recursive Total: $($incResult.Total)"
+        Write-Verbose "  Display Total (1+recursive): $incTotal"
+      }
       
       $details += [PSCustomObject]@{
         Include = $incDom
@@ -842,7 +861,7 @@ function Test-SPFRecords {
             $lookupResult = Get-SpfLookupsDetailed $rec @()
             $lookupCount = $lookupResult.Total
             
-            # Determine status based on lookup count
+            # Determine status based on lookup count (strict RFC 7208 interpretation)
             if ($lookupCount -gt 10) {
                 $warnings += "Warning: DNS lookups (SPF): $lookupCount (exceeds RFC limit of 10)"
                 $spfHealthy = $false
@@ -859,17 +878,23 @@ function Test-SPFRecords {
             
             # Show breakdown including direct lookups and includes
             $details += ""
-            $details += "SPF Lookup Breakdown (recursive):"
+            $details += "SPF Lookup Breakdown (RFC 7208):"
+            $details += "  Note: RFC counts include, a, mx, ptr, exists, redirect as lookups"
             
-            # Count direct lookups (mechanisms in the main SPF record)
+            # Count direct lookups (mechanisms in the main SPF record) - use same regex as detailed function
             $directLookups = 0
-            $directLookups += ([regex]::Matches($rec, '(?i)\ba(?=\s|:|$)')).Count
-            $directLookups += ([regex]::Matches($rec, '(?i)\bmx(?=\s|:|$)')).Count
-            $directLookups += ([regex]::Matches($rec, '(?i)\bptr(?=\s|:|$)')).Count
-            $directLookups += ([regex]::Matches($rec, '(?i)\bexists:')).Count
+            $aCount = ([regex]::Matches($rec, '(?i)(?<=\s)a(?=\s|:|$)')).Count
+            $mxCount = ([regex]::Matches($rec, '(?i)(?<=\s)mx(?=\s|:|$)')).Count
+            $ptrCount = ([regex]::Matches($rec, '(?i)(?<=\s)ptr(?=\s|:|$)')).Count
+            $existsCount = ([regex]::Matches($rec, '(?i)\bexists:')).Count
+            $directLookups = $aCount + $mxCount + $ptrCount + $existsCount
             
             if ($directLookups -gt 0) {
-                $details += "  - Direct mechanisms (mx, a, ptr, exists): $directLookups lookup(s)"
+                $details += "  - Direct mechanisms: $directLookups lookup(s)"
+                if ($aCount -gt 0) { $details += "    * a: $aCount" }
+                if ($mxCount -gt 0) { $details += "    * mx: $mxCount" }
+                if ($ptrCount -gt 0) { $details += "    * ptr: $ptrCount" }
+                if ($existsCount -gt 0) { $details += "    * exists: $existsCount" }
             }
             
             # Show include/redirect breakdown
@@ -1937,6 +1962,7 @@ function Compress-ResultsForAI {
       p_quarantine = 0
       p_reject = 0
       pct_partial = 0
+      no_reporting = 0
       fail = 0
       warn = 0
       pass = 0
@@ -2003,6 +2029,10 @@ function Compress-ResultsForAI {
     # Track pct<100 across all DMARC configs (critical issue regardless of policy)
     if ($dmarcReason -match 'pct=(\d+)' -and [int]$Matches[1] -lt 100) { 
       $stats.dmarc.pct_partial++ 
+    }
+    # Track missing reporting addresses (rua/ruf)
+    if ($dmarcReason -match 'rua=missing|ruf=missing' -or ($dmarcStatus -ne 'FAIL' -and $dmarcReason -notmatch 'rua=' -and $dmarcReason -notmatch 'ruf=')) {
+      $stats.dmarc.no_reporting++
     }
     
     # SPF - count based on status
@@ -2764,9 +2794,9 @@ function Write-IndexPage {
     if ($JsonFileName) {
       $encodedJsonName = [System.Web.HttpUtility]::HtmlEncode($JsonFileName)
     $downloadLinks += "        <a class='btn btn-download' href='" + $encodedJsonName + "'>Download JSON</a>`n"
-  }
+    }
   $downloadLinks += "        <a class='btn btn-primary' href='analysis/index.html'>View Analysis &amp; Remediation</a>`n"
-  $downloadLinks += "    </div>`n"
+    $downloadLinks += "    </div>`n"
 
   # Helper to render status badge - build strings without nested expansion
   function Get-StatusBadgeHtml {
@@ -3101,16 +3131,16 @@ if ($BulkFile) {
 } else {
     # Single domain from command line
     $domains = @($Domain)
-}
-
+    }
+    
 # Step 2: Process all domains in queue (same workflow for all)
 Write-Host "Checking $($domains.Count) domain$(if ($domains.Count -gt 1) { 's' }) (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
-Write-Host ""
-
-$allResults = @()
-$total = $domains.Count
-
-for ($i = 0; $i -lt $total; $i++) {
+    Write-Host ""
+    
+    $allResults = @()
+    $total = $domains.Count
+    
+    for ($i = 0; $i -lt $total; $i++) {
     if ($total -gt 1) {
         # Quiet mode for bulk
         Write-Host "Processing domain $($i + 1) of ${total}: $($domains[$i])" -ForegroundColor Yellow -NoNewline
@@ -3130,11 +3160,11 @@ for ($i = 0; $i -lt $total; $i++) {
         # Verbose mode for single domain
         $result = Invoke-DomainCheck -Domain $domains[$i] -Selectors $Selectors
     }
+        
+        $allResults += $result
+    }
     
-    $allResults += $result
-}
-
-Write-Host "`nAll domains processed." -ForegroundColor Green
+    Write-Host "`nAll domains processed." -ForegroundColor Green
 
 # Step 3: Unified output generation (same for bulk and single domain)
 if ($Html -or $FullHtmlExport) {
@@ -3148,7 +3178,7 @@ if ($Html -or $FullHtmlExport) {
     # Track filenames for index page
     $csvFileName = $null
     $jsonFileName = $null
-    $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
     $outputStructure = $null
     
     if ($FullHtmlExport) {
@@ -3344,7 +3374,7 @@ if ($Html -or $FullHtmlExport) {
                     $c = $compressed.calculated
                     Write-Host ("    Domains: {0,3} total" -f $c.domain_total) -ForegroundColor Gray
                     Write-Host ("    MX:      {0,3} with MX, {1,3} send-only, {2,3} SERVFAIL" -f $c.mx.has_mx, $c.mx.no_mx, $c.mx.servfail) -ForegroundColor Gray
-                    Write-Host ("    DMARC:   {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass; {4,3} pct<100" -f $c.dmarc.fail, $c.dmarc.missing, $c.dmarc.warn, $c.dmarc.pass, $c.dmarc.pct_partial) -ForegroundColor Gray
+                    Write-Host ("    DMARC:   {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass; {4,3} pct<100, {5,3} no rua/ruf" -f $c.dmarc.fail, $c.dmarc.missing, $c.dmarc.warn, $c.dmarc.pass, $c.dmarc.pct_partial, $c.dmarc.no_reporting) -ForegroundColor Gray
                     Write-Host ("    SPF:     {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass" -f $c.spf.fail, $c.spf.missing, $c.spf.warn, $c.spf.pass) -ForegroundColor Gray
                     Write-Host ("    DKIM:    {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.dkim.fail, $c.dkim.warn, $c.dkim.pass, $c.dkim.na) -ForegroundColor Gray
                     Write-Host ("    MTA-STS: {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.mta_sts.fail, $c.mta_sts.warn, $c.mta_sts.pass, $c.mta_sts.na) -ForegroundColor Gray
