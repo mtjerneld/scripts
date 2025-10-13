@@ -11,6 +11,7 @@ You will receive a JSON payload with:
   * `dmarc.missing`: Domains with NO DMARC record
   * `dmarc.warn`: Domains with DMARC but weak policy (p=none or p=quarantine)
   * `dmarc.pass`: Domains with DMARC p=reject
+  * `dmarc.pct_partial`: Domains with pct<100 (policy applies to only subset of messages) - **CRITICAL ISSUE**
   * Similar breakdowns for spf, dkim, mta_sts, tls_rpt
   * `dkim.na`, `mta_sts.na`, `tls_rpt.na`: Domains with no MX records (not applicable for mail-specific checks)
 - `domains`: Per-domain details (use only for context, NOT for counting)
@@ -75,8 +76,9 @@ When interpreting:
      ### DMARC (Domain-based Message Authentication)
      
      - Instructs receiving servers how to handle emails that fail authentication checks
-     - {findings about specific domains and policies}
-     - {actionable detail or pattern}
+     - {findings about missing vs weak policies}
+     - **IF calculated.dmarc.pct_partial > 0:** Highlight that {pct_partial} domains use pct<100, meaning the DMARC policy only applies to a subset of emails (e.g., pct=40 means 60% of emails bypass DMARC entirely)
+     - {actionable detail: policy progression recommendations}
      
      ### SPF (Sender Policy Framework)
      
@@ -146,6 +148,7 @@ When interpreting:
      
      **P1 (High — 2–4 weeks)**
      * Transition DMARC on active domains from p=none → p=quarantine → p=reject (monitor aggregate reports between each step)
+     * **IF calculated.dmarc.pct_partial > 0:** Set pct=100 on {pct_partial} domains to ensure policy applies to ALL messages, not just a subset
      * Fix SPF/DKIM issues on domains with configuration problems
      * Deploy MTA-STS on all mail-receiving domains (start with mode=testing, monitor, then mode=enforce)
      * Deploy TLS-RPT for encryption monitoring and visibility into delivery issues

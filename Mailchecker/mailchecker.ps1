@@ -1936,6 +1936,7 @@ function Compress-ResultsForAI {
       p_none = 0
       p_quarantine = 0
       p_reject = 0
+      pct_partial = 0
       fail = 0
       warn = 0
       pass = 0
@@ -1998,6 +1999,10 @@ function Compress-ResultsForAI {
     elseif ($dmarcStatus -eq 'FAIL') { 
       $stats.dmarc.fail++
       if ($dmarcReason -match 'not found|missing') { $stats.dmarc.missing++ }
+    }
+    # Track pct<100 across all DMARC configs (critical issue regardless of policy)
+    if ($dmarcReason -match 'pct=(\d+)' -and [int]$Matches[1] -lt 100) { 
+      $stats.dmarc.pct_partial++ 
     }
     
     # SPF - count based on status
@@ -3056,43 +3061,17 @@ Write-Host "`nTip: For DKIM, inspect a real message header to learn the active s
 
 # --- Main ---
 
+# Step 1: Build domain queue (from bulk file or command line)
+$domains = @()
+$isBulkMode = $false
+
 if ($BulkFile) {
-    # Bulk mode: process multiple domains
+    # Load domains from bulk file
+    $isBulkMode = $true
     if (-not (Test-Path $BulkFile)) {
         Write-Host "Error: File not found: $BulkFile" -ForegroundColor Red
         Write-Host "Please check the file path and try again." -ForegroundColor Yellow
         exit 1
-    }
-    
-    # Determine output structure
-    $outputStructure = $null
-    if ($FullHtmlExport) {
-        # Create full structure with assets and domains folders
-        $outputStructure = New-OutputStructure -InputFile $BulkFile -OutputPath $OutputPath
-        $resolvedOutputPath = $outputStructure.RootPath
-        
-        # Write assets (CSS and JS)
-        Write-AssetsFiles -AssetsPath $outputStructure.AssetsPath
-        Write-Host "Created assets (CSS, JS) in: $($outputStructure.AssetsPath)" -ForegroundColor Cyan
-    } else {
-        # Legacy mode - simple output path
-        if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-            $resolvedOutputPath = "output"
-        } else {
-            $resolvedOutputPath = $OutputPath
-    }
-    
-    # Ensure output directory exists
-        if (-not (Test-Path $resolvedOutputPath)) {
-        try {
-                New-Item -ItemType Directory -Path $resolvedOutputPath -Force | Out-Null
-                Write-Host "Created output directory: $resolvedOutputPath" -ForegroundColor Cyan
-        } catch {
-                Write-Host "Error: Could not create output directory: $resolvedOutputPath" -ForegroundColor Red
-            Write-Host $_.Exception.Message -ForegroundColor Red
-            exit 1
-            }
-        }
     }
     
     $rawDomains = @(Get-Content $BulkFile | 
@@ -3119,14 +3098,21 @@ if ($BulkFile) {
         Write-Host "  another-domain.com" -ForegroundColor Gray
         exit 1
     }
-    
-    Write-Host "Checking $($domains.Count) domains (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
-    Write-Host ""
-    
-    $allResults = @()
-    $total = $domains.Count
-    
-    for ($i = 0; $i -lt $total; $i++) {
+} else {
+    # Single domain from command line
+    $domains = @($Domain)
+}
+
+# Step 2: Process all domains in queue (same workflow for all)
+Write-Host "Checking $($domains.Count) domain$(if ($domains.Count -gt 1) { 's' }) (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
+Write-Host ""
+
+$allResults = @()
+$total = $domains.Count
+
+for ($i = 0; $i -lt $total; $i++) {
+    if ($total -gt 1) {
+        # Quiet mode for bulk
         Write-Host "Processing domain $($i + 1) of ${total}: $($domains[$i])" -ForegroundColor Yellow -NoNewline
         $result = Invoke-DomainCheck -Domain $domains[$i] -Selectors $Selectors -QuietMode $true
         
@@ -3140,19 +3126,49 @@ if ($BulkFile) {
         Write-Host " (Overall status: " -NoNewline
         Write-Host $result.Summary.Status -ForegroundColor $statusColor -NoNewline
         Write-Host ")"
-        
-        $allResults += $result
+    } else {
+        # Verbose mode for single domain
+        $result = Invoke-DomainCheck -Domain $domains[$i] -Selectors $Selectors
     }
     
-    Write-Host "`nAll domains processed." -ForegroundColor Green
+    $allResults += $result
+}
+
+Write-Host "`nAll domains processed." -ForegroundColor Green
+
+# Step 3: Unified output generation (same for bulk and single domain)
+if ($Html -or $FullHtmlExport) {
+    # Determine output path
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        $resolvedOutputPath = "output"
+    } else {
+        $resolvedOutputPath = $OutputPath
+    }
     
     # Track filenames for index page
     $csvFileName = $null
     $jsonFileName = $null
-        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+    $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+    $outputStructure = $null
     
-    # Export CSV (always with FullHtmlExport)
     if ($FullHtmlExport) {
+        # Create full structure with assets and domains folders
+        if ($BulkFile) {
+            $outputStructure = New-OutputStructure -InputFile $BulkFile -OutputPath $OutputPath
+        } else {
+            $safeDomain = $domains[0] -replace '[^a-z0-9.-]','-'
+            $reportDir = Join-Path $resolvedOutputPath "$safeDomain-$ts"
+            $outputStructure = New-OutputStructure -RootPath $reportDir
+        }
+        $resolvedOutputPath = $outputStructure.RootPath
+        
+        # Write assets (CSS and JS)
+        Write-AssetsFiles -AssetsPath $outputStructure.AssetsPath
+        if ($BulkFile) {
+            Write-Host "Created assets (CSS, JS) in: $($outputStructure.AssetsPath)" -ForegroundColor Cyan
+        }
+        
+        # Export CSV (always with FullHtmlExport)
         # Create enhanced CSV with individual reason columns
         # Sanitize function to remove tabs, newlines, and other problematic characters
         function ConvertTo-CsvSafe($value) {
@@ -3328,7 +3344,7 @@ if ($BulkFile) {
                     $c = $compressed.calculated
                     Write-Host ("    Domains: {0,3} total" -f $c.domain_total) -ForegroundColor Gray
                     Write-Host ("    MX:      {0,3} with MX, {1,3} send-only, {2,3} SERVFAIL" -f $c.mx.has_mx, $c.mx.no_mx, $c.mx.servfail) -ForegroundColor Gray
-                    Write-Host ("    DMARC:   {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass" -f $c.dmarc.fail, $c.dmarc.missing, $c.dmarc.warn, $c.dmarc.pass) -ForegroundColor Gray
+                    Write-Host ("    DMARC:   {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass; {4,3} pct<100" -f $c.dmarc.fail, $c.dmarc.missing, $c.dmarc.warn, $c.dmarc.pass, $c.dmarc.pct_partial) -ForegroundColor Gray
                     Write-Host ("    SPF:     {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass" -f $c.spf.fail, $c.spf.missing, $c.spf.warn, $c.spf.pass) -ForegroundColor Gray
                     Write-Host ("    DKIM:    {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.dkim.fail, $c.dkim.warn, $c.dkim.pass, $c.dkim.na) -ForegroundColor Gray
                     Write-Host ("    MTA-STS: {0,3} fail, {1,3} warn, {2,3} pass, {3,3} N/A (no MX)" -f $c.mta_sts.fail, $c.mta_sts.warn, $c.mta_sts.pass, $c.mta_sts.na) -ForegroundColor Gray
@@ -3475,26 +3491,7 @@ if ($BulkFile) {
             }
         }
     } else {
-        # No FullHtmlExport - just console output
-        Write-Host "`nProcessing complete. Use -FullHtmlExport for HTML reports." -ForegroundColor Cyan
-    }
-    
-} else {
-    # Single domain mode: existing behavior with full console output
-    $result = Invoke-DomainCheck -Domain $Domain -Selectors $Selectors
-    
-    # Wrap result in array for consistency with bulk mode
-    $allResults = @($result)
-    
-    # Generate HTML report if requested
-    if ($Html -or $FullHtmlExport) {
-        # Determine output path
-        if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-            $resolvedOutputPath = "output"
-        } else {
-            $resolvedOutputPath = $OutputPath
-        }
-        
+        # Simple HTML mode (backward compatible): single file with embedded assets
         # Ensure output directory exists
         if (-not (Test-Path $resolvedOutputPath)) {
             try {
@@ -3506,113 +3503,15 @@ if ($BulkFile) {
             }
         }
         
-        if ($FullHtmlExport) {
-            # Full HTML export: create structured output with assets
-            $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
-            $safeDomain = $Domain -replace '[^a-z0-9.-]','-'
-            $reportDir = Join-Path $resolvedOutputPath "$safeDomain-$ts"
-            
-            # Create output structure
-            $outputStructure = New-OutputStructure -RootPath $reportDir
-            
-            # Copy assets
-            Write-AssetsFiles -AssetsPath $outputStructure.AssetsPath
-            
-            # Write domain report as index.html
-            $indexPath = Join-Path $outputStructure.RootPath "index.html"
-            # Call function the same way bulk mode does
-            $htmlResult = Get-DomainReportHtml -RelAssetsPath "assets" -IncludeBackLink:$false -Domain $Domain -Summary $result.Summary -mxResult $result.MXResult -spfResult $result.SPFResult -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult -dmarcResult $result.DMARCResult -tlsResult $result.TLSResult
-            
-            $htmlResult | Out-File -FilePath $indexPath -Encoding utf8 -Force
-            # Make path clickable
-            $fullPath = (Resolve-Path $indexPath).Path
-            $fileUrl = "file:///$($fullPath -replace '\\','/')"
-            $esc = [char]27
-            $clickableLink = "$esc]8;;$fileUrl$esc\$indexPath$esc]8;;$esc\"
-            Write-Host "`nFull HTML report created at: $clickableLink" -ForegroundColor Green
-            
-            # ChatGPT analysis (if requested)
-            if ($ChatGPT) {
-                Write-Host "`n" -NoNewline
-                Write-Host "============================================================" -ForegroundColor Cyan
-                Write-Host "  ChatGPT Analysis & Remediation Plan" -ForegroundColor Yellow
-                Write-Host "============================================================" -ForegroundColor Cyan
-                
-                try {
-                    $compressed = Compress-ResultsForAI -AllResults $allResults
-                    Write-Host "  Calculated Statistics:" -ForegroundColor Cyan
-                    $c = $compressed.calculated
-                    Write-Host ("    Domains: {0,3} total" -f $c.domain_total) -ForegroundColor Gray
-                    Write-Host ("    MX:      {0,3} with MX, {1,3} send-only, {2,3} SERVFAIL" -f $c.mx.has_mx, $c.mx.no_mx, $c.mx.servfail) -ForegroundColor Gray
-                    
-                    $agentPath = Join-Path $PSScriptRoot 'prompts/agent.md'
-                    $schemaPath = Join-Path $PSScriptRoot 'schema/analysis.schema.json'
-                    $analysisDir = Join-Path $outputStructure.RootPath 'analysis'
-                    New-Item -ItemType Directory -Path $analysisDir -Force | Out-Null
-                    
-                    $analysisResp = Invoke-OpenAIAnalysis -Compressed $compressed -AgentPath $agentPath -SchemaPath $schemaPath -Model $modelToUse -MaxOutputTokens 8000 -TimeoutSeconds 60
-                    
-                    if ($analysisResp -and $analysisResp.parsed) {
-                        $analysisObj = $analysisResp.parsed
-                        $analysisText = ($analysisObj | ConvertTo-Json -Depth 20)
-                        Write-Host ("  Content: summary={0} chars, findings={1}, markdown={2} chars" -f $analysisObj.summary.Length, $analysisObj.key_findings.Count, $analysisObj.report_markdown.Length) -ForegroundColor Gray
-                        ($analysisText) | Out-File -FilePath (Join-Path $analysisDir 'analysis.json') -Encoding utf8 -Force
-                        $templatePath = Join-Path $PSScriptRoot 'templates/html/analysis.html'
-                        Write-AnalysisReport -AnalysisDir $analysisDir -TemplatePath $templatePath -AnalysisObj $analysisObj
-                        
-                        # Make path clickable
-                        $analysisIndexPath = Join-Path $analysisDir 'index.html'
-                        $fullPath = (Resolve-Path $analysisIndexPath).Path
-                        $fileUrl = "file:///$($fullPath -replace '\\','/')"
-                        $esc = [char]27
-                        $clickableLink = "$esc]8;;$fileUrl$esc\analysis/index.html$esc]8;;$esc\"
-                        Write-Host "  [OK] ChatGPT analysis written to $clickableLink" -ForegroundColor Green
-                    }
-                } catch {
-                    Write-Host ("  [WARN] ChatGPT analysis failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
-                }
-            }
-            
-            # Azure Upload (if requested)
-            if ($UploadToAzure) {
-                try {
-                    Write-Host "`n" -NoNewline
-                    Write-Host "============================================================" -ForegroundColor Cyan
-                    Write-Host "  Starting Azure Upload Process" -ForegroundColor Yellow
-                    Write-Host "============================================================" -ForegroundColor Cyan
-                    Write-Host ""
-                    
-                    # Load environment variables
-                    Import-EnvFile -EnvFilePath $EnvFile
-                    
-                    # Generate or use provided Run ID
-                    Write-Host "`nGenerating Run ID..." -ForegroundColor Yellow
-                    $runId = New-AzureRunId -CustomRunId $AzureRunId
-                    
-                    # Upload to Azure
-                    Invoke-AzureUpload -SourcePath $outputStructure.RootPath -RunId $runId
-                    
-                } catch {
-                    Write-Host "`n❌ Azure upload failed: $($_.Exception.Message)" -ForegroundColor Red
-                    Write-Host "Local report is still available at: $indexPath" -ForegroundColor Yellow
-                    # Don't throw - we still have a local report
-                }
-            }
-            
-            # Open if requested
-            if ($OpenReport) {
-                Start-Process $indexPath
-            }
-        } else {
-            # Simple HTML: single file with embedded assets (backward compatible)
-        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
-        $safeDomain = $Domain -replace '[^a-z0-9.-]','-'
+        $safeDomain = $domains[0] -replace '[^a-z0-9.-]','-'
         $outPath = Join-Path $resolvedOutputPath "$safeDomain-$ts.html"
-        Write-HtmlReport -Path $outPath -Domain $Domain -Summary $result.Summary `
-                       -mxResult $result.MXResult -spfResult $result.SPFResult `
-                       -dkimResult $result.DKIMResult -mtaStsResult $result.MTAStsResult `
-                       -dmarcResult $result.DMARCResult -tlsResult $result.TLSResult
-        }
+        Write-HtmlReport -Path $outPath -Domain $domains[0] -Summary $allResults[0].Summary `
+                       -mxResult $allResults[0].MXResult -spfResult $allResults[0].SPFResult `
+                       -dkimResult $allResults[0].DKIMResult -mtaStsResult $allResults[0].MTAStsResult `
+                       -dmarcResult $allResults[0].DMARCResult -tlsResult $allResults[0].TLSResult
     }
+} else {
+    # No HTML output requested - just console output
+    Write-Host "`nProcessing complete. Use -Html or -FullHtmlExport for HTML reports." -ForegroundColor Cyan
 }
 
