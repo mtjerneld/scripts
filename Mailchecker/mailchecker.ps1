@@ -1121,14 +1121,28 @@ function Test-MTASts {
         $details += "TXT at _mta-sts.$Domain`:"
         $details += $mtaStsTxt
         
-        # Parse MTA-STS TXT record
+        # Parse MTA-STS TXT record - check for v=STSv1 to distinguish from wildcard TXT records
         if ($mtaStsTxt -match '(?i)\bv=STSv1\b') {
             $details += "- v=STSv1 present: True"
             if ($mtaStsTxt -match '(?i)\bid=([^;]+)') {
                 $details += "- id: $($Matches[1])"
             }
         } else {
-            $details += "- v=STSv1 present: False"
+            # TXT record exists but doesn't contain v=STSv1 - likely a wildcard DNS record (e.g., *.domain.com)
+            # Treat as missing rather than broken
+            $details += "- v=STSv1 present: False (likely wildcard TXT record, not actual MTA-STS)"
+            $details += "No valid MTA-STS record found (TXT exists but missing v=STSv1)."
+            $status = 'FAIL'
+            $reason = "MTA-STS: missing (required for domains with MX)"
+            $warnings += "Warning: Wildcard TXT record detected - not a valid MTA-STS configuration."
+            return New-CheckResult -Section 'MTA-STS' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
+                MtaStsTxt = $mtaStsTxt  # Keep the wildcard record for detection in HTML rendering
+                MtaStsBody = $null
+                MtaStsUrl = $null
+                MtaStsModeTesting = $false
+                MtaStsEnforced = $false
+                Reason = $reason
+            }
         }
         
         # Fetch HTTPS policy
@@ -1386,11 +1400,23 @@ function Test-TLSReport {
         $details += $tlsRptTxt
         $hasV = [bool]($tlsRptTxt -match "(?i)\bv=TLSRPTv1\b")
         $ruaMatch = [regex]::Match($tlsRptTxt, "(?i)\bru[a]\s*=\s*(mailto:[^,;]+|https?://[^,;]+)")
-        if ($hasV) { $details += "- v=TLSRPTv1 present: True" }
-        if ($ruaMatch.Success) { $details += ("- rua: {0}" -f $ruaMatch.Groups[1].Value) }
-        $status = 'PASS'
-        $reason = "TLS-RPT: configured"
-        $infoMessages += "TLS-RPT is configured for encryption monitoring."
+        
+        # Check for v=TLSRPTv1 to distinguish from wildcard TXT records
+        if ($hasV) { 
+            $details += "- v=TLSRPTv1 present: True" 
+            if ($ruaMatch.Success) { $details += ("- rua: {0}" -f $ruaMatch.Groups[1].Value) }
+            $status = 'PASS'
+            $reason = "TLS-RPT: configured"
+            $infoMessages += "TLS-RPT is configured for encryption monitoring."
+        } else {
+            # TXT record exists but doesn't contain v=TLSRPTv1 - likely a wildcard DNS record
+            $details += "- v=TLSRPTv1 present: False (likely wildcard TXT record, not actual TLS-RPT)"
+            $details += "No TLS-RPT record found (recommended for encryption monitoring)."
+            $status = 'WARN'
+            $reason = "TLS-RPT: missing"
+            $warnings += "Warning: Wildcard TXT record detected - not a valid TLS-RPT configuration."
+            $warnings += "Warning: TLS-RPT not configured. Recommended for monitoring TLS encryption issues."
+        }
     } else {
         $details += "No TLS-RPT record found (recommended for encryption monitoring)."
         $status = 'WARN'
@@ -1463,7 +1489,12 @@ function ConvertTo-HtmlSection {
         }
         "MTA-STS" { 
             $verboseTitle = "MTA-STS (Mail Transfer Agent - Strict Transport Security)"
-            $infoText = "MTA-STS (Mail Transfer Agent - Strict Transport Security) enforces encrypted mail delivery (TLS) between servers, protecting messages from interception. Without MTA-STS, emails may still be sent unencrypted even if your server supports TLS." 
+            $infoText = "MTA-STS (Mail Transfer Agent - Strict Transport Security) enforces encrypted mail delivery (TLS) between servers, protecting messages from interception. Without MTA-STS, emails may still be sent unencrypted even if your server supports TLS."
+            
+            # Check for wildcard TXT record case (TXT exists but no v=STSv1)
+            if ($Result.Data -and $Result.Data.MtaStsTxt -and $Result.Data.MtaStsTxt -notmatch '(?i)\bv=STSv1\b' -and $Result.Status -eq 'FAIL') {
+                $infoText += "`n`n<strong>Note - Wildcard DNS Detected:</strong> A TXT record was found at _mta-sts but it does not contain 'v=STSv1'. This is likely caused by a wildcard DNS configuration (*.domain) that returns SPF or other records for all subdomains. This is treated as 'missing' rather than misconfigured."
+            }
         }
         "DMARC" { 
             $verboseTitle = "DMARC (Domain-based Message Authentication, Reporting and Conformance)"
@@ -1471,7 +1502,12 @@ function ConvertTo-HtmlSection {
         }
         "SMTP TLS Reporting (TLS-RPT)" { 
             $verboseTitle = "TLS-RPT (SMTP TLS Reporting)"
-            $infoText = "TLS-RPT (SMTP TLS Reporting) provides feedback about encryption issues in mail delivery, helping administrators identify failed or downgraded TLS connections. It is optional but highly recommended for visibility and security monitoring." 
+            $infoText = "TLS-RPT (SMTP TLS Reporting) provides feedback about encryption issues in mail delivery, helping administrators identify failed or downgraded TLS connections. It is optional but highly recommended for visibility and security monitoring."
+            
+            # Check for wildcard TXT record case (TXT exists but no v=TLSRPTv1)
+            if ($Result.Data -and $Result.Data.TlsRptTxt -and $Result.Data.TlsRptTxt -notmatch '(?i)\bv=TLSRPTv1\b' -and $Result.Status -eq 'WARN') {
+                $infoText += "`n`n<strong>Note - Wildcard DNS Detected:</strong> A TXT record was found at _smtp._tls but it does not contain 'v=TLSRPTv1'. This is likely caused by a wildcard DNS configuration (*.domain) that returns SPF or other records for all subdomains. This is treated as 'missing' rather than misconfigured."
+            }
         }
     }
     
@@ -1912,6 +1948,8 @@ function Compress-ResultsForAI {
   param([array]$AllResults)
   function Truncate([string]$s, [int]$max=250) { if ([string]::IsNullOrWhiteSpace($s)) { return '' } if ($s.Length -le $max) { return $s } return $s.Substring(0,$max) }
   $domains = @()
+  $notableDeviations = @()
+  
   foreach ($r in $AllResults) {
     try {
       $mxProviders = @()
@@ -1926,6 +1964,24 @@ function Compress-ResultsForAI {
       if ($r.MTAStsResult -and $r.MTAStsResult.Status -ne 'PASS') { Add-Issue ("MTA-STS: " + (Truncate([string]$r.MTAStsResult.Data.Reason,160))) }
       if ($r.TLSResult -and $r.TLSResult.Status -ne 'PASS') { Add-Issue ("TLS-RPT: " + (Truncate([string]$r.TLSResult.Data.Reason,160))) }
 
+      # Collect notable warnings from all checks (for AI context)
+      $domainName = [string]$r.Domain
+      foreach ($check in @($r.SPFResult, $r.DKIMResult, $r.DMARCResult, $r.MTAStsResult, $r.TLSResult, $r.MXResult)) {
+        if ($check -and $check.Warnings) {
+          foreach ($warn in $check.Warnings) {
+            if (-not [string]::IsNullOrWhiteSpace($warn)) {
+              # Extract just the warning message (remove "Warning: " prefix if present)
+              $warnMsg = $warn -replace '^Warning:\s*', ''
+              # Use PSCustomObject instead of hashtable for proper Group-Object support
+              $notableDeviations += [PSCustomObject]@{
+                domain = $domainName
+                message = $warnMsg
+              }
+            }
+          }
+        }
+      }
+
       $domains += @{
         domain  = [string]$r.Domain
         overall = [string]$r.Summary.Status
@@ -1933,8 +1989,8 @@ function Compress-ResultsForAI {
           spf     = @{ status = [string]$r.SPFResult.Status;   reason = (Truncate([string]$r.SPFResult.Data.Reason)) }
           dkim    = @{ status = [string]$r.DKIMResult.Status;  reason = (Truncate([string]$r.DKIMResult.Data.Reason)) }
           dmarc   = @{ status = [string]$r.DMARCResult.Status; reason = (Truncate([string]$r.DMARCResult.Data.Reason)) }
-          mta_sts = @{ status = [string]$r.MTAStsResult.Status }
-          tls_rpt = @{ status = [string]$r.TLSResult.Status }
+          mta_sts = @{ status = [string]$r.MTAStsResult.Status; reason = (Truncate([string]$r.MTAStsResult.Data.Reason)) }
+          tls_rpt = @{ status = [string]$r.TLSResult.Status;   reason = (Truncate([string]$r.TLSResult.Data.Reason)) }
         }
         mx      = @{ 
           providers = $mxProviders
@@ -2023,8 +2079,11 @@ function Compress-ResultsForAI {
       if ($dmarcReason -match 'p=quarantine') { $stats.dmarc.p_quarantine++ }
     }
     elseif ($dmarcStatus -eq 'FAIL') { 
-      $stats.dmarc.fail++
-      if ($dmarcReason -match 'not found|missing') { $stats.dmarc.missing++ }
+      if ($dmarcReason -match 'not found|missing') { 
+        $stats.dmarc.missing++
+      } else {
+        $stats.dmarc.fail++
+      }
     }
     # Track pct<100 across all DMARC configs (critical issue regardless of policy)
     if ($dmarcReason -match 'pct=(\d+)' -and [int]$Matches[1] -lt 100) { 
@@ -2041,8 +2100,11 @@ function Compress-ResultsForAI {
     if ($spfStatus -eq 'PASS' -or $spfStatus -eq 'OK') { $stats.spf.pass++ }
     elseif ($spfStatus -eq 'WARN') { $stats.spf.warn++ }
     elseif ($spfStatus -eq 'FAIL') { 
-      $stats.spf.fail++
-      if ($spfReason -match 'not found|missing') { $stats.spf.missing++ }
+      if ($spfReason -match 'not found|missing') { 
+        $stats.spf.missing++
+      } else {
+        $stats.spf.fail++
+      }
     }
     
     # Check if domain has MX records (for DKIM/MTA-STS/TLS-RPT applicability)
@@ -2060,8 +2122,11 @@ function Compress-ResultsForAI {
       if ($dkimStatus -eq 'PASS' -or $dkimStatus -eq 'OK') { $stats.dkim.pass++ }
       elseif ($dkimStatus -eq 'WARN') { $stats.dkim.warn++ }
       elseif ($dkimStatus -eq 'FAIL') { 
-        $stats.dkim.fail++
-        if ($dkimReason -match 'not found|no valid|missing') { $stats.dkim.missing++ }
+        if ($dkimReason -match 'not found|no valid|missing') { 
+          $stats.dkim.missing++
+        } else {
+          $stats.dkim.fail++
+        }
       }
     }
     
@@ -2074,8 +2139,11 @@ function Compress-ResultsForAI {
       if ($mtaStsStatus -eq 'PASS' -or $mtaStsStatus -eq 'OK') { $stats.mta_sts.pass++ }
       elseif ($mtaStsStatus -eq 'WARN') { $stats.mta_sts.warn++ }
       elseif ($mtaStsStatus -eq 'FAIL') { 
-        $stats.mta_sts.fail++
-        if ($mtaStsReason -match 'missing|not found') { $stats.mta_sts.missing++ }
+        if ($mtaStsReason -match 'missing|not found') { 
+          $stats.mta_sts.missing++
+        } else {
+          $stats.mta_sts.fail++
+        }
       }
     }
     
@@ -2087,17 +2155,35 @@ function Compress-ResultsForAI {
       $tlsRptReason = [string]$d.checks.tls_rpt.reason
       if ($tlsRptStatus -eq 'PASS' -or $tlsRptStatus -eq 'OK') { $stats.tls_rpt.pass++ }
       elseif ($tlsRptStatus -eq 'WARN') { 
-        $stats.tls_rpt.warn++
-        if ($tlsRptReason -match 'missing|not found') { $stats.tls_rpt.missing++ }
+        if ($tlsRptReason -match 'missing|not found') { 
+          $stats.tls_rpt.missing++
+        } else {
+          $stats.tls_rpt.warn++
+        }
       }
       elseif ($tlsRptStatus -eq 'FAIL') { $stats.tls_rpt.fail++ }
     }
+  }
+  
+  # Aggregate notable_deviations by message to reduce payload size
+  $aggregatedDeviations = @()
+  if ($notableDeviations.Count -gt 0) {
+    $grouped = $notableDeviations | Group-Object -Property message
+    foreach ($group in $grouped) {
+      $aggregatedDeviations += [PSCustomObject]@{
+        message = [string]$group.Name
+        count = [int]$group.Count
+      }
+    }
+    # Sort by count descending (most common issues first)
+    $aggregatedDeviations = $aggregatedDeviations | Sort-Object -Property count -Descending
   }
   
   return @{ 
     generated = (Get-Date).ToString('u')
     total_domains = $domains.Count
     calculated = $stats
+    notable_deviations = $aggregatedDeviations
     # TEMP TEST: Exclude domains array to reduce tokens and force AI to use calculated stats
     # domains = $domains
   }
@@ -2182,7 +2268,7 @@ function Invoke-OpenAIAnalysis {
     properties = [ordered]@{
       summary         = @{ type = 'string'; maxLength = 900 }
       overall_status  = @{ type = 'string'; enum = @('PASS','WARN','FAIL') }
-      key_findings    = @{ type = 'array'; items = @{ type = 'string'; maxLength = 220 }; minItems = 3; maxItems = 5 }
+      key_findings    = @{ type = 'array'; items = @{ type = 'string'; maxLength = 220 }; minItems = 3; maxItems = 6 }
       report_markdown = @{ type = 'string'; maxLength = 6000 }
     }
     required = @('summary','overall_status','key_findings','report_markdown')
@@ -2208,7 +2294,7 @@ function Invoke-OpenAIAnalysis {
   
   $bodyObj = [ordered]@{
     model             = $modelToUse
-    max_output_tokens = [Math]::Min($effectiveMaxOutput, 2400)
+    max_output_tokens = $effectiveMaxOutput
     text              = [ordered]@{ format = [ordered]@{ type='json_schema'; name='analysis'; strict=$true; schema=$minimalSchema }; verbosity = $verbosityLevel }
     input             = $inputBlocks
   }
@@ -2583,9 +2669,14 @@ function Get-DomainReportHtml {
   foreach ($result in @($mxResult, $spfResult, $dkimResult, $mtaStsResult, $dmarcResult, $tlsResult)) {
     if ($result.Status -eq 'FAIL') {
       $hasFail = $true
-      $issues += "$($result.Section): $($result.Data.Reason)"
+      # Remove duplicate section prefix from reason (e.g., "MTA-STS: missing" becomes "missing")
+      # For TLS-RPT, section is "SMTP TLS Reporting (TLS-RPT)" but reason starts with "TLS-RPT:"
+      $cleanReason = $result.Data.Reason -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT):\s*', ''
+      $issues += "$($result.Section): $cleanReason"
     } elseif ($result.Status -eq 'WARN') {
-      $issues += "$($result.Section): $($result.Data.Reason)"
+      # Remove duplicate section prefix from reason
+      $cleanReason = $result.Data.Reason -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT):\s*', ''
+      $issues += "$($result.Section): $cleanReason"
       }
     }
   if ($issues.Count -gt 0) {
@@ -3388,11 +3479,91 @@ if ($Html -or $FullHtmlExport) {
                     $c = $compressed.calculated
                     Write-Host ("    Domains: {0,3} total" -f $c.domain_total) -ForegroundColor Gray
                     Write-Host ("    MX:      {0,3} with MX, {1,3} send-only, {2,3} SERVFAIL" -f $c.mx.has_mx, $c.mx.no_mx, $c.mx.servfail) -ForegroundColor Gray
-                    Write-Host ("    DMARC:   {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass; {4,3} pct<100, {5,3} no rua/ruf" -f $c.dmarc.fail, $c.dmarc.missing, $c.dmarc.warn, $c.dmarc.pass, $c.dmarc.pct_partial, $c.dmarc.no_reporting) -ForegroundColor Gray
-                    Write-Host ("    SPF:     {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass" -f $c.spf.fail, $c.spf.missing, $c.spf.warn, $c.spf.pass) -ForegroundColor Gray
-                    Write-Host ("    DKIM:    {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass, {4,3} N/A (no MX)" -f $c.dkim.fail, $c.dkim.missing, $c.dkim.warn, $c.dkim.pass, $c.dkim.na) -ForegroundColor Gray
-                    Write-Host ("    MTA-STS: {0,3} fail (inc. {1} missing), {2,3} warn, {3,3} pass, {4,3} N/A (no MX)" -f $c.mta_sts.fail, $c.mta_sts.missing, $c.mta_sts.warn, $c.mta_sts.pass, $c.mta_sts.na) -ForegroundColor Gray
-                    Write-Host ("    TLS-RPT: {0,3} fail, {1,3} warn (inc. {2} missing), {3,3} pass, {4,3} N/A (no MX)" -f $c.tls_rpt.fail, $c.tls_rpt.warn, $c.tls_rpt.missing, $c.tls_rpt.pass, $c.tls_rpt.na) -ForegroundColor Gray
+                    Write-Host ("    DMARC:   {0,3} missing, {1,3} fail, {2,3} warn, {3,3} pass; {4,3} pct<100, {5,3} no rua/ruf" -f $c.dmarc.missing, $c.dmarc.fail, $c.dmarc.warn, $c.dmarc.pass, $c.dmarc.pct_partial, $c.dmarc.no_reporting) -ForegroundColor Gray
+                    Write-Host ("    SPF:     {0,3} missing, {1,3} fail, {2,3} warn, {3,3} pass" -f $c.spf.missing, $c.spf.fail, $c.spf.warn, $c.spf.pass) -ForegroundColor Gray
+                    Write-Host ("    DKIM:    {0,3} missing, {1,3} fail, {2,3} warn, {3,3} pass, {4,3} N/A (no MX)" -f $c.dkim.missing, $c.dkim.fail, $c.dkim.warn, $c.dkim.pass, $c.dkim.na) -ForegroundColor Gray
+                    Write-Host ("    MTA-STS: {0,3} missing, {1,3} fail, {2,3} warn, {3,3} pass, {4,3} N/A (no MX)" -f $c.mta_sts.missing, $c.mta_sts.fail, $c.mta_sts.warn, $c.mta_sts.pass, $c.mta_sts.na) -ForegroundColor Gray
+                    Write-Host ("    TLS-RPT: {0,3} missing, {1,3} fail, {2,3} warn, {3,3} pass, {4,3} N/A (no MX)" -f $c.tls_rpt.missing, $c.tls_rpt.fail, $c.tls_rpt.warn, $c.tls_rpt.pass, $c.tls_rpt.na) -ForegroundColor Gray
+                    if ($compressed.notable_deviations -and $compressed.notable_deviations.Count -gt 0) {
+                      $totalWarningInstances = ($compressed.notable_deviations | ForEach-Object { $_.count } | Measure-Object -Sum).Sum
+                      Write-Host ("    Notable deviations: {0} unique warning types, {1} total instances" -f $compressed.notable_deviations.Count, $totalWarningInstances) -ForegroundColor Yellow
+                    }
+                    # Dump input payload for transparency and debugging
+                    try {
+                        $payloadMdPath = Join-Path $analysisDir 'input-payload.md'
+                        $payloadMd = @"
+# Input Payload to AI
+
+**Generated:** $($compressed.generated)
+**Total Domains:** $($compressed.total_domains)
+
+## Calculated Statistics
+
+### MX Records
+- **With MX:** $($c.mx.has_mx) domains
+- **Send-only (no MX):** $($c.mx.no_mx) domains
+- **SERVFAIL:** $($c.mx.servfail) domains
+
+### DMARC
+- **Missing:** $($c.dmarc.missing) domains
+- **Fail (configuration errors):** $($c.dmarc.fail) domains
+- **Warn (weak policies):** $($c.dmarc.warn) domains
+- **Pass (p=reject):** $($c.dmarc.pass) domains
+- **Partial coverage (pct<100):** $($c.dmarc.pct_partial) domains
+- **No reporting (rua/ruf missing):** $($c.dmarc.no_reporting) domains
+- **Policy distribution:**
+  - p=none: $($c.dmarc.p_none) domains
+  - p=quarantine: $($c.dmarc.p_quarantine) domains
+  - p=reject: $($c.dmarc.p_reject) domains
+
+### SPF
+- **Missing:** $($c.spf.missing) domains
+- **Fail (configuration errors):** $($c.spf.fail) domains
+- **Warn (weak configuration):** $($c.spf.warn) domains
+- **Pass:** $($c.spf.pass) domains
+
+### DKIM
+- **Missing:** $($c.dkim.missing) domains
+- **Fail (configuration errors):** $($c.dkim.fail) domains
+- **Warn:** $($c.dkim.warn) domains
+- **Pass:** $($c.dkim.pass) domains
+- **N/A (no MX):** $($c.dkim.na) domains
+
+### MTA-STS
+- **Missing:** $($c.mta_sts.missing) domains
+- **Fail (configuration errors):** $($c.mta_sts.fail) domains
+- **Warn:** $($c.mta_sts.warn) domains
+- **Pass:** $($c.mta_sts.pass) domains
+- **N/A (no MX):** $($c.mta_sts.na) domains
+
+### TLS-RPT
+- **Missing:** $($c.tls_rpt.missing) domains
+- **Fail (configuration errors):** $($c.tls_rpt.fail) domains
+- **Warn:** $($c.tls_rpt.warn) domains
+- **Pass:** $($c.tls_rpt.pass) domains
+- **N/A (no MX):** $($c.tls_rpt.na) domains
+
+## Notable Deviations
+
+"@
+                        if ($compressed.notable_deviations -and $compressed.notable_deviations.Count -gt 0) {
+                            $totalInstances = ($compressed.notable_deviations | ForEach-Object { $_.count } | Measure-Object -Sum).Sum
+                            $payloadMd += "`n*$($compressed.notable_deviations.Count) unique warning types, $totalInstances total instances across $($compressed.total_domains) domains*`n"
+                            foreach ($deviation in $compressed.notable_deviations) {
+                                $msg = if ($deviation.message) { $deviation.message } else { "(empty message)" }
+                                $cnt = if ($deviation.count) { $deviation.count } else { 0 }
+                                $payloadMd += "`n- **$msg** ($cnt occurrences)"
+                            }
+                        } else {
+                            $payloadMd += "`n*No notable deviations detected*"
+                        }
+                        $payloadMd | Out-File -FilePath $payloadMdPath -Encoding utf8 -Force
+                        
+                        # Also dump raw JSON payload for debugging
+                        $payloadJsonPath = Join-Path $analysisDir 'input-payload.json'
+                        ($compressed | ConvertTo-Json -Depth 10) | Out-File -FilePath $payloadJsonPath -Encoding utf8 -Force
+                    } catch {}
+                    
                     $agentPath = Join-Path $PSScriptRoot 'prompts/agent.md'
                     $schemaPath = Join-Path $PSScriptRoot 'schema/analysis.schema.json'
                     $analysisResp = Invoke-OpenAIAnalysis -Compressed $compressed -AgentPath $agentPath -SchemaPath $schemaPath -Model $modelToUse -MaxOutputTokens ([int]([int]$env:OPENAI_MAX_OUTPUT_TOKENS | ForEach-Object { if ($_ -gt 0) { $_ } else { 8000 } })) -TimeoutSeconds ([int]([int]$env:OPENAI_TIMEOUT_SECONDS | ForEach-Object { if ($_ -gt 0) { $_ } else { 60 } }))
@@ -3444,8 +3615,8 @@ if ($Html -or $FullHtmlExport) {
                         if ($analysisObj.report_markdown -and $analysisObj.report_markdown.Length -gt 6000) {
                             Write-Host ("  [WARN] report_markdown exceeds limit ({0} > 6000 chars)" -f $analysisObj.report_markdown.Length) -ForegroundColor Yellow
                         }
-                        if ($analysisObj.summary -and $analysisObj.summary.Length -gt 650) {
-                            Write-Host ("  [WARN] summary exceeds limit ({0} > 650 chars)" -f $analysisObj.summary.Length) -ForegroundColor Yellow
+                        if ($analysisObj.summary -and $analysisObj.summary.Length -gt 900) {
+                            Write-Host ("  [WARN] summary exceeds limit ({0} > 900 chars)" -f $analysisObj.summary.Length) -ForegroundColor Yellow
                         }
                         Write-Host ("  Content: summary={0} chars, findings={1}, markdown={2} chars" -f $analysisObj.summary.Length, $analysisObj.key_findings.Count, $analysisObj.report_markdown.Length) -ForegroundColor Gray
                         ($analysisText) | Out-File -FilePath (Join-Path $analysisDir 'analysis.json') -Encoding utf8 -Force
