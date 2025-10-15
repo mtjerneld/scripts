@@ -1,8 +1,9 @@
 *.html
 !templates/html/*.html
 *.csv
-*.txt
 *.json
+!schema/*.json
+*.txt
 *.zip
 *.ps1
 

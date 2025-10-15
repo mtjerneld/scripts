@@ -1,0 +1,56 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": { "type": "string" },
+    "overall_status": { "type": "string", "enum": ["PASS", "WARN", "FAIL"] },
+    "key_findings": { "type": "array", "items": { "type": "string" } },
+    "remediations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "priority": { "type": "string", "enum": ["P0", "P1", "P2"] },
+          "owner": { "type": "string" },
+          "eta_days": { "type": "integer" },
+          "rationale": { "type": "string" },
+          "links": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["title", "priority"]
+      }
+    },
+    "per_domain_notes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "domain": { "type": "string" },
+          "notes": { "type": "string" }
+        },
+        "required": ["domain", "notes"]
+      }
+    },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "model": { "type": "string" },
+        "temperature": { "type": "number" },
+        "response_id": { "type": "string" },
+        "generated_at": { "type": "string" },
+        "prompt_hash": { "type": "string" }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": { "type": "integer" },
+        "output_tokens": { "type": "integer" },
+        "cost_usd_estimate": { "type": "number" }
+      }
+    },
+    "report_markdown": { "type": "string" }
+  },
+  "required": ["summary", "remediations", "report_markdown"]
+}
+
+
