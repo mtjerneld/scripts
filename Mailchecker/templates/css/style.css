@@ -1,5 +1,7 @@
 /* CSS Variables - Professional Email Security Palette */
 :root {
+  color-scheme: light;
+  
   /* Brand */
   --pri-800:#0B3A5B; --pri-700:#11527F; --pri-600:#1670B0; --pri-500:#1C86D1;
   --pri-100:#D6E9F7; --pri-50:#F2F8FD;
@@ -43,19 +45,20 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    color-scheme: dark;
     --bg:#0A0F16;
-    --surface:#0F1520;
-    --surface-muted:#111827;
+    --surface:#1A1F2E;
+    --surface-muted:#252A3A;
     --text:#E9EEF5;
     --text-muted:#A6B1BF;
-    --border:#243042;
+    --border:#2D3748;
     --link:#59B4FF;
     --link-hover:#86CBFF;
 
-    /* Status on dark */
-    --ok:#66E3A1;   --ok-50:#0E2A1C;
-    --warn:#FFD166; --warn-50:#231A06;
-    --err:#FF7A7A;  --err-50:#2A0E0E;
+    /* Status on dark - brighter for better contrast */
+    --ok:#5EE3A0;   --ok-50:#0E2A1C;
+    --warn:#FFD875; --warn-50:#2A2110;
+    --err:#FF8888;  --err-50:#2A0E0E;
     --info:#7AD6CF; --info-50:#0E2221;
 
     --shadow-sm: 0 1px 2px rgba(0,0,0,.35);
@@ -86,7 +89,7 @@ body {
 }
 
 h1 { 
-    color: var(--n900);
+    color: var(--text);
     border-bottom: 3px solid var(--pri-600);
     padding-bottom: var(--space-2);
     margin: 0 0 var(--space-4) 0;
@@ -97,12 +100,12 @@ h2 {
     border-bottom: 1px solid var(--border);
     padding-bottom: var(--space-2);
     margin-top: var(--space-6);
-    color: var(--n900);
+    color: var(--text);
     font-weight: 600;
 }
 
 h3 {
-    color: var(--n800);
+    color: var(--text);
     margin-top: var(--space-4);
     font-weight: 600;
 }
@@ -211,11 +214,19 @@ th {
     position: sticky;
     top: 0;
     z-index: 10;
-    color: var(--n800);
+    color: var(--text);
 }
 
-tr:hover {
+@media (prefers-color-scheme: dark) {
+  tr:hover {
+    background-color: var(--n800);
+  }
+}
+
+@media (prefers-color-scheme: light) {
+  tr:hover {
     background-color: var(--n100);
+  }
 }
 
 td.domain {
@@ -397,14 +408,14 @@ span.status-info {
 }
 
 pre {
-    background-color: var(--n100);
+    background-color: var(--surface-muted);
     padding: var(--space-3);
     border-radius: var(--radius-sm);
     overflow-x: auto;
     font-family: var(--font-mono);
     font-size: 13px;
     border: 1px solid var(--border);
-    color: var(--n800);
+    color: var(--text);
 }
 
 /* Footer */
@@ -439,9 +450,9 @@ a:hover {
 .action-buttons {
     margin: var(--space-4) 0;
     padding: var(--space-3) var(--space-4);
-    background-color: var(--pri-50);
+    background-color: var(--surface-muted);
     border-radius: var(--radius-sm);
-    border: 1px solid var(--pri-100);
+    border: 1px solid var(--border);
     display: flex;
     gap: var(--space-3);
     align-items: center;
@@ -451,9 +462,9 @@ a:hover {
 .btn-download {
     display: inline-block;
     padding: .6rem 1rem;
-    background-color: white;
+    background-color: var(--surface);
     color: var(--pri-600);
-    border: 1px solid var(--pri-200);
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     text-decoration: none;
     font-weight: 600;
@@ -461,8 +472,8 @@ a:hover {
 }
 
 .btn-download:hover {
-    background-color: var(--pri-50);
-    border-color: var(--pri-300);
+    background-color: var(--surface-muted);
+    border-color: var(--pri-600);
     box-shadow: var(--shadow-sm);
     text-decoration: none;
 }
@@ -604,7 +615,7 @@ a:hover {
 }
 
 .text-muted-light {
-    color: #666;
+    color: var(--text-muted);
 }
 
 /* Check summary paragraphs */
@@ -681,23 +692,23 @@ a:hover {
     content: '✅ ';
 }
 
-.legend-pass { color: #28a745; }
+.legend-pass { color: var(--ok); }
 
 .legend-warn::before {
     content: '⚠️ ';
 }
 
-.legend-warn { color: #ffc107; }
+.legend-warn { color: var(--warn); }
 
 .legend-fail::before {
     content: '❌ ';
 }
 
-.legend-fail { color: #dc3545; }
+.legend-fail { color: var(--err); }
 
 .legend-info::before {
     content: 'ℹ️ ';
 }
 
-.legend-info { color: #0078D7; }
+.legend-info { color: var(--info); }
 

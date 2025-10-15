@@ -28,3 +28,4 @@ output/
 # But keep the example file
 !domains.txt
 !mailchecker.ps1
+!redirecttester.ps1
