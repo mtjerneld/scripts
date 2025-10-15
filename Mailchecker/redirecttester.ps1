@@ -1,20 +1,54 @@
 <#
-redirecttester.ps1
+.SYNOPSIS
+    Analyzes domain relationships by testing variants and following redirects.
 
-PowerShell 5.1 prototype to analyze domain-brand relations by:
-- generating domain variants (.se, .com, .no, .fi, .dk)
-- resolving A, AAAA, CNAME records
-- performing HTTP HEAD requests to detect redirects
-- scoring matches: RedirectBack, SameDNS, Unrelated
-- exporting results to CSV
+.DESCRIPTION
+    This script discovers related domains by:
+    - Testing domain variants (.se, .com, .no, .fi, .dk, .nu)
+    - Resolving DNS records (A, AAAA, CNAME, NS)
+    - Performing HTTP HEAD requests to detect redirects
+    - Performing second-degree discovery (testing variants of discovered domains)
+    - Matching domains based on: DNS records (IP, CNAME, NS), redirect patterns
+    - Optionally adding discovered domains back to the input file
 
-Usage:
-.
-  .\redirecttester.ps1 -InputFile domains.txt -OutputCsv results.csv -TimeoutSeconds 5 -UseParallel:$true
+.PARAMETER InputFile
+    Path to a newline-separated domain list. Lines starting with # are ignored.
 
-Notes:
-- Designed for PowerShell 5.1. Uses Start-Job for simple concurrency.
-- DNS lookups use Resolve-DnsName if available; falls back to [System.Net.Dns] for A records.
+.PARAMETER OutputCsv
+    Optional CSV output path for full analysis results.
+
+.PARAMETER TimeoutSeconds
+    HTTP timeout in seconds (default: 5).
+
+.PARAMETER UseParallel
+    Run per-domain checks in parallel using Start-Job (child processes).
+
+.PARAMETER AddMatches
+    Automatically append newly found matches to the input file.
+
+.PARAMETER PromptAddMatches
+    Prompt before appending matches to the input file.
+
+.PARAMETER DryRun
+    Show what would be added without actually modifying the input file.
+
+.EXAMPLE
+    .\redirecttester.ps1 -InputFile domains.txt -AddMatches
+    Tests domains and adds discovered matches to the input file.
+
+.EXAMPLE
+    .\redirecttester.ps1 -InputFile domains.txt -OutputCsv results.csv
+    Tests domains and exports full analysis to CSV.
+
+.EXAMPLE
+    .\redirecttester.ps1 -InputFile domains.txt -AddMatches -OutputCsv results.csv -TimeoutSeconds 3
+    Tests domains with 3-second timeout, adds matches, and exports CSV.
+
+.NOTES
+    - Designed for PowerShell 5.1. Uses Start-Job for parallel execution.
+    - DNS lookups use Resolve-DnsName if available; falls back to [System.Net.Dns].
+    - Match types: Original domain, DNS match, RedirectBack, Discovered redirect, Variant match
+    - Second-degree discovery automatically tests variants of discovered domains.
 #>
 
 param(
@@ -22,7 +56,7 @@ param(
     [string]$InputFile,
 
     [Parameter(Mandatory=$false)]
-    [string]$OutputCsv = "results.csv",
+    [string]$OutputCsv,
 
     [int]$TimeoutSeconds = 5,
 
@@ -44,24 +78,44 @@ param(
 $Suffixes = @('.se', '.com', '.no', '.fi', '.dk', '.nu')
 
 if ($Help) {
-    Write-Host "redirecttester.ps1 - quick help"
-    Write-Host "Usage:"
-    Write-Host "  .\redirecttester.ps1 -InputFile <path> [-OutputCsv <path>] [-TimeoutSeconds <s>] [-UseParallel] [-AddMatches] [-PromptAddMatches]"
-    Write-Host "  powershell.exe -File redirecttester.ps1 -InputFile <path> -OutputCsv <path> -AddMatches"
+    Write-Host "redirecttester.ps1 - Domain relationship analyzer"
     Write-Host ""
-    Write-Host "Options:"
-    Write-Host "  -InputFile         Path to a newline-separated domain list. Lines starting with # are ignored."
-    Write-Host "  -OutputCsv         CSV output path (default: results.csv)"
-    Write-Host "  -TimeoutSeconds    HTTP timeout in seconds (default: 5)"
-    Write-Host "  -UseParallel       Run per-domain checks in parallel using Start-Job (child processes)"
-    Write-Host "  -AddMatches        Automatically append newly found matches to the input file (under a commented heading)"
-    Write-Host "  -PromptAddMatches  Prompt before appending matches"
-    Write-Host "  -Help              Show this help and exit"
+    Write-Host "DESCRIPTION:"
+    Write-Host "  Discovers related domains by testing variants (.se, .com, .no, .fi, .dk, .nu),"
+    Write-Host "  analyzing DNS records (A, AAAA, CNAME, NS), following redirects, and performing"
+    Write-Host "  second-degree discovery on found domains."
     Write-Host ""
-    Write-Host "Notes:"
-    Write-Host "  - The script detects redirect targets (Location header) and DNS matches."
-    Write-Host "  - Appended matches are written as plain domain lines under a single commented heading."
-    Write-Host "  - For PowerShell 5.1 the script uses System.Net.WebRequest and Resolve-DnsName when available."
+    Write-Host "USAGE:"
+    Write-Host "  .\redirecttester.ps1 -InputFile <path> [-OutputCsv <path>] [-AddMatches] [options]"
+    Write-Host ""
+    Write-Host "PARAMETERS:"
+    Write-Host "  -InputFile <path>      Path to newline-separated domain list (# for comments)"
+    Write-Host "  -OutputCsv <path>      Optional: Export full analysis to CSV"
+    Write-Host "  -AddMatches            Automatically append discovered domains to input file"
+    Write-Host "  -PromptAddMatches      Prompt before appending matches"
+    Write-Host "  -DryRun                Show what would be added without modifying file"
+    Write-Host "  -TimeoutSeconds <n>    HTTP timeout in seconds (default: 5)"
+    Write-Host "  -UseParallel           Run checks in parallel using background jobs"
+    Write-Host "  -Help                  Show this help"
+    Write-Host ""
+    Write-Host "EXAMPLES:"
+    Write-Host "  .\redirecttester.ps1 -InputFile domains.txt -AddMatches"
+    Write-Host "  .\redirecttester.ps1 -InputFile domains.txt -OutputCsv results.csv"
+    Write-Host "  .\redirecttester.ps1 -InputFile domains.txt -AddMatches -TimeoutSeconds 3"
+    Write-Host ""
+    Write-Host "MATCH TYPES:"
+    Write-Host "  Original domain     - Redirect from input domain to this target"
+    Write-Host "  DNS match           - Variant shares DNS records (IP, CNAME, or NS)"
+    Write-Host "  RedirectBack        - Variant redirects back to base domain"
+    Write-Host "  Discovered redirect - Second-degree match from discovered domain"
+    Write-Host "  Variant match       - Variant has DNS match or redirects back"
+    Write-Host ""
+    Write-Host "FEATURES:"
+    Write-Host "  • Second-degree discovery: Automatically tests variants of discovered domains"
+    Write-Host "  • DNS matching: Compares A, AAAA, CNAME, and NS records (requires 2+ NS matches)"
+    Write-Host "  • Smart filtering: Excludes self-redirects and unrelated external redirects"
+    Write-Host "  • Progress tracking: Shows real-time progress for both discovery rounds"
+    Write-Host ""
     exit 0
 }
 
@@ -263,28 +317,6 @@ if ($Child) {
 if (-not $InputFile) { throw "InputFile parameter is required when not running in Child mode." }
 if (-not (Test-Path $InputFile)) { throw "Input file not found: $InputFile" }
 
-if ($Help) {
-    Write-Host "redirecttester.ps1 - quick help"
-    Write-Host "Usage:"
-    Write-Host "  .\redirecttester.ps1 -InputFile <path> [-OutputCsv <path>] [-TimeoutSeconds <s>] [-UseParallel] [-AddMatches] [-PromptAddMatches]"
-    Write-Host "  powershell.exe -File redirecttester.ps1 -InputFile <path> -OutputCsv <path> -AddMatches"
-    Write-Host ""
-    Write-Host "Options:"
-    Write-Host "  -InputFile         Path to a newline-separated domain list. Lines starting with # are ignored."
-    Write-Host "  -OutputCsv         CSV output path (default: results.csv)"
-    Write-Host "  -TimeoutSeconds    HTTP timeout in seconds (default: 5)"
-    Write-Host "  -UseParallel       Run per-domain checks in parallel using Start-Job (child processes)"
-    Write-Host "  -AddMatches        Automatically append newly found matches to the input file (under a commented heading)"
-    Write-Host "  -PromptAddMatches  Prompt before appending matches"
-    Write-Host "  -Help              Show this help and exit"
-    Write-Host ""
-    Write-Host "Notes:"
-    Write-Host "  - The script detects redirect targets (Location header) and DNS matches."
-    Write-Host "  - Appended matches are written as plain domain lines under a single commented heading."
-    Write-Host "  - For PowerShell 5.1 the script uses System.Net.WebRequest and Resolve-DnsName when available."
-    exit 0
-}
-
 $domains = Get-Content $InputFile | Where-Object { $_ -and ($_ -notmatch '^#') } | ForEach-Object { $_.Trim() }
 
 $allResults = @()
@@ -401,8 +433,11 @@ if ($firstRoundDiscoveries -and $firstRoundDiscoveries.Count -gt 0) {
 # For the redirect detail collection later, we need to track what was discovered
 $firstRoundRedirects = $firstRoundDiscoveries
 
-# Export CSV
-$allResults | Export-Csv -Path $OutputCsv -NoTypeInformation -Encoding UTF8
+# Export CSV (only if specified)
+if ($OutputCsv) {
+    $allResults | Export-Csv -Path $OutputCsv -NoTypeInformation -Encoding UTF8
+    Write-Host "Results exported to $OutputCsv"
+}
 
 ### Optional: collect likely matches and optionally append to input file
 # First, get the list of domains that were in the original input file (non-commented lines)
@@ -573,4 +608,4 @@ $likelyMatches = @($normVariantMatches + $normRedirectHosts) | Select-Object -Un
     }
 }
 
-Write-Host "Done. Results written to $OutputCsv. Rows: $($allResults.Count)"
+Write-Host "Done. Analyzed $($allResults.Count) variant(s)."

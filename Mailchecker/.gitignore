@@ -10,7 +10,7 @@
 # Environment files (contains secrets)
 *.env
 .env
-!.env.example
+
 
 # Ignore all subdirectories (output folders, test folders, etc.)
 */
@@ -26,7 +26,10 @@
 # Output directory (keep clean)
 output/
 
-# But keep the example file
-!domains.txt
+# But keep the example files
+!bulkfile-example.txt
+!.env.example
+
+#Keep the scripts
 !mailchecker.ps1
 !redirecttester.ps1
