@@ -28,6 +28,12 @@ param(
 
     [switch]$UseParallel,
 
+    # Optionally add detected likely matches back into the input file
+    [switch]$PromptAddMatches,
+    [switch]$AddMatches,
+    [switch]$DryRun,
+    [switch]$Help,
+
     # Child-mode parameters (used when launching parallel child processes)
     [switch]$Child,
     [string]$ChildBaseDomain,
@@ -35,7 +41,29 @@ param(
 )
 
 # Domain suffixes to test
-$Suffixes = @('.se', '.com', '.no', '.fi', '.dk')
+$Suffixes = @('.se', '.com', '.no', '.fi', '.dk', '.nu')
+
+if ($Help) {
+    Write-Host "redirecttester.ps1 - quick help"
+    Write-Host "Usage:"
+    Write-Host "  .\redirecttester.ps1 -InputFile <path> [-OutputCsv <path>] [-TimeoutSeconds <s>] [-UseParallel] [-AddMatches] [-PromptAddMatches]"
+    Write-Host "  powershell.exe -File redirecttester.ps1 -InputFile <path> -OutputCsv <path> -AddMatches"
+    Write-Host ""
+    Write-Host "Options:"
+    Write-Host "  -InputFile         Path to a newline-separated domain list. Lines starting with # are ignored."
+    Write-Host "  -OutputCsv         CSV output path (default: results.csv)"
+    Write-Host "  -TimeoutSeconds    HTTP timeout in seconds (default: 5)"
+    Write-Host "  -UseParallel       Run per-domain checks in parallel using Start-Job (child processes)"
+    Write-Host "  -AddMatches        Automatically append newly found matches to the input file (under a commented heading)"
+    Write-Host "  -PromptAddMatches  Prompt before appending matches"
+    Write-Host "  -Help              Show this help and exit"
+    Write-Host ""
+    Write-Host "Notes:"
+    Write-Host "  - The script detects redirect targets (Location header) and DNS matches."
+    Write-Host "  - Appended matches are written as plain domain lines under a single commented heading."
+    Write-Host "  - For PowerShell 5.1 the script uses System.Net.WebRequest and Resolve-DnsName when available."
+    exit 0
+}
 
 function Get-DnsRecords {
     param(
@@ -133,7 +161,7 @@ function Invoke-HeadRequest {
             try { $status = [int]$resp.StatusCode } catch { }
             $loc = $null
             try { $loc = $resp.Headers['Location'] } catch { }
-            if ($resp -ne $null) { $resp.Close() }
+            if ($null -ne $resp) { $resp.Close() }
             return [PSCustomObject]@{ Status = $status; Location = $loc }
         }
         return [PSCustomObject]@{ Status = $null; Location = $null }
@@ -143,7 +171,7 @@ function Invoke-HeadRequest {
     }
 }
 
-function Analyze-BaseDomain {
+function Get-BaseDomainAnalysis {
     param(
         [Parameter(Mandatory=$true)] [string]$BaseDomain
     )
@@ -173,15 +201,33 @@ function Analyze-BaseDomain {
             }
         }
 
-        # Compare DNS: any overlapping A/AAAA or same CNAME host
+        # Compare DNS: any overlapping A/AAAA, same CNAME host, or matching NS records
         $dnsMatch = $false
         if (($dns.A | Where-Object { $baseRecords.A -contains $_ }) -or ($dns.AAAA | Where-Object { $baseRecords.AAAA -contains $_ })) { $dnsMatch = $true }
         if (-not $dnsMatch) {
             foreach ($c in $dns.CNAME) { if ($baseRecords.CNAME -contains $c) { $dnsMatch = $true; break } }
         }
+        if (-not $dnsMatch) {
+            # Check if NS records match (need at least 2 matching nameservers to consider it a match)
+            $matchingNS = $dns.NS | Where-Object { $baseRecords.NS -contains $_ }
+            if ($matchingNS -and $matchingNS.Count -ge 2) { $dnsMatch = $true }
+        }
 
         # Determine MatchType
-        if ($redirectTarget -and ($redirectTarget -like "*${baseName}*")) {
+        # Check if redirect target hostname matches the base domain (not just contains the name)
+        $redirectsToBase = $false
+        if ($redirectTarget) {
+            try {
+                $targetUri = [Uri]$redirectTarget
+                $targetHost = ($targetUri.Host -replace '^www\.', '').Trim().ToLower()
+                $baseHost = ($baseName -replace '^www\.', '').Trim().ToLower()
+                if ($targetHost -eq $baseHost) {
+                    $redirectsToBase = $true
+                }
+            } catch { }
+        }
+        
+        if ($redirectsToBase) {
             $match = 'RedirectBack'
         }
         elseif ($dnsMatch) { $match = 'SameDNS' }
@@ -208,7 +254,7 @@ function Analyze-BaseDomain {
 # Read input
 if ($Child) {
     if (-not $ChildBaseDomain) { throw "ChildBaseDomain must be provided in Child mode" }
-    $res = Analyze-BaseDomain -BaseDomain $ChildBaseDomain
+    $res = Get-BaseDomainAnalysis -BaseDomain $ChildBaseDomain
     if (-not $ChildOut) { Write-Host (ConvertTo-Json $res); exit 0 }
     $res | ConvertTo-Json -Depth 5 | Set-Content -Path $ChildOut -Encoding UTF8
     exit 0
@@ -216,6 +262,28 @@ if ($Child) {
 
 if (-not $InputFile) { throw "InputFile parameter is required when not running in Child mode." }
 if (-not (Test-Path $InputFile)) { throw "Input file not found: $InputFile" }
+
+if ($Help) {
+    Write-Host "redirecttester.ps1 - quick help"
+    Write-Host "Usage:"
+    Write-Host "  .\redirecttester.ps1 -InputFile <path> [-OutputCsv <path>] [-TimeoutSeconds <s>] [-UseParallel] [-AddMatches] [-PromptAddMatches]"
+    Write-Host "  powershell.exe -File redirecttester.ps1 -InputFile <path> -OutputCsv <path> -AddMatches"
+    Write-Host ""
+    Write-Host "Options:"
+    Write-Host "  -InputFile         Path to a newline-separated domain list. Lines starting with # are ignored."
+    Write-Host "  -OutputCsv         CSV output path (default: results.csv)"
+    Write-Host "  -TimeoutSeconds    HTTP timeout in seconds (default: 5)"
+    Write-Host "  -UseParallel       Run per-domain checks in parallel using Start-Job (child processes)"
+    Write-Host "  -AddMatches        Automatically append newly found matches to the input file (under a commented heading)"
+    Write-Host "  -PromptAddMatches  Prompt before appending matches"
+    Write-Host "  -Help              Show this help and exit"
+    Write-Host ""
+    Write-Host "Notes:"
+    Write-Host "  - The script detects redirect targets (Location header) and DNS matches."
+    Write-Host "  - Appended matches are written as plain domain lines under a single commented heading."
+    Write-Host "  - For PowerShell 5.1 the script uses System.Net.WebRequest and Resolve-DnsName when available."
+    exit 0
+}
 
 $domains = Get-Content $InputFile | Where-Object { $_ -and ($_ -notmatch '^#') } | ForEach-Object { $_.Trim() }
 
@@ -258,13 +326,251 @@ if ($UseParallel) {
     $jobs | Remove-Job -Force
 }
 else {
-    foreach ($d in $domains) {
-        $res = Analyze-BaseDomain -BaseDomain $d
+    # Sequential mode with progress reporting
+    for ($i = 0; $i -lt $domains.Count; $i++) {
+        $d = $domains[$i]
+        $percent = [int](($i / $domains.Count) * 100)
+        Write-Progress -Activity "Analyzing domains" -Status ("{0}/{1} - {2}" -f ($i+1), $domains.Count, $d) -PercentComplete $percent
+
+        $res = Get-BaseDomainAnalysis -BaseDomain $d
         $allResults += $res
+    }
+
+    # Clear progress
+    Write-Progress -Activity "Analyzing domains" -Completed -Status "Done"
+}
+
+### Second-degree discovery: test variants of redirect targets and DNS-matched variants
+Write-Host "Performing second-degree discovery (testing variants of discovered domains)..."
+
+# Get all tested domains so far
+$testedDomains = $allResults | Select-Object -ExpandProperty BaseDomain -Unique | ForEach-Object { ($_ -replace '^www\.', '').Trim().ToLower() }
+
+# Find discovered domains from the first round (both redirect targets AND DNS/RedirectBack matches)
+$firstRoundDiscoveries = @()
+
+# 1. Find redirect targets (excluding self-redirects and unrelated redirects)
+foreach ($row in $allResults) {
+    if ($row.RedirectTarget -and $row.MatchType -ne 'Unrelated') {
+        try {
+            $u = [Uri]$row.RedirectTarget
+            if ($u.Host) {
+                $normalizedHost = ($u.Host -replace '^www\.', '').Trim().ToLower()
+                $normalizedVariant = ($row.Variant -replace '^www\.', '').Trim().ToLower()
+                $normalizedBase = ($row.BaseDomain -replace '^www\.', '').Trim().ToLower()
+                
+                # Only include redirect targets from:
+                # - Original domains (base domain is in original input AND variant equals base)
+                # - Variants with DNS match or RedirectBack
+                $isOriginalDomainVariant = ($originalDomains -contains $normalizedBase) -and ($normalizedVariant -eq $normalizedBase)
+                
+                # Skip self-redirects and only include if it's from original domain or has relationship
+                if ($normalizedHost -ne $normalizedVariant -and $testedDomains -notcontains $normalizedHost -and $isOriginalDomainVariant) {
+                    $firstRoundDiscoveries += $normalizedHost
+                }
+            }
+        } catch { }
     }
 }
 
+# 2. Find variants with DNS matches or RedirectBack
+$variantMatches = $allResults | 
+    Where-Object { $_.MatchType -in @('RedirectBack','SameDNS') } | 
+    Select-Object -ExpandProperty Variant | 
+    ForEach-Object { ($_ -replace '^www\.', '').Trim().ToLower() } |
+    Where-Object { $testedDomains -notcontains $_ }
+
+$firstRoundDiscoveries = @($firstRoundDiscoveries + $variantMatches) | Select-Object -Unique
+
+if ($firstRoundDiscoveries -and $firstRoundDiscoveries.Count -gt 0) {
+    Write-Host "Testing variants of $($firstRoundDiscoveries.Count) discovered domain(s)..."
+    
+    for ($i = 0; $i -lt $firstRoundDiscoveries.Count; $i++) {
+        $discoveredDomain = $firstRoundDiscoveries[$i]
+        $percent = [int](($i / $firstRoundDiscoveries.Count) * 100)
+        Write-Progress -Activity "Second-degree discovery" -Status ("{0}/{1} - {2}" -f ($i+1), $firstRoundDiscoveries.Count, $discoveredDomain) -PercentComplete $percent
+        
+        $res = Get-BaseDomainAnalysis -BaseDomain $discoveredDomain
+        $allResults += $res
+    }
+    
+    Write-Progress -Activity "Second-degree discovery" -Completed -Status "Done"
+    Write-Host "Second-degree discovery complete. Found additional variants."
+}
+
+# For the redirect detail collection later, we need to track what was discovered
+$firstRoundRedirects = $firstRoundDiscoveries
+
 # Export CSV
 $allResults | Export-Csv -Path $OutputCsv -NoTypeInformation -Encoding UTF8
+
+### Optional: collect likely matches and optionally append to input file
+# First, get the list of domains that were in the original input file (non-commented lines)
+$originalDomains = Get-Content $InputFile | 
+    Where-Object { $_ -and ($_ -notmatch '^#') -and ($_ -notmatch '^\s*$') } | 
+    ForEach-Object { ($_.Trim() -replace '^www\.', '').ToLower() } | 
+    Select-Object -Unique
+
+# Include Variants with desirable MatchTypes
+$normVariantMatches = $allResults | 
+    Where-Object { $_.MatchType -in @('RedirectBack','SameDNS') } | 
+    Select-Object -ExpandProperty Variant | 
+    ForEach-Object { ($_ -replace '^www\.', '').Trim().ToLower() } |
+    Select-Object -Unique
+
+# Extract redirect target hostnames with proper filtering:
+# - If the variant IS the original domain that was in input file → include its redirects
+# - If the variant IS a discovered redirect target (second-degree) → include its redirects if DNS match
+# - If the variant has a DNS match with the base → include its redirects
+# - If the variant redirects back to the base → include its redirects
+$redirectDetails = @()
+foreach ($row in $allResults) {
+    if ($row.RedirectTarget) {
+        $normalizedBase = ($row.BaseDomain -replace '^www\.', '').Trim().ToLower()
+        $normalizedVariant = ($row.Variant -replace '^www\.', '').Trim().ToLower()
+        
+        # Check if this variant IS the base domain (meaning it was in original input OR discovered redirect target)
+        $isOriginalDomain = ($originalDomains -contains $normalizedBase) -and ($normalizedVariant -eq $normalizedBase)
+        $isDiscoveredRedirect = ($firstRoundRedirects -contains $normalizedBase) -and ($normalizedVariant -eq $normalizedBase)
+        
+        # Determine match reason
+        # Only include redirects that indicate a real relationship, not random external redirects
+        $reason = $null
+        if ($isOriginalDomain -and ($row.MatchType -ne 'Unrelated')) { 
+            # Original domain redirect, but only if there's some indication of relationship
+            # (DNS match, or it's the base domain testing itself which might redirect to canonical URL)
+            $reason = "Original domain" 
+        }
+        elseif ($isDiscoveredRedirect -and ($row.DNSMatch -eq $true -or $row.MatchType -eq 'RedirectBack')) { 
+            $reason = "Discovered redirect" 
+        }
+        elseif ($row.MatchType -eq 'RedirectBack') { $reason = "RedirectBack" }
+        elseif ($row.DNSMatch -eq $true) { $reason = "DNS match" }
+        
+        # Include redirect if we have a valid reason
+        if ($reason) {
+            try {
+                $u = [Uri]$row.RedirectTarget
+                if ($u.Host) {
+                    # normalize by stripping leading www.
+                    $normalizedHost = ($u.Host -replace '^www\.', '').Trim().ToLower()
+                    
+                    # Skip self-redirects (e.g., missionpoint.com → https://missionpoint.com/)
+                    if ($normalizedHost -ne $normalizedVariant) {
+                        $redirectDetails += [PSCustomObject]@{
+                            Host = $normalizedHost
+                            Reason = $reason
+                            Variant = $row.Variant
+                        }
+                    }
+                }
+            } catch {
+                # ignore unparsable URLs
+            }
+        }
+    }
+}
+
+# Get unique hosts for the actual list
+$normRedirectHosts = $redirectDetails | Select-Object -ExpandProperty Host -Unique
+
+# Merge variants and redirects into likelyMatches for later filtering
+$likelyMatches = @($normVariantMatches + $normRedirectHosts) | Select-Object -Unique
+
+    if ($likelyMatches -and $likelyMatches.Count -gt 0) {
+        # Extract existing domains from input file, considering both commented and non-commented lines
+        try {
+            $existing = Get-Content $InputFile |
+                Where-Object { $_ -and ($_ -notmatch '^\s*$') } |
+                ForEach-Object { ($_ -replace '^\s*#\s*','').Trim() -replace '^www\.', '' } |
+                ForEach-Object { $_.ToLower() } |
+                Where-Object { $_ } |
+                Select-Object -Unique
+        } catch {
+            $existing = @()
+        }
+
+        # First build $newMatches from variant matches that aren't already in input file
+        $newMatches = $normVariantMatches | Where-Object { $existing -notcontains $_ }
+
+        # When AddMatches is true, ALWAYS include redirect hosts that aren't in input file yet
+        if ($AddMatches -and $normRedirectHosts) {
+            $redirectsToAdd = $normRedirectHosts | Where-Object { $existing -notcontains $_ }
+            if ($redirectsToAdd) {
+                $newMatches = @($newMatches + $redirectsToAdd) | Select-Object -Unique
+            }
+        }
+        
+        # Build table of all new matches with reasons
+        $matchesTable = @()
+        foreach ($match in $newMatches) {
+            # Check if it's a redirect target
+            $detail = $redirectDetails | Where-Object { $_.Host -eq $match } | Select-Object -First 1
+            if ($detail) {
+                # Get primary reason and trace back to the original input domain (BaseDomain)
+                $primaryReason = ($redirectDetails | Where-Object { $_.Host -eq $match } | Select-Object -First 1).Reason
+                $variant = ($redirectDetails | Where-Object { $_.Host -eq $match } | Select-Object -First 1).Variant
+                # Find the BaseDomain for this variant from $allResults
+                $baseDomain = ($allResults | Where-Object { $_.Variant -eq $variant } | Select-Object -First 1).BaseDomain
+                $matchesTable += [PSCustomObject]@{
+                    Domain = $match
+                    Reason = $primaryReason
+                    From = $baseDomain
+                }
+            } else {
+                # It's a variant match - find which base domain it's a variant of
+                $variantRow = $allResults | Where-Object { 
+                    $normalizedVariant = ($_.Variant -replace '^www\.', '').Trim().ToLower()
+                    $normalizedVariant -eq $match 
+                } | Select-Object -First 1
+                $baseDomain = if ($variantRow) { $variantRow.BaseDomain } else { "-" }
+                $matchesTable += [PSCustomObject]@{
+                    Domain = $match
+                    Reason = "Variant match"
+                    From = $baseDomain
+                }
+            }
+        }
+        
+    if ($newMatches -and $newMatches.Count -gt 0) {
+        Write-Host "`nAdding $($newMatches.Count) new domain(s):"
+        $matchesTable | Format-Table -Property Domain, Reason, From -AutoSize | Out-String | Write-Host
+        
+        Write-Host "Legend:"
+        Write-Host "  Original domain     - Domain redirects to this target (discovered from original input domain)"
+        Write-Host "  Discovered redirect - Variant of a redirect target with DNS match (second-degree discovery)"
+        Write-Host "  DNS match           - Variant has matching DNS records with the base domain"
+        Write-Host "  RedirectBack        - Variant redirects back to the base domain"
+        Write-Host "  Variant match       - Variant has matching DNS or redirects back to base"
+        Write-Host ""
+
+        # Decide whether to add (or just show what would be added)
+        $doAdd = $false
+        if ($DryRun) {
+            Write-Host "`nDry run mode - would append these matches to ${InputFile}:"
+            Write-Host "# Added matches (example timestamp)"
+            foreach ($m in $newMatches) { Write-Host $m }
+            Write-Host "`nRun without -DryRun to actually append these matches."
+        }
+        else {
+            if ($AddMatches) { $doAdd = $true }
+            elseif ($PromptAddMatches) {
+                $ans = Read-Host ("Add these to ${InputFile}? (Y/N)")
+                $doAdd = ($ans -match '^[Yy]')
+            }
+
+            if ($doAdd) {
+                Add-Content -Path $InputFile -Value ""
+                # Only comment the heading/separator line, add matches as plain domain lines
+                Add-Content -Path $InputFile -Value ("# Added matches {0}" -f (Get-Date -Format o))
+                foreach ($m in $newMatches) { Add-Content -Path $InputFile -Value ($m) }
+                Write-Host ("Appended $($newMatches.Count) matches to ${InputFile} (heading commented).")
+            }
+            else {
+                if ($PromptAddMatches) { Write-Host "No matches added." }
+            }
+        }
+    }
+}
 
 Write-Host "Done. Results written to $OutputCsv. Rows: $($allResults.Count)"
