@@ -264,11 +264,11 @@ foreach ($row in $wrikeRows) {
 # Write to file with UTF8 encoding
 try {
     $csvContent | Out-File -FilePath $OutputCsv -Encoding UTF8
-    Write-Host "✅ Successfully created Wrike import file: $OutputCsv" -ForegroundColor Green
+    Write-Host "Successfully created Wrike import file: $OutputCsv" -ForegroundColor Green
     Write-Host ""
     Write-Host "IMPORTANT: Wrike requires XLSX format for import!" -ForegroundColor Yellow
     Write-Host "  1. Open $OutputCsv in Excel" -ForegroundColor Yellow
-    Write-Host "  2. File → Save As → Excel Workbook (.xlsx)" -ForegroundColor Yellow
+    Write-Host "  2. File -> Save As -> Excel Workbook (.xlsx)" -ForegroundColor Yellow
     Write-Host "  3. Import the XLSX file to Wrike (not the CSV)" -ForegroundColor Yellow
 } catch {
     Write-Error "Failed to write output CSV: $_"

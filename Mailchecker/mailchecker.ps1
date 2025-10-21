@@ -3493,11 +3493,9 @@ Write-Host "`nTip: For DKIM, inspect a real message header to learn the active s
 
 # Step 1: Build domain queue (from bulk file or command line)
 $domains = @()
-$isBulkMode = $false
 
 if ($BulkFile) {
     # Load domains from bulk file
-    $isBulkMode = $true
     if (-not (Test-Path $BulkFile)) {
         Write-Host "Error: File not found: $BulkFile" -ForegroundColor Red
         Write-Host "Please check the file path and try again." -ForegroundColor Yellow

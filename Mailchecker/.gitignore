@@ -6,6 +6,7 @@
 *.txt
 *.zip
 *.ps1
+*.xlsx
 
 # Environment files (contains secrets)
 *.env
