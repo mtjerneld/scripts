@@ -61,7 +61,10 @@ param(
   [switch]$Help,
   
   [Parameter(Mandatory=$false)]
-  [switch]$ChatGPTHello
+  [switch]$ChatGPTHello,
+
+  [Parameter(Mandatory=$false)]
+  [switch]$ActivityPlan
 )
 
 # Ensure modern TLS and avoid 100-Continue delays for outbound HTTPS calls
@@ -2189,6 +2192,293 @@ function Compress-ResultsForAI {
   }
 }
 
+function New-ActivityPlanFromResults {
+  param(
+    [pscustomobject[]]$AllResults,
+    [string]$RulesPath,
+    [string]$OutputPath
+  )
+  
+  Write-Host "`nGenerating activity plan from remediation recommendations..." -ForegroundColor Cyan
+  
+  if (-not (Test-Path $RulesPath)) {
+    Write-Host "  [ERROR] Rules file not found: $RulesPath" -ForegroundColor Red
+    return $null
+  }
+  
+  # Load rules
+  try {
+    $rulesJson = Get-Content -Path $RulesPath -Raw -ErrorAction Stop | ConvertFrom-Json
+  } catch {
+    Write-Host "  [ERROR] Failed to load rules: $_" -ForegroundColor Red
+    return $null
+  }
+  
+  $activities = @()
+  $today = Get-Date
+  $activityCounter = @{}
+  
+  foreach ($result in $AllResults) {
+    $domain = $result.Domain
+    
+    # Evaluate each rule against domain data
+    foreach ($rule in $rulesJson.rules) {
+      $shouldApply = Test-RuleCondition -Rule $rule -Result $result
+      
+      if ($shouldApply) {
+        # Generate unique activity counter per domain/control/phase
+        $counterKey = "$domain-$($rule.phase)-$($rule.control)"
+        if (-not $activityCounter.ContainsKey($counterKey)) {
+          $activityCounter[$counterKey] = 1
+        } else {
+          $activityCounter[$counterKey]++
+        }
+        $counter = $activityCounter[$counterKey]
+        
+        # Generate activity ID
+        $activityId = "ACT-{0}-{1}-{2}-{3:D3}" -f $domain, $rule.phase, $rule.control, $counter
+        $description = $rule.activity_template -replace '\{domain\}', $domain
+        
+        # Calculate dependency
+        $dependsOn = ''
+        if ($rule.depends_on_activity) {
+          $depTemplate = $rule.depends_on_activity
+          $depTemplate = $depTemplate -replace '\{domain\}', $domain
+          # Find the actual activity ID that matches this pattern
+          $matchingActivity = $activities | Where-Object { 
+            $_.Domain -eq $domain -and 
+            $_.ActivityID -match "$domain-$($depTemplate.Split('-')[1])-$($depTemplate.Split('-')[2])"
+          } | Select-Object -First 1
+          if ($matchingActivity) {
+            $dependsOn = $matchingActivity.ActivityID
+          }
+        }
+        
+        $activity = [PSCustomObject]@{
+          ActivityID = $activityId
+          Phase = $rule.phase
+          Category = $rule.category
+          Domain = $domain
+          ActivityDescription = $description
+          BusinessImpact = $rule.business_impact
+          EstimatedDays = $rule.estimated_days
+          StartDate = $today.ToString('yyyy-MM-dd')
+          EndDate = $today.AddDays($rule.estimated_days).ToString('yyyy-MM-dd')
+          DependsOn = $dependsOn
+          Status = 'Not Started'
+          Owner = ''
+        }
+        
+        $activities += $activity
+        
+        # Process follow-up activities if defined
+        if ($rule.follow_up_activities) {
+          foreach ($followUp in $rule.follow_up_activities) {
+            # Generate counter for follow-up
+            $followUpCounterKey = "$domain-$($followUp.phase)-$($rule.control)"
+            if (-not $activityCounter.ContainsKey($followUpCounterKey)) {
+              $activityCounter[$followUpCounterKey] = 1
+            } else {
+              $activityCounter[$followUpCounterKey]++
+            }
+            $followUpCounter = $activityCounter[$followUpCounterKey]
+            
+            $followUpId = "ACT-{0}-{1}-{2}-{3:D3}" -f $domain, $followUp.phase, $rule.control, $followUpCounter
+            $followUpDescription = $followUp.activity_template -replace '\{domain\}', $domain
+            
+            # Calculate follow-up dependency
+            $followUpDependsOn = ''
+            if ($followUp.depends_on_activity) {
+              $followUpDepTemplate = $followUp.depends_on_activity -replace '\{domain\}', $domain
+              # Find matching activity
+              $matchingFollowUpActivity = $activities | Where-Object { 
+                $_.Domain -eq $domain -and 
+                $_.ActivityID -match "$domain-$($followUpDepTemplate.Split('-')[1])-$($followUpDepTemplate.Split('-')[2])"
+              } | Select-Object -First 1
+              if ($matchingFollowUpActivity) {
+                $followUpDependsOn = $matchingFollowUpActivity.ActivityID
+              }
+            }
+            
+            $followUpActivity = [PSCustomObject]@{
+              ActivityID = $followUpId
+              Phase = $followUp.phase
+              Category = $rule.category
+              Domain = $domain
+              ActivityDescription = $followUpDescription
+              BusinessImpact = $followUp.business_impact
+              EstimatedDays = $followUp.estimated_days
+              StartDate = $today.ToString('yyyy-MM-dd')
+              EndDate = $today.AddDays($followUp.estimated_days).ToString('yyyy-MM-dd')
+              DependsOn = $followUpDependsOn
+              Status = 'Not Started'
+              Owner = ''
+            }
+            
+            $activities += $followUpActivity
+          }
+        }
+      }
+    }
+  }
+  
+  if ($activities.Count -eq 0) {
+    Write-Host "  [WARN] No activities generated from rules" -ForegroundColor Yellow
+    return $null
+  }
+  
+  # Dependency-based date calculation for all activities
+  # Create activity lookup by ID for fast dependency resolution
+  $activityLookup = @{}
+  foreach ($act in $activities) {
+    $activityLookup[$act.ActivityID] = $act
+  }
+  
+  # Recalculate dates based on dependencies (both P0 and P1)
+  $today = Get-Date
+  
+  foreach ($activity in $activities) {
+    # If activity has a dependency, start the day after dependency ends
+    if (-not [string]::IsNullOrWhiteSpace($activity.DependsOn)) {
+      $depActivityId = $activity.DependsOn
+      if ($activityLookup.ContainsKey($depActivityId)) {
+        $depActivity = $activityLookup[$depActivityId]
+        $depEndDate = [DateTime]::Parse($depActivity.EndDate)
+        $newStartDate = $depEndDate.AddDays(1)
+        
+        # Update dates
+        $activity.StartDate = $newStartDate.ToString('yyyy-MM-dd')
+        $activity.EndDate = $newStartDate.AddDays([int]$activity.EstimatedDays).ToString('yyyy-MM-dd')
+      }
+    }
+  }
+  
+  # Phase separation: All P1 must start after all P0 complete
+  $p0Activities = $activities | Where-Object { $_.Phase -eq 'P0' }
+  $p1Activities = $activities | Where-Object { $_.Phase -eq 'P1' }
+  
+  if ($p0Activities -and $p1Activities) {
+    # Find latest P0 end date (after dependency adjustments)
+    $latestP0EndDate = ($p0Activities | ForEach-Object { [DateTime]::Parse($_.EndDate) } | Measure-Object -Maximum).Maximum
+    $p1GlobalStartDate = $latestP0EndDate.AddDays(1)
+    
+    Write-Host "  Latest P0 completion: $($latestP0EndDate.ToString('yyyy-MM-dd'))" -ForegroundColor Cyan
+    Write-Host "  P1 phase starts: $($p1GlobalStartDate.ToString('yyyy-MM-dd'))" -ForegroundColor Cyan
+    
+    # Ensure all P1 activities start no earlier than global P1 start date
+    foreach ($p1Activity in $p1Activities) {
+      $currentStartDate = [DateTime]::Parse($p1Activity.StartDate)
+      
+      if ($currentStartDate -lt $p1GlobalStartDate) {
+        # Activity would start too early, push it to P1 global start
+        $p1Activity.StartDate = $p1GlobalStartDate.ToString('yyyy-MM-dd')
+        $p1Activity.EndDate = $p1GlobalStartDate.AddDays([int]$p1Activity.EstimatedDays).ToString('yyyy-MM-dd')
+      }
+    }
+  }
+  
+  # Sort activities by Phase (P0, P1), then by Domain, then by Category
+  $activities = $activities | Sort-Object -Property @{Expression={$_.Phase}; Ascending=$true}, @{Expression={$_.Domain}; Ascending=$true}, @{Expression={$_.Category}; Ascending=$true}
+  
+  # Export CSV
+  $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $csvPath = Join-Path $OutputPath "activity-plan-$timestamp.csv"
+  
+  try {
+    $activities | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+  } catch {
+    Write-Host "  [ERROR] Failed to export CSV: $_" -ForegroundColor Red
+    return $null
+  }
+  
+  # Summary output
+  $p0Count = @($activities | Where-Object { $_.Phase -eq 'P0' }).Count
+  $p1Count = @($activities | Where-Object { $_.Phase -eq 'P1' }).Count
+  
+  Write-Host "  [OK] Activity plan saved: $csvPath" -ForegroundColor Green
+  Write-Host "      Total activities: $($activities.Count)" -ForegroundColor Gray
+  Write-Host "      P0 (Immediate):   $p0Count activities" -ForegroundColor Red
+  Write-Host "      P1 (High):        $p1Count activities" -ForegroundColor Yellow
+  
+  return $csvPath
+}
+
+function Test-RuleCondition {
+  param(
+    [pscustomobject]$Rule,
+    [pscustomobject]$Result
+  )
+  
+  $condition = $Rule.condition
+  
+  # Access Summary properties (Result objects from mailchecker have nested Summary object)
+  $summary = $Result.Summary
+  if (-not $summary) {
+    return $false
+  }
+  
+  # Helper to check if domain has MX records
+  $mxReason = if ($Result.MXResult) { $Result.MXResult.Data.Reason } else { '' }
+  $hasMX = $mxReason -notmatch 'No MX|send-only|N/A' -and 
+           $Result.MXResult.Status -ne 'N/A'
+  
+  # Parse and evaluate conditions based on result object structure
+  # Domain existence check
+  if ($condition -match 'domain_exists == false') {
+    return $summary.Domain_Exists -eq $false
+  }
+  
+  # SPF conditions
+  if ($condition -match "spf\.status == 'FAIL' && spf\.present == false") {
+    return $Result.SPFResult.Status -eq 'FAIL' -and $summary.SPF_Present -eq $false
+  }
+  if ($condition -match "spf\.status == 'FAIL' && spf\.reason =~ 'lookup'") {
+    return $Result.SPFResult.Status -eq 'FAIL' -and $Result.SPFResult.Data.Reason -match 'lookup'
+  }
+  if ($condition -match "spf\.status == 'WARN' && spf\.healthy == false && spf\.reason =~ 'lookup'") {
+    return $Result.SPFResult.Status -eq 'WARN' -and $summary.SPF_Healthy -eq $false -and $Result.SPFResult.Data.Reason -match 'lookup'
+  }
+  if ($condition -match "spf\.status == 'WARN' && spf\.present == true && spf\.healthy == true") {
+    return $Result.SPFResult.Status -eq 'WARN' -and $summary.SPF_Present -eq $true -and $summary.SPF_Healthy -eq $true
+  }
+  
+  # DMARC conditions
+  if ($condition -match "dmarc\.status == 'FAIL' && dmarc\.present == false") {
+    return $Result.DMARCResult.Status -eq 'FAIL' -and $summary.DMARC_Present -eq $false
+  }
+  if ($condition -match "dmarc\.status == 'WARN' && dmarc\.reason =~ 'p=none'") {
+    return $Result.DMARCResult.Status -eq 'WARN' -and $Result.DMARCResult.Data.Reason -match 'p=none'
+  }
+  if ($condition -match "dmarc\.status == 'WARN' && dmarc\.reason =~ 'p=quarantine'") {
+    return $Result.DMARCResult.Status -eq 'WARN' -and $Result.DMARCResult.Data.Reason -match 'p=quarantine'
+  }
+  if ($condition -match "dmarc\.status == 'WARN' && dmarc\.reason =~ 'rua=missing'") {
+    return $Result.DMARCResult.Status -eq 'WARN' -and $Result.DMARCResult.Data.Reason -match 'rua=missing'
+  }
+  
+  # DKIM conditions
+  if ($condition -match "dkim\.status == 'FAIL' && dkim\.valid_selector == false") {
+    return $Result.DKIMResult.Status -eq 'FAIL' -and $summary.DKIM_ValidSelector -eq $false
+  }
+  
+  # TLS-RPT conditions
+  if ($condition -match "tls_rpt\.status == 'WARN' && tls_rpt\.present == false && has_mx == true") {
+    return $Result.TLSResult.Status -eq 'WARN' -and $summary.TLS_RPT_Present -eq $false -and $hasMX
+  }
+  
+  # MTA-STS conditions
+  # Rule 1: FAIL status with MX - deploy MTA-STS mode=testing (depends on TLS-RPT)
+  if ($condition -match "mta_sts\.status == 'FAIL' && has_mx == true") {
+    return $Result.MTAStsResult.Status -eq 'FAIL' -and $hasMX
+  }
+  # Rule 2: WARN status OR not enforced, with MX - transition to enforce
+  if ($condition -match "mta_sts\.status == 'WARN' && mta_sts\.enforced == false && has_mx == true") {
+    return $Result.MTAStsResult.Status -eq 'WARN' -and $summary.MTA_STS_Enforced -eq $false -and $hasMX
+  }
+  
+  return $false
+}
+
 function ConvertTo-PlainObject {
   param($obj)
   if ($null -eq $obj) { return $null }
@@ -2832,7 +3122,8 @@ function Write-IndexPage {
     [string]$RootPath,
     [array]$AllResults,
     [string]$CsvFileName = $null,
-    [string]$JsonFileName = $null
+    [string]$JsonFileName = $null,
+    [string]$ActivityPlanFileName = $null
   )
   
   $indexPath = Join-Path $RootPath "index.html"
@@ -2899,6 +3190,10 @@ function Write-IndexPage {
     if ($JsonFileName) {
       $encodedJsonName = [System.Web.HttpUtility]::HtmlEncode($JsonFileName)
     $downloadLinks += "        <a class='btn btn-download' href='" + $encodedJsonName + "'>Download JSON</a>`n"
+    }
+    if ($ActivityPlanFileName) {
+      $encodedActivityPlanName = [System.Web.HttpUtility]::HtmlEncode($ActivityPlanFileName)
+    $downloadLinks += "        <a class='btn btn-download btn-activity-plan' href='" + $encodedActivityPlanName + "'>Download Activity Plan</a>`n"
     }
   $downloadLinks += "        <a class='btn btn-primary' href='analysis/index.html'>View Analysis &amp; Remediation</a>`n"
     $downloadLinks += "    </div>`n"
@@ -3429,9 +3724,31 @@ if ($Html -or $FullHtmlExport) {
         }
         Write-Host "Generated $domainCount domain reports in: $($outputStructure.DomainsPath)" -ForegroundColor Green
         
+        # Generate activity plan if requested (before index page so we can include the button)
+        $activityPlanFileName = $null
+        if ($ActivityPlan -and $allResults.Count -gt 0) {
+            Write-Host "`n============================================================" -ForegroundColor Cyan
+            Write-Host "  Generating Activity Plan" -ForegroundColor Yellow
+            Write-Host "============================================================" -ForegroundColor Cyan
+            
+            try {
+                $rulesPath = Join-Path $PSScriptRoot 'schema/remediation-rules.json'
+                $planPath = New-ActivityPlanFromResults -AllResults $allResults -RulesPath $rulesPath -OutputPath $outputStructure.RootPath
+                
+                # Use just the timestamped filename for the button
+                if ($planPath -and (Test-Path $planPath)) {
+                    $activityPlanFileName = Split-Path $planPath -Leaf
+                }
+            } catch {
+                Write-Host "  [ERROR] Failed to generate activity plan: $_" -ForegroundColor Red
+                Write-Host "         $($_.ScriptStackTrace)" -ForegroundColor Gray
+            }
+        }
+        
         # Generate index page
         Write-IndexPage -RootPath $outputStructure.RootPath -AllResults $allResults `
-                        -CsvFileName $csvFileName -JsonFileName $jsonFileName
+                        -CsvFileName $csvFileName -JsonFileName $jsonFileName `
+                        -ActivityPlanFileName $activityPlanFileName
 
         # ChatGPT Analysis (if requested) - run exactly once here
         if ($ChatGPT -and -not $script:__ChatGptRunCompleted) {

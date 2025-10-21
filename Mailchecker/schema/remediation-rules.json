@@ -1,0 +1,153 @@
+{
+  "rules": [
+    {
+      "control": "DNS",
+      "condition": "domain_exists == false",
+      "phase": "P0",
+      "activity_template": "Fix DNS SERVFAIL errors",
+      "business_impact": "Critical prerequisite for all email security validation",
+      "estimated_days": 3,
+      "category": "DNS Infrastructure"
+    },
+    {
+      "control": "SPF",
+      "condition": "spf.status == 'FAIL' && spf.present == false",
+      "phase": "P0",
+      "activity_template": "Deploy SPF record",
+      "business_impact": "Validates authorized email senders and prevents spoofing",
+      "estimated_days": 7,
+      "category": "SPF"
+    },
+    {
+      "control": "SPF",
+      "condition": "spf.status == 'FAIL' && spf.reason =~ 'lookup'",
+      "phase": "P0",
+      "activity_template": "Fix SPF record - exceeds 10 DNS lookups (RFC violation)",
+      "business_impact": "SPF exceeding 10 lookups is ignored by receivers, allowing email spoofing",
+      "estimated_days": 7,
+      "category": "SPF"
+    },
+    {
+      "control": "SPF",
+      "condition": "spf.status == 'WARN' && spf.healthy == false && spf.reason =~ 'lookup'",
+      "phase": "P1",
+      "activity_template": "Optimize SPF record to reduce DNS lookups (currently 9-10)",
+      "business_impact": "SPF at limit - any change will break validation",
+      "estimated_days": 14,
+      "category": "SPF"
+    },
+    {
+      "control": "SPF",
+      "condition": "spf.status == 'WARN' && spf.present == true && spf.healthy == true",
+      "phase": "P1",
+      "activity_template": "Harden SPF to -all after validating legitimate senders",
+      "business_impact": "Enforces strict sender validation",
+      "estimated_days": 14,
+      "category": "SPF",
+      "depends_on_activity": "{domain}-P0-SPF"
+    },
+    {
+      "control": "DMARC",
+      "condition": "dmarc.status == 'FAIL' && dmarc.present == false",
+      "phase": "P0",
+      "activity_template": "Deploy DMARC p=none with rua/ruf reporting",
+      "business_impact": "Enable visibility into email authentication failures",
+      "estimated_days": 7,
+      "category": "DMARC",
+      "follow_up_activities": [
+        {
+          "phase": "P1",
+          "activity_template": "Progress DMARC from p=none to p=quarantine",
+          "business_impact": "Increase protection against email spoofing",
+          "estimated_days": 14,
+          "depends_on_activity": "{domain}-P0-DMARC"
+        },
+        {
+          "phase": "P1",
+          "activity_template": "Progress DMARC from p=quarantine to p=reject",
+          "business_impact": "Full enforcement against email spoofing",
+          "estimated_days": 14,
+          "depends_on_activity": "{domain}-P1-DMARC"
+        }
+      ]
+    },
+    {
+      "control": "DMARC",
+      "condition": "dmarc.status == 'WARN' && dmarc.reason =~ 'p=none'",
+      "phase": "P1",
+      "activity_template": "Progress DMARC from p=none to p=quarantine",
+      "business_impact": "Increase protection against email spoofing",
+      "estimated_days": 14,
+      "category": "DMARC",
+      "depends_on_activity": "{domain}-P0-DMARC"
+    },
+    {
+      "control": "DMARC",
+      "condition": "dmarc.status == 'WARN' && dmarc.reason =~ 'p=quarantine'",
+      "phase": "P1",
+      "activity_template": "Progress DMARC from p=quarantine to p=reject",
+      "business_impact": "Full enforcement against email spoofing",
+      "estimated_days": 14,
+      "category": "DMARC",
+      "depends_on_activity": "{domain}-P0-SPF"
+    },
+    {
+      "control": "DMARC",
+      "condition": "dmarc.status == 'WARN' && dmarc.reason =~ 'rua=missing'",
+      "phase": "P0",
+      "activity_template": "Add rua/ruf reporting addresses to DMARC",
+      "business_impact": "Enable monitoring of authentication failures",
+      "estimated_days": 3,
+      "category": "DMARC"
+    },
+    {
+      "control": "DKIM",
+      "condition": "dkim.status == 'FAIL' && dkim.valid_selector == false",
+      "phase": "P1",
+      "activity_template": "Deploy DKIM selectors",
+      "business_impact": "Enables cryptographic email signing and authenticity verification",
+      "estimated_days": 14,
+      "category": "DKIM",
+      "depends_on_activity": "{domain}-P0-SPF"
+    },
+    {
+      "control": "TLS-RPT",
+      "condition": "tls_rpt.status == 'WARN' && tls_rpt.present == false && has_mx == true",
+      "phase": "P0",
+      "activity_template": "Deploy TLS-RPT record and configure monitoring",
+      "business_impact": "Provides visibility into transport security failures",
+      "estimated_days": 3,
+      "category": "TLS-RPT"
+    },
+    {
+      "control": "MTA-STS",
+      "condition": "mta_sts.status == 'FAIL' && has_mx == true",
+      "phase": "P0",
+      "activity_template": "Deploy MTA-STS mode=testing",
+      "business_impact": "Monitor encrypted email transport",
+      "estimated_days": 7,
+      "category": "MTA-STS",
+      "depends_on_activity": "{domain}-P0-TLS-RPT",
+      "follow_up_activities": [
+        {
+          "phase": "P1",
+          "activity_template": "Transition MTA-STS from mode=testing to mode=enforce",
+          "business_impact": "Require encrypted email transport",
+          "estimated_days": 14,
+          "depends_on_activity": "{domain}-P0-MTA-STS"
+        }
+      ]
+    },
+    {
+      "control": "MTA-STS",
+      "condition": "mta_sts.status == 'WARN' && mta_sts.enforced == false && has_mx == true",
+      "phase": "P1",
+      "activity_template": "Transition MTA-STS from mode=testing to mode=enforce",
+      "business_impact": "Require encrypted email transport",
+      "estimated_days": 14,
+      "category": "MTA-STS",
+      "depends_on_activity": "{domain}-P0-MTA-STS"
+    }
+  ]
+}
+

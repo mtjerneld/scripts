@@ -182,6 +182,79 @@ output/domains-20251008-142315/
 - Individual check badges (SPF, DKIM, MTA-STS, DMARC, TLS-RPT)
 - Concise issues (only actual problems, line-separated)
 
+### Activity Plan Generation
+
+Generate a detailed project plan based on actual scan results:
+
+```powershell
+# Generate activity plan from scan
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -ActivityPlan
+
+# With AI analysis and activity plan
+.\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -ChatGPT -ActivityPlan
+```
+
+**Output CSV Columns:**
+- `ActivityID`: Unique identifier (e.g., `ACT-domain.com-P0-DMARC-001`)
+- `Phase`: P0 (Immediate), P1 (High)
+- `Category`: DMARC, SPF, DKIM, MTA-STS, TLS-RPT, DNS Infrastructure
+- `Domain`: Specific domain name
+- `ActivityDescription`: Detailed action to take
+- `BusinessImpact`: Why this matters for the organization
+- `EstimatedDays`: Time estimate for completion
+- `StartDate`: Today's date (default)
+- `EndDate`: Calculated from StartDate + EstimatedDays
+- `DependsOn`: ActivityID of prerequisite task (if any)
+- `Status`: Not Started (default)
+- `Owner`: Empty (fill in manually)
+
+**Features:**
+- One activity row per domain per required action
+- Intelligent dependencies (e.g., DMARC p=quarantine depends on p=none deployment)
+- P0/P1 phasing based on security best practices:
+  - **P0 (Immediate)**: Critical issues (missing SPF/DMARC, >10 SPF lookups, DNS failures)
+  - **P1 (High)**: Enforcement gaps (DMARC p=none→quarantine→reject, 9-10 SPF lookups, missing DKIM)
+- Rule-based generation from `schema/remediation-rules.json`
+- Import-ready for project management tools (Jira, Azure DevOps, MS Project)
+
+**Example output:**
+```csv
+ActivityID,Phase,Category,Domain,ActivityDescription,BusinessImpact,EstimatedDays,StartDate,EndDate,DependsOn,Status,Owner
+ACT-example.com-P0-DMARC-001,P0,DMARC,example.com,Deploy DMARC p=none with rua/ruf reporting for example.com,Enable visibility into email authentication failures,7,2025-10-21,2025-10-28,,Not Started,
+ACT-example.com-P0-MTA-STS-001,P0,MTA-STS,example.com,Deploy MTA-STS mode=testing with TLS-RPT for example.com,Monitor encrypted email transport,7,2025-10-21,2025-10-28,,Not Started,
+ACT-example.com-P1-DMARC-002,P1,DMARC,example.com,Progress DMARC from p=quarantine to p=reject for example.com,Full enforcement against email spoofing,14,2025-10-21,2025-11-04,ACT-example.com-P0-SPF,Not Started,
+```
+
+**Generated files:**
+- `activity-plan-TIMESTAMP.csv`: Activity plan with timestamp
+- Download button automatically appears on index page when activity plan is generated
+
+**Wrike Integration:**
+
+Convert activity plan to Wrike import format:
+
+```powershell
+# Convert activity plan to Wrike format (auto-creates activity-plan-TIMESTAMP-wrike.csv)
+.\Convert-ActivityPlanToWrike.ps1 -InputCsv output\project-name\activity-plan-20251021-191931.csv
+# → Creates: activity-plan-20251021-191931-wrike.csv
+
+# With custom output path
+.\Convert-ActivityPlanToWrike.ps1 -InputCsv .\activity-plan.csv -OutputCsv .\custom-wrike.csv
+```
+
+**IMPORTANT:** Wrike requires XLSX format for import:
+1. Open the generated CSV file in Excel
+2. File → Save As → Excel Workbook (.xlsx)
+3. Import the XLSX file to Wrike (not the CSV)
+
+**Features:**
+- Creates hierarchical folder structure per domain (/domain/P0/, /domain/P1/)
+- Maps dependencies to Wrike Key+FS format (e.g., "5FS" = Finish-to-Start)
+- P0 activities = High priority, P1 = Normal priority
+- Includes category tags in description ([DMARC], [SPF], etc.)
+- Semicolon-separated format without unnecessary quotes (Wrike-compliant)
+- UTF-8 encoding for international domain names
+
 ### Parameters
 
 | Parameter | Type | Description | Default |
@@ -199,6 +272,7 @@ output/domains-20251008-142315/
 | `-UploadToAzure` | Switch | Upload report to Azure Blob Storage (requires `-FullHtmlExport`) | - |
 | `-AzureRunId` | String | Custom Run ID for Azure upload | Auto-generated: `yyyyMMdd-HHmmss-random6` |
 | `-EnvFile` | String | Path to .env file for configuration | `.env` |
+| `-ActivityPlan` | Switch | Generate detailed activity plan CSV from scan results | - |
 | `-Help` | Switch | Show concise help information and exit | - |
 
 ## Output

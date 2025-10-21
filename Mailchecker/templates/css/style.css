@@ -497,12 +497,16 @@ a:hover {
     text-decoration: none;
 }
 
-.action-buttons .btn-download:nth-of-type(1)::before {
+.action-buttons .btn-download:nth-of-type(1):not(.btn-activity-plan)::before {
     content: '📊 ';
 }
 
-.action-buttons .btn-download:nth-of-type(2)::before {
+.action-buttons .btn-download:nth-of-type(2):not(.btn-activity-plan)::before {
     content: '📄 ';
+}
+
+.action-buttons .btn-activity-plan::before {
+    content: '📋 ';
 }
 
 .action-buttons .btn-primary::before {
