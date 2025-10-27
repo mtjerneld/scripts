@@ -64,7 +64,10 @@ param(
   [switch]$ChatGPTHello,
 
   [Parameter(Mandatory=$false)]
-  [switch]$ActivityPlan
+  [switch]$ActivityPlan,
+
+  [Parameter(Mandatory=$false)]
+  [switch]$All
 )
 
 # Ensure modern TLS and avoid 100-Continue delays for outbound HTTPS calls
@@ -98,6 +101,8 @@ OUTPUT OPTIONS
     -OutputPath <path>       Output directory (default: output/)
     -OpenReport              Auto-open report in browser (requires -FullHtmlExport)
     -ChatGPT                 Generate AI analysis with remediation plan (requires -FullHtmlExport and OPENAI_API_KEY in .env)
+    -ActivityPlan            Generate activity plan CSV for remediation
+    -All                     [SHORTCUT] Enable all features: FullHtmlExport, ChatGPT, ActivityPlan, UploadToAzure
     
 AZURE CLOUD UPLOAD
     -UploadToAzure          Upload report to Azure Blob Storage (requires -FullHtmlExport, works for single domain or bulk)
@@ -122,6 +127,10 @@ QUICK EXAMPLES
   Azure Upload:
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure
     .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -UploadToAzure -AzureRunId "2025-audit"
+  
+  All-In-One (Full Report + AI + Activity Plan + Upload):
+    .\mailchecker.ps1 -BulkFile domains.txt -All
+    .\mailchecker.ps1 -Domain example.com -All
 
 DEFAULT OUTPUT STRUCTURE (output/domains-20251008-142315/)
     index.html              Main summary with links
@@ -614,6 +623,15 @@ function Invoke-AzureUpload {
 # ============================================================================
 # End Azure Upload Functions
 # ============================================================================
+
+# Handle -All switch (enables all features)
+if ($All) {
+    $FullHtmlExport = $true
+    $ChatGPT = $true
+    $ActivityPlan = $true
+    $UploadToAzure = $true
+    Write-Host "`n[All] mode enabled: FullHtmlExport, ChatGPT, ActivityPlan, UploadToAzure" -ForegroundColor Cyan
+}
 
 # Validate input parameters
 if ($Domain -and $BulkFile) {
