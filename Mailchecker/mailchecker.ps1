@@ -205,6 +205,12 @@ function Import-EnvFile {
             # Remove quotes if present (double or single)
             $value = $value -replace '^"', '' -replace "^'", '' -replace '"$', '' -replace "'$", ''
             
+            # Special handling for AZURE_STORAGE_SAS: reject invalid values
+            if ($key -eq 'AZURE_STORAGE_SAS' -and $value.Contains('System.Object')) {
+                Write-Host "  [WARN] Ignoring invalid AZURE_STORAGE_SAS from .env file" -ForegroundColor Yellow
+                return
+            }
+            
             # Set environment variable
             Set-Item -Path "env:$key" -Value $value
             Write-Verbose "Set env:$key"
@@ -259,6 +265,61 @@ function Test-AzCopyAvailable {
     }
     Write-Host "AzCopy not found." -ForegroundColor Yellow
     return $false
+}
+
+function New-AzureStorageContainerSasToken {
+    param(
+        [string]$AccountName,
+        [string]$AccountKey,
+        [string]$ContainerName,
+        [DateTime]$StartTime,
+        [DateTime]$ExpiryTime,
+        [string]$Permissions = 'racwdl'
+    )
+    
+    try {
+        # Build string to sign
+        $signedPermissions = $Permissions
+        $signedStart = $StartTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $signedExpiry = $ExpiryTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $canonicalizedResource = "/blob/$AccountName/$ContainerName"
+        $signedVersion = '2021-06-08'
+        
+        # String to sign format for container SAS (version 2021-06-08)
+        $stringToSign = @(
+            $signedPermissions,
+            $signedStart,
+            $signedExpiry,
+            $canonicalizedResource,
+            '',  # signedIdentifier
+            '',  # signedIP
+            'https',  # signedProtocol
+            $signedVersion,
+            'c',  # signedResource (c = container)
+            '',  # signedSnapshotTime
+            '',  # signedEncryptionScope
+            '',  # rscc (Cache-Control)
+            '',  # rscd (Content-Disposition)
+            '',  # rsce (Content-Encoding)
+            '',  # rscl (Content-Language)
+            ''   # rsct (Content-Type)
+        ) -join "`n"
+        
+        # Compute HMAC-SHA256 signature
+        $keyBytes = [Convert]::FromBase64String($AccountKey)
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = $keyBytes
+        $signatureBytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($stringToSign))
+        $signature = [Convert]::ToBase64String($signatureBytes)
+        
+        # Build SAS token
+        $sasToken = "sv=$signedVersion&sr=c&sp=$signedPermissions&st=$([Uri]::EscapeDataString($signedStart))&se=$([Uri]::EscapeDataString($signedExpiry))&spr=https&sig=$([Uri]::EscapeDataString($signature))"
+        
+        return $sasToken
+    } catch {
+        Write-Verbose "SAS generation error: $_"
+        return $null
+    }
 }
 
 function New-AzureRunId {
@@ -343,17 +404,52 @@ function Invoke-AzureUpload {
             $env:AZURE_STORAGE_SAS = $null
         }
     }
+    
+    # Check if existing SAS contains invalid values (like System.Object[])
+    if (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_SAS) -and $env:AZURE_STORAGE_SAS.Contains('System.Object')) {
+        Write-Host "  [WARN] Existing SAS token contains invalid value, clearing..." -ForegroundColor Yellow
+        $env:AZURE_STORAGE_SAS = $null
+    }
 
-    # If no SAS is provided but an account key exists and Azure CLI is available,
-    # generate a short-lived SAS for $web to avoid AAD/RBAC pitfalls
+    # If no SAS is provided but an account key exists, generate a short-lived SAS for $web
     if ([string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_SAS) -and -not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_KEY)) {
-        $azCli = Get-Command az -ErrorAction SilentlyContinue
-        if ($azCli) {
-            try {
-                Write-Host "  Generating temporary SAS for $web via Azure CLI..." -ForegroundColor Yellow
-                $nowUtc = (Get-Date).ToUniversalTime()
-                $startUtc = $nowUtc.AddMinutes(-10).ToString('yyyy-MM-ddTHH:mm:ssZ')
-                $expiryUtc = $nowUtc.AddHours(8).ToString('yyyy-MM-ddTHH:mm:ssZ')
+        try {
+            Write-Host "  Generating temporary SAS for $web via PowerShell..." -ForegroundColor Yellow
+            
+            # Generate SAS token using PowerShell Azure Storage libraries
+            $accountName = $env:AZURE_STORAGE_ACCOUNT
+            $accountKey = ($env:AZURE_STORAGE_KEY).Trim()
+            $containerName = '$web'
+            
+            # Calculate expiry time (8 hours from now)
+            $nowUtc = (Get-Date).ToUniversalTime()
+            $expiryUtc = $nowUtc.AddHours(8)
+            
+            # Generate SAS token using Azure Storage REST API approach
+            $startUtc = $nowUtc.AddMinutes(-10)
+            $generatedSas = New-AzureStorageContainerSasToken -AccountName $accountName -AccountKey $accountKey -ContainerName $containerName -StartTime $startUtc -ExpiryTime $expiryUtc -Permissions 'racwdl'
+            
+            Write-Verbose "Generated SAS (preview): $($generatedSas.Substring(0, [Math]::Min(50, $generatedSas.Length)))..."
+            
+            if (-not [string]::IsNullOrWhiteSpace($generatedSas) -and $generatedSas.Length -gt 10) {
+                $env:AZURE_STORAGE_SAS = $generatedSas
+                $tail = if ($generatedSas.Length -gt 6) { $generatedSas.Substring($generatedSas.Length - 6) } else { $generatedSas }
+                Write-Host "  [OK] SAS generated (****$tail)" -ForegroundColor Green
+            } else {
+                Write-Host "  [WARN] Failed to generate SAS via PowerShell (returned: $generatedSas)" -ForegroundColor Yellow
+                throw "SAS generation returned invalid value"
+            }
+        } catch {
+            Write-Host "  [WARN] PowerShell SAS generation failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "  [INFO] Will attempt to use Azure CLI as fallback..." -ForegroundColor Yellow
+            
+            # Fallback to Azure CLI if PowerShell method fails
+            $azCli = Get-Command az -ErrorAction SilentlyContinue
+            if ($azCli) {
+                try {
+                    $nowUtc = (Get-Date).ToUniversalTime()
+                    $startUtc = $nowUtc.AddMinutes(-10).ToString('yyyy-MM-ddTHH:mm:ssZ')
+                    $expiryUtc = $nowUtc.AddHours(8).ToString('yyyy-MM-ddTHH:mm:ssZ')
                 $azArgs = @(
                     'storage','container','generate-sas',
                     '--account-name', $env:AZURE_STORAGE_ACCOUNT,
@@ -365,35 +461,45 @@ function Invoke-AzureUpload {
                     '--https-only',
                     '--output', 'tsv'
                 )
-                $generatedSas = (& az @azArgs 2>&1).ToString().Trim()
-                if (-not [string]::IsNullOrWhiteSpace($generatedSas)) {
-                    $env:AZURE_STORAGE_SAS = $generatedSas
-                    $tail = if ($generatedSas.Length -gt 6) { $generatedSas.Substring($generatedSas.Length - 6) } else { $generatedSas }
-                    Write-Host "  [OK] SAS generated (****$tail)" -ForegroundColor Green
-                } else {
-                    Write-Host "  [WARN] Failed to generate SAS via Azure CLI; proceeding without SAS" -ForegroundColor Yellow
+                $azOutput = & az @azArgs 2>&1
+                $generatedSas = ($azOutput | Out-String).Trim()
+                Write-Verbose "Azure CLI output: $generatedSas"
+                    if (-not [string]::IsNullOrWhiteSpace($generatedSas) -and $generatedSas -notmatch 'Traceback|ImportError|DLL load failed|system\.object' -and -not [string]$generatedSas.Contains('System.Object')) {
+                        $env:AZURE_STORAGE_SAS = $generatedSas
+                        $tail = if ($generatedSas.Length -gt 6) { $generatedSas.Substring($generatedSas.Length - 6) } else { $generatedSas }
+                        Write-Host "  [OK] SAS generated via Azure CLI fallback (****$tail)" -ForegroundColor Green
+                    } else {
+                        Write-Host "  [ERROR] Azure CLI SAS generation failed or returned invalid value" -ForegroundColor Red
+                        Write-Host "  [ERROR] Output: $generatedSas" -ForegroundColor Red
+                    }
+                } catch {
+                    Write-Host "  [ERROR] Azure CLI fallback also failed: $($_.Exception.Message)" -ForegroundColor Red
                 }
-            } catch {
-                Write-Host "  [WARN] SAS generation failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            } else {
+                Write-Host "  [ERROR] Azure CLI not available and PowerShell method failed" -ForegroundColor Red
             }
         }
     }
 
-    # Build destination URL. Prefer SAS if provided, else Entra ID login/session.
+    # Build destination URL. Prefer SAS if provided, else use base URL for key auth or Entra ID
     $baseDest = 'https://{0}.blob.core.windows.net/$web/reports/{1}/' -f $env:AZURE_STORAGE_ACCOUNT, $RunId
     if (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_SAS)) {
         # Ensure leading '?' on SAS
         $sas = $env:AZURE_STORAGE_SAS
         if ($sas -and -not $sas.StartsWith('?')) { $sas = '?' + $sas }
         $dest = $baseDest + $sas
+        Write-Host "  Destination: $baseDest****" -ForegroundColor Gray
+        Write-Verbose "  Full destination URL: $dest"
     } else {
         $dest = $baseDest
+        Write-Host "  Destination: $dest" -ForegroundColor Gray
+        Write-Host "  [WARN] No SAS token available - upload may fail" -ForegroundColor Yellow
     }
     
     Write-Host "`nUploading to Azure Blob Storage..." -ForegroundColor Yellow
     
     # Auth selection:
-    # 1) SAS present -> use SAS (no login)
+    # 1) SAS present -> use SAS (no login, no env vars)
     # 2) Account Key present -> set AZCOPY_ACCOUNT_* env (force key auth)
     # 3) Else -> Entra ID via AZCLI if available
     $prevAutoLoginType = $env:AZCOPY_AUTO_LOGIN_TYPE
@@ -403,9 +509,16 @@ function Invoke-AzureUpload {
     $didSetAccountCreds = $false
 
     if (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_SAS)) {
-        # SAS auth; nothing to set
+        # SAS auth; clear any existing auth env vars to avoid conflicts
+        Write-Host "  Using SAS token authentication" -ForegroundColor Green
+        if ($env:AZCOPY_AUTO_LOGIN_TYPE) { Remove-Item Env:AZCOPY_AUTO_LOGIN_TYPE -ErrorAction SilentlyContinue }
+        if ($env:AZCOPY_ACCOUNT_NAME) { Remove-Item Env:AZCOPY_ACCOUNT_NAME -ErrorAction SilentlyContinue }
+        if ($env:AZCOPY_ACCOUNT_KEY) { Remove-Item Env:AZCOPY_ACCOUNT_KEY -ErrorAction SilentlyContinue }
+        $didSetAutoLogin = $true
+        $didSetAccountCreds = $true
     } elseif (-not [string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_KEY)) {
         # Force account key auth so AzCopy doesn't try AAD
+        Write-Host "  Using storage key authentication" -ForegroundColor Green
         $env:AZCOPY_ACCOUNT_NAME = $env:AZURE_STORAGE_ACCOUNT
         $env:AZCOPY_ACCOUNT_KEY  = ($env:AZURE_STORAGE_KEY).Trim()
         # Disable auto-login by unsetting the variable if present
@@ -414,6 +527,7 @@ function Invoke-AzureUpload {
         $didSetAutoLogin = $true
     } else {
         # Try Entra ID via Azure CLI tokens
+        Write-Host "  Attempting Microsoft Entra ID authentication" -ForegroundColor Yellow
         if (-not [string]::IsNullOrWhiteSpace((Get-Command az -ErrorAction SilentlyContinue))) {
             $env:AZCOPY_AUTO_LOGIN_TYPE = 'AZCLI'
             $didSetAutoLogin = $true
