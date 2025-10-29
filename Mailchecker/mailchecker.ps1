@@ -860,7 +860,7 @@ function Get-SpfLookups($spf, $checked) {
 }
 
 # Enhanced version that returns detailed lookup breakdown per include
-function Get-SpfLookupsDetailed($spf, $checked, $depth = 0) {
+function Get-SpfLookupsDetailed($spf, $checked, $depth = 0, $path = @()) {
   if ($checked -contains $spf) { 
     return @{ Total = 0; Details = @() }
   }
@@ -893,7 +893,8 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0) {
     $incDom = $inc.Groups[1].Value
     $incSpf = Resolve-SPF $incDom
     if ($incSpf) {
-      $incResult = Get-SpfLookupsDetailed $incSpf $checked ($depth + 1)
+      $newPath = @($path + "include:$incDom")
+      $incResult = Get-SpfLookupsDetailed $incSpf $checked ($depth + 1) $newPath
       $incTotal = 1 + $incResult.Total  # 1 for the include itself + recursive lookups
       $totalCount += $incResult.Total
       
@@ -910,6 +911,8 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0) {
         Include = $incDom
         Lookups = $incTotal
         Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
       }
       
       # Add nested details
@@ -922,7 +925,8 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0) {
     $redDom = $red.Groups[1].Value
     $redSpf = Resolve-SPF $redDom
     if ($redSpf) {
-      $redResult = Get-SpfLookupsDetailed $redSpf $checked ($depth + 1)
+      $newPath = @($path + "redirect=$redDom")
+      $redResult = Get-SpfLookupsDetailed $redSpf $checked ($depth + 1) $newPath
       $redTotal = 1 + $redResult.Total
       $totalCount += $redResult.Total
       
@@ -930,6 +934,8 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0) {
         Include = "redirect=$redDom"
         Lookups = $redTotal
         Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
       }
       
       $details += $redResult.Details
@@ -1043,6 +1049,46 @@ function Test-SPFRecords {
             
             if ($directLookups + $topLevelIncludes.Count -gt 0) {
                 $details += "  TOTAL: $lookupCount lookup(s)"
+            }
+
+            # Heuristic: MX mechanism redundancy for Microsoft 365
+            # If record uses 'mx' AND includes spf.protection.outlook.com AND all MX hosts are under mail.protection.outlook.com
+            # then mx is likely redundant (Microsoft guidance: use include, not mx)
+            try {
+                if ($rec -match '(?i)(?<=\s)mx(?=\s|:|$)' -and $rec -match '(?i)include:spf\.protection\.outlook\.com') {
+                    $mxAnswers = @(Resolve-DnsName -Name $Domain -Type MX -Server 8.8.8.8 -ErrorAction Stop)
+                    if ($mxAnswers.Count -gt 0) {
+                        $mxHosts = @($mxAnswers | ForEach-Object { $_.NameExchange.ToLower() })
+                        $allMs365Mx = ($mxHosts | Where-Object { $_ -like '*.mail.protection.outlook.com' }).Count -eq $mxHosts.Count
+                        if ($allMs365Mx) {
+                            $warnings += "Warning: SPF uses 'mx' but all MX are Microsoft 365 (*.mail.protection.outlook.com) and spf.protection.outlook.com is included - 'mx' is likely redundant."
+                        }
+                    }
+                }
+            } catch { }
+
+            # Detect duplicate include mechanisms within the same SPF record
+            $includeMatches = [regex]::Matches($rec, '(?i)\binclude:([^\s]+)')
+            if ($includeMatches.Count -gt 0) {
+                $includeTargets = @($includeMatches | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                $duplicateIncludes = $includeTargets | Group-Object | Where-Object { $_.Count -gt 1 }
+                foreach ($dup in $duplicateIncludes) {
+                    $warnings += "Warning: Duplicate SPF include '$($dup.Name)' appears $($dup.Count) times (remove duplicates to reduce lookups)"
+                }
+            }
+
+            # Detect duplicate include/redirect targets across the entire include/redirect graph
+            if ($lookupResult -and $lookupResult.Details) {
+                $allTargets = @($lookupResult.Details | ForEach-Object { $_.Include.ToLower() })
+                $dupChainTargets = $allTargets | Group-Object | Where-Object { $_.Count -gt 1 }
+                foreach ($dup in $dupChainTargets) {
+                    $warnings += "Warning: Duplicate SPF include/redirect target '$($dup.Name)' reached $($dup.Count) times across chain"
+                    # Add path breakdowns for overlapping routes
+                    $paths = @($lookupResult.Details | Where-Object { $_.Include.ToLower() -eq $dup.Name } | ForEach-Object { $_.PathStr } | Select-Object -Unique)
+                    foreach ($p in $paths) {
+                        if ($p) { $warnings += "  Overlap path: $p" }
+                    }
+                }
             }
             
             if ($lookupCount -gt $maxLookups) { $maxLookups = $lookupCount }
@@ -3099,6 +3145,14 @@ function Get-DomainReportHtml {
       # Remove duplicate section prefix from reason
       $cleanReason = $result.Data.Reason -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT):\s*', ''
       $issues += "$($result.Section): $cleanReason"
+      # Also include individual warnings for visibility in Issues Found
+      if ($result.Warnings -and $result.Warnings.Count -gt 0) {
+        foreach ($w in $result.Warnings) {
+          if (-not [string]::IsNullOrWhiteSpace($w)) {
+            $issues += "$($result.Section): " + ($w -replace '^Warning:\s*', '')
+          }
+        }
+      }
       }
     }
   if ($issues.Count -gt 0) {
@@ -3374,6 +3428,15 @@ function Write-IndexPage {
     $issues = @()
     if ($result.SPFResult.Status -eq 'FAIL' -or $result.SPFResult.Status -eq 'WARN') {
       $issues += "SPF: " + ($result.SPFResult.Data.Reason -replace '^SPF: ', '')
+      # Include top SPF warnings (up to 3) for summary visibility
+      if ($result.SPFResult.Warnings -and $result.SPFResult.Warnings.Count -gt 0) {
+        $topSpfWarns = @($result.SPFResult.Warnings | Select-Object -First 3)
+        foreach ($w in $topSpfWarns) {
+          if (-not [string]::IsNullOrWhiteSpace($w)) {
+            $issues += "SPF: " + ($w -replace '^Warning:\s*', '')
+          }
+        }
+      }
     }
     if ($result.DKIMResult.Status -eq 'FAIL') {
       $issues += "DKIM: " + ($result.DKIMResult.Data.Reason -replace '^DKIM: ', '')

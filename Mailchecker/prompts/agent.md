@@ -144,6 +144,11 @@ When interpreting:
 - Steps: Deploy permissive → validate senders → harden to -all
 - Ongoing: Monitor lookup counts <10 RFC limit (**P2**)
 
+**When notable_deviations indicate SPF structure issues (evaluate and incorporate where applicable):**
+- If message contains "Duplicate SPF include/redirect target": call out redundant paths in key_findings (last bullet if unique) and add remediation: "Remove duplicate include/redirect entries and consolidate paths to reduce DNS lookups" (P1 if not at limit; P0 if at/over limit).
+- If message contains "SPF uses 'mx' ... spf.protection.outlook.com is included" and all MX are `*.mail.protection.outlook.com`: add remediation: "Remove `mx` mechanism (redundant with Microsoft include) to simplify SPF and reduce lookups" (P1).
+- If SPF lookups near/over limit (9–10) per calculated stats or deviations: add remediation: "Refactor SPF to stay under RFC 10 lookups (collapse includes, remove unused senders, prefer provider redirects)" (P0 if >10, P1 if 9–10).
+
 ## DMARC Rollout (never skip stages)
 - Target: `p=reject` and RUA - **P1 priority**
 - Sequence: p=none + RUA (P0) → analyze → p=quarantine → p=reject (P1)
