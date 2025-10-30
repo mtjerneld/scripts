@@ -35,3 +35,4 @@ output/
 !mailchecker.ps1
 !redirecttester.ps1
 !Convert-ActivityPlanToWrike.ps1
+!statusupdate.ps1
