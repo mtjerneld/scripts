@@ -74,6 +74,25 @@ param(
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 try { [System.Net.ServicePointManager]::Expect100Continue = $false } catch {}
 
+# Set UTF-8 encoding for console output and file operations
+# This ensures proper handling of Swedish characters (ÅÄÖ) and other Unicode characters
+try {
+    # PowerShell 5.1 and earlier: Set console output encoding
+    if ($PSVersionTable.PSVersion.Major -le 5) {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+    }
+    # PowerShell 7+: Use $PSDefaultParameterValues
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $PSDefaultParameterValues['*:Encoding'] = 'utf8'
+    }
+    # Set default encoding for Out-File
+    $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
+    $PSDefaultParameterValues['Get-Content:Encoding'] = 'utf8'
+} catch {
+    Write-Verbose "Could not set UTF-8 encoding: $_"
+}
+
 # Show help if requested
 if ($Help) {
     $helpText = @"
@@ -198,7 +217,7 @@ function Import-EnvFile {
     
     Write-Host "Loading environment from: $EnvFilePath" -ForegroundColor Cyan
     
-    Get-Content $EnvFilePath | ForEach-Object {
+    Get-Content $EnvFilePath -Encoding UTF8 | ForEach-Object {
         $line = $_.Trim()
         
         # Skip empty lines and comments
@@ -252,7 +271,7 @@ function Import-EnvFile {
 function Import-OpenAIEnv {
     param([string]$EnvFilePath)
     if (-not (Test-Path $EnvFilePath)) { return }
-    Get-Content $EnvFilePath | ForEach-Object {
+    Get-Content $EnvFilePath -Encoding UTF8 | ForEach-Object {
         $line = $_.Trim()
         if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
         if ($line -match '^([^=]+)=(.*)$') {
@@ -764,6 +783,10 @@ function Write-AssetsFiles {
 function Test-MXRecords {
     param([string]$Domain)
     
+    # Check if domain contains non-ASCII characters (IDNA)
+    $isIdn = Test-IdnDomain -Domain $Domain
+    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
+    
     $mx = Resolve-MX $Domain
     $details = @()
     $infoMessages = @()
@@ -773,12 +796,89 @@ function Test-MXRecords {
     $domainExists = $true
     $nsRecords = @()
     
+    # Add IDNA information if domain contains non-ASCII characters
+    if ($isIdn) {
+        $details += "Domain contains non-ASCII characters (IDNA):"
+        $details += "  Unicode form: $Domain"
+        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
+        $details += ""
+    }
+    
+    # Initialize valid and invalid MX arrays
+    $validMx = @()
+    $invalidMx = @()
+    
     if (@($mx).Count -gt 0) {
-        $details = $mx | Sort-Object Preference,NameExchange | 
+        # Validate MX records - check for invalid entries (root, empty, or invalid hostnames)
+        
+        foreach ($mxRec in $mx) {
+            $mxHost = $mxRec.NameExchange
+            $mxPref = $mxRec.Preference
+            
+            # Check if MX record is invalid
+            $isInvalid = $false
+            $invalidReason = ""
+            
+            if ([string]::IsNullOrWhiteSpace($mxHost)) {
+                $isInvalid = $true
+                $invalidReason = "empty hostname"
+            } elseif ($mxHost -match '^\.$|^\(root\)$|^\s*$') {
+                $isInvalid = $true
+                $invalidReason = "points to root domain (invalid)"
+            } elseif ($mxHost -match '^\.') {
+                $isInvalid = $true
+                $invalidReason = "starts with dot (invalid)"
+            } elseif ($mxHost.Length -gt 253) {
+                $isInvalid = $true
+                $invalidReason = "hostname too long (>253 characters)"
+            } elseif ($mxHost -notmatch '^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\.?$') {
+                # Basic hostname validation (allows for IDNA domains which will be in Punycode)
+                # This regex allows valid hostnames but we'll be more lenient for IDNA
+                if ($mxHost -notmatch '^xn--') {
+                    # Not a Punycode domain, should match standard hostname pattern
+                    $isInvalid = $true
+                    $invalidReason = "invalid hostname format"
+                }
+            }
+            
+            if ($isInvalid) {
+                $invalidMx += [PSCustomObject]@{
+                    Preference = $mxPref
+                    NameExchange = $mxHost
+                    Reason = $invalidReason
+                }
+            } else {
+                $validMx += $mxRec
+            }
+        }
+        
+        # Add details for all MX records (valid and invalid)
+        $details += $mx | Sort-Object Preference,NameExchange | 
                    ForEach-Object { "$($_.Preference) $($_.NameExchange)" }
-        $status = 'PASS'
-        $mxList = ($mx | Sort-Object Preference,NameExchange | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) -join ', '
-        $reason = "MX: $mxList"
+        
+        # Add warnings for invalid MX records
+        if ($invalidMx.Count -gt 0) {
+            foreach ($invalid in $invalidMx) {
+                $warnings += "Warning: Invalid MX record (preference=$($invalid.Preference), host=$($invalid.NameExchange)): $($invalid.Reason)"
+            }
+            $status = 'FAIL'
+            $reason = "MX: contains invalid records"
+        } else {
+            $status = 'PASS'
+            $mxList = ($validMx | Sort-Object Preference,NameExchange | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) -join ', '
+            $reason = "MX: $mxList"
+        }
+        
+        # If we have both valid and invalid MX records, update reason to reflect this
+        if ($validMx.Count -gt 0 -and $invalidMx.Count -gt 0) {
+            $validMxList = ($validMx | Sort-Object Preference,NameExchange | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) -join ', '
+            $reason = "MX: $validMxList (and $($invalidMx.Count) invalid record(s))"
+        } elseif ($validMx.Count -eq 0 -and $invalidMx.Count -gt 0) {
+            # All MX records are invalid
+            $status = 'FAIL'
+            $reason = "MX: all records invalid"
+            $warnings += "Critical: All MX records are invalid - domain cannot receive email"
+        }
     } else {
         # No MX records - check if domain exists by looking for NS records
         $nsResult = Resolve-NS $Domain
@@ -827,8 +927,14 @@ function Test-MXRecords {
         }
     }
     
+    # Store both valid and invalid MX records in data
+    $validMxRecords = if ($validMx) { $validMx } else { @() }
+    $invalidMxRecords = if ($invalidMx) { $invalidMx } else { @() }
+    
     return New-CheckResult -Section 'MX Records' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
-        MXRecords = $mx
+        MXRecords = $mx  # All MX records (for backward compatibility)
+        ValidMXRecords = $validMxRecords  # Only valid MX records
+        InvalidMXRecords = $invalidMxRecords  # Invalid MX records with reasons
         NSRecords = $nsRecords
         DomainExists = $domainExists
         Reason = $reason
@@ -963,6 +1069,10 @@ function Test-SPFRecords {
         }
     }
     
+    # Check if domain contains non-ASCII characters (IDNA)
+    $isIdn = Test-IdnDomain -Domain $Domain
+    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
+    
     $spfRecs = Resolve-SPF $Domain
     $details = @()
     $warnings = @()
@@ -970,6 +1080,14 @@ function Test-SPFRecords {
     $status = 'FAIL'
     $spfHealthy = $true
     $reason = ""
+    
+    # Add IDNA information if domain contains non-ASCII characters
+    if ($isIdn) {
+        $details += "Domain contains non-ASCII characters (IDNA):"
+        $details += "  Unicode form: $Domain"
+        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
+        $details += ""
+    }
     
     if (@($spfRecs).Count -gt 0) {
         # Check for multi-SPF (strict profile: FAIL)
@@ -1182,6 +1300,18 @@ function Test-DKIMRecords {
         return New-CheckResult -Section 'DKIM' -Status 'N/A' -InfoMessages $infoMessages -Data @{ Reason = "DKIM: N/A (no mail flow)" }
     }
     
+    # Check if domain contains non-ASCII characters (IDNA)
+    $isIdn = Test-IdnDomain -Domain $Domain
+    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
+    
+    # Add IDNA information if domain contains non-ASCII characters
+    if ($isIdn) {
+        $details += "Domain contains non-ASCII characters (IDNA):"
+        $details += "  Unicode form: $Domain"
+        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
+        $details += ""
+    }
+    
     # Check DKIM selectors
     foreach($sel in $Selectors){
         $dkimHost = "$sel._domainkey.$Domain"
@@ -1291,6 +1421,18 @@ function Test-MTASts {
         return New-CheckResult -Section 'MTA-STS' -Status 'N/A' -InfoMessages $infoMessages -Data @{ Reason = "N/A: no MX records" }
     }
     
+    # Check if domain contains non-ASCII characters (IDNA)
+    $isIdn = Test-IdnDomain -Domain $Domain
+    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
+    
+    # Add IDNA information if domain contains non-ASCII characters
+    if ($isIdn) {
+        $details += "Domain contains non-ASCII characters (IDNA):"
+        $details += "  Unicode form: $Domain"
+        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
+        $details += ""
+    }
+    
     # MTA-STS logic
     $MtaStsModeTesting = $false
     $MtaStsEnforced = $false
@@ -1326,13 +1468,23 @@ function Test-MTASts {
             }
         }
         
-        # Fetch HTTPS policy
-        $mtaStsUrl = "https://mta-sts.$Domain/.well-known/mta-sts.txt"
+        # Fetch HTTPS policy - convert domain to Punycode for URL
+        $idnDomain = ConvertTo-IdnDomain -Domain $Domain
+        $mtaStsUrl = "https://mta-sts.$idnDomain/.well-known/mta-sts.txt"
         $mtaStsUrlVal = $mtaStsUrl
+        # Also store the Unicode version for display
+        $mtaStsUrlUnicode = "https://mta-sts.$Domain/.well-known/mta-sts.txt"
         $mtaStsBody = Get-HttpText $mtaStsUrl
         
         if ($mtaStsBody) {
-            $details += "Fetched policy from $mtaStsUrl"
+            # Show both Unicode and Punycode URLs if domain contains non-ASCII
+            if (Test-IdnDomain -Domain $Domain) {
+                $details += "Fetched policy from:"
+                $details += "  Unicode URL: $mtaStsUrlUnicode"
+                $details += "  Punycode URL: $mtaStsUrl (used for HTTP request)"
+            } else {
+                $details += "Fetched policy from $mtaStsUrl"
+            }
             $details += $mtaStsBody
             
             # Parse mode from HTTPS policy
@@ -1412,6 +1564,18 @@ function Test-DMARC {
             Enforced = $false
             Reason = "DMARC: N/A (domain does not exist)"
         }
+    }
+
+    # Check if domain contains non-ASCII characters (IDNA)
+    $isIdn = Test-IdnDomain -Domain $Domain
+    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
+    
+    # Add IDNA information if domain contains non-ASCII characters
+    if ($isIdn) {
+        $details += "Domain contains non-ASCII characters (IDNA):"
+        $details += "  Unicode form: $Domain"
+        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
+        $details += ""
     }
 
     $dmarcHost = "_dmarc.$Domain"
@@ -1571,6 +1735,18 @@ function Test-TLSReport {
     if (-not $HasMX) {
         $infoMessages += "Not applicable - domain cannot receive email"
         return New-CheckResult -Section 'SMTP TLS Reporting (TLS-RPT)' -Status 'N/A' -InfoMessages $infoMessages -Data @{ Reason = "N/A: no MX records" }
+    }
+
+    # Check if domain contains non-ASCII characters (IDNA)
+    $isIdn = Test-IdnDomain -Domain $Domain
+    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
+    
+    # Add IDNA information if domain contains non-ASCII characters
+    if ($isIdn) {
+        $details += "Domain contains non-ASCII characters (IDNA):"
+        $details += "  Unicode form: $Domain"
+        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
+        $details += ""
     }
 
     $tlsRptHost = "_smtp._tls.$Domain"
@@ -1776,13 +1952,109 @@ if ($DnsServer) { $Resolvers += $DnsServer }
 $Resolvers += @('8.8.8.8','1.1.1.1')
 $Resolvers = $Resolvers | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique
 
+# ============================================================================
+# IDNA (Internationalized Domain Names) Support for ÅÄÖ and other Unicode
+# ============================================================================
+
+function ConvertTo-IdnDomain {
+    <#
+    .SYNOPSIS
+    Converts a Unicode domain name (e.g., exämple.se) to Punycode (e.g., xn--exmple-5wa.se)
+    for DNS lookups.
+    #>
+    param([string]$Domain)
+    
+    if ([string]::IsNullOrWhiteSpace($Domain)) { return $Domain }
+    
+    try {
+        $idn = New-Object System.Globalization.IdnMapping
+        $punycode = $idn.GetAscii($Domain)
+        return $punycode
+    } catch {
+        # If conversion fails, return original (might already be ASCII)
+        return $Domain
+    }
+}
+
+function ConvertFrom-IdnDomain {
+    <#
+    .SYNOPSIS
+    Converts a Punycode domain name (e.g., xn--exmple-5wa.se) back to Unicode (e.g., exämple.se)
+    for display purposes.
+    #>
+    param([string]$Domain)
+    
+    if ([string]::IsNullOrWhiteSpace($Domain)) { return $Domain }
+    
+    try {
+        $idn = New-Object System.Globalization.IdnMapping
+        $unicode = $idn.GetUnicode($Domain)
+        return $unicode
+    } catch {
+        # If conversion fails, return original
+        return $Domain
+    }
+}
+
+function Test-IdnDomain {
+    <#
+    .SYNOPSIS
+    Checks if a domain contains non-ASCII characters (requires IDNA conversion).
+    #>
+    param([string]$Domain)
+    
+    if ([string]::IsNullOrWhiteSpace($Domain)) { return $false }
+    
+    # Check if domain contains any non-ASCII characters
+    foreach ($char in $Domain.ToCharArray()) {
+        if ([int]$char -gt 127) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function ConvertTo-IdnHostname {
+    <#
+    .SYNOPSIS
+    Converts a hostname (e.g., _dmarc.exämple.se) to Punycode for DNS lookups.
+    Handles both the subdomain prefix and the domain part.
+    #>
+    param([string]$Hostname)
+    
+    if ([string]::IsNullOrWhiteSpace($Hostname)) { return $Hostname }
+    
+    # Split hostname into parts
+    $parts = $Hostname -split '\.'
+    if ($parts.Count -eq 0) { return $Hostname }
+    
+    # Convert each part that might contain Unicode
+    $convertedParts = @()
+    foreach ($part in $parts) {
+        if (Test-IdnDomain -Domain $part) {
+            $convertedParts += ConvertTo-IdnDomain -Domain $part
+        } else {
+            $convertedParts += $part
+        }
+    }
+    
+    return $convertedParts -join '.'
+}
+
+# ============================================================================
+# End IDNA Support
+# ============================================================================
+
 function Resolve-TxtAll {
   param([string]$Name)
+
+  # Convert to Punycode for DNS lookup if needed
+  $idnName = ConvertTo-IdnHostname -Hostname $Name
 
   foreach ($srv in $Resolvers) {
     try {
       if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        $ans = Resolve-DnsName -Name $Name -Type TXT -Server $srv -ErrorAction Stop
+        $ans = Resolve-DnsName -Name $idnName -Type TXT -Server $srv -ErrorAction Stop
         $txtRecs = $ans | Where-Object { $_.Type -eq 'TXT' -and $_.PSObject.Properties['Strings'] }
 
         $strings = @(foreach ($rec in $txtRecs) { ($rec.Strings -join '') })
@@ -1799,7 +2071,7 @@ function Resolve-TxtAll {
       }
       else {
         # Fallback: nslookup - harder to separate multiple records, return as single-item array
-        $out = nslookup -type=txt $Name $srv 2>$null
+        $out = nslookup -type=txt $idnName $srv 2>$null
         $txt = ($out | Select-String -Pattern '"([^"]*)"' -AllMatches).Matches.Value -replace '"',''
         $joined = ($txt -join '')
         if ($joined) { return @($joined) }
@@ -1812,11 +2084,14 @@ function Resolve-TxtAll {
 function Resolve-Txt {
   param([string]$Name)
 
+  # Convert to Punycode for DNS lookup if needed
+  $idnName = ConvertTo-IdnHostname -Hostname $Name
+
   foreach ($srv in $Resolvers) {
     try {
       if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
   # Primary query
-        $ans = Resolve-DnsName -Name $Name -Type TXT -Server $srv -ErrorAction Stop
+        $ans = Resolve-DnsName -Name $idnName -Type TXT -Server $srv -ErrorAction Stop
         $txtRecs = $ans | Where-Object { $_.Type -eq 'TXT' -and $_.PSObject.Properties['Strings'] }
 
         $strings = foreach ($rec in $txtRecs) { ($rec.Strings -join '') }
@@ -1833,7 +2108,7 @@ function Resolve-Txt {
       }
       else {
   # Fallback: nslookup
-        $out = nslookup -type=txt $Name $srv 2>$null
+        $out = nslookup -type=txt $idnName $srv 2>$null
         $txt = ($out | Select-String -Pattern '"([^"]*)"' -AllMatches).Matches.Value -replace '"',''
         $joined = ($txt -join '')
         if ($joined) { return $joined }
@@ -1846,6 +2121,9 @@ function Resolve-Txt {
 function Resolve-NS {
   param([string]$Domain)
 
+  # Convert to Punycode for DNS lookup if needed
+  $idnDomain = ConvertTo-IdnDomain -Domain $Domain
+
   $result = @{
     NSRecords = @()
     Status = 'Unknown'  # 'Success', 'NXDOMAIN', 'SERVFAIL', 'Unknown'
@@ -1855,7 +2133,7 @@ function Resolve-NS {
     try {
       if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
         try {
-          $ans = Resolve-DnsName -Name $Domain -Type NS -Server $srv -ErrorAction Stop
+          $ans = Resolve-DnsName -Name $idnDomain -Type NS -Server $srv -ErrorAction Stop
           $nsRecs = $ans | Where-Object { $_.Type -eq 'NS' } | Select-Object -ExpandProperty NameHost
           if (@($nsRecs).Count -gt 0) { 
             $result.NSRecords = $nsRecs
@@ -1875,7 +2153,7 @@ function Resolve-NS {
       }
       else {
         # Fallback: nslookup
-        $out = nslookup -type=ns $Domain $srv 2>&1 | Out-String
+        $out = nslookup -type=ns $idnDomain $srv 2>&1 | Out-String
         
         # Check for specific error messages
         if ($out -match 'Non-existent domain') {
@@ -1925,10 +2203,13 @@ function Resolve-NS {
 function Resolve-MX {
   param([string]$Domain)
 
+  # Convert to Punycode for DNS lookup if needed
+  $idnDomain = ConvertTo-IdnDomain -Domain $Domain
+
   foreach ($srv in $Resolvers) {
     try {
       if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        $ans = Resolve-DnsName -Name $Domain -Type MX -Server $srv -ErrorAction Stop
+        $ans = Resolve-DnsName -Name $idnDomain -Type MX -Server $srv -ErrorAction Stop
 
         $mxRecs = $ans |
           Where-Object {
@@ -1947,7 +2228,7 @@ function Resolve-MX {
       }
       else {
   # Fallback: nslookup
-        $out = nslookup -type=mx $Domain $srv 2>$null
+        $out = nslookup -type=mx $idnDomain $srv 2>$null
         $lines = $out | Where-Object { $_ -match 'mail exchanger =|preference =' }
         $result = @()
         foreach ($line in $lines) {
@@ -1967,10 +2248,13 @@ function Resolve-MX {
 function Resolve-SPF {
   param([string]$Domain)
 
+  # Convert to Punycode for DNS lookup if needed
+  $idnDomain = ConvertTo-IdnDomain -Domain $Domain
+
   foreach ($srv in $Resolvers) {
     try {
       if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        $ans = Resolve-DnsName -Name $Domain -Type TXT -Server $srv -ErrorAction Stop
+        $ans = Resolve-DnsName -Name $idnDomain -Type TXT -Server $srv -ErrorAction Stop
         $txts = foreach($rec in $ans) {
           if ($rec.PSObject.Properties['Strings']) { ($rec.Strings -join '') }
         }
@@ -1978,7 +2262,7 @@ function Resolve-SPF {
         if ($spf.Count -gt 0) { return $spf }
       } else {
   # Fallback: nslookup (find block near "v=spf1" and join quoted strings)
-        $out = nslookup -type=txt $Domain $srv 2>$null
+        $out = nslookup -type=txt $idnDomain $srv 2>$null
         $hit = $out | Select-String -Pattern 'v=spf1' -Context 0,3 | Select-Object -First 1
         if ($hit) {
           $lines = @($hit.Line) + $hit.Context.PostContext
@@ -3193,7 +3477,19 @@ $(($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlE
   }
   
   if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
-    $mxRecords = ($mxResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
+    # Use valid MX records for display
+    $validMxForDisplay = if ($mxResult.Data.ValidMXRecords) { $mxResult.Data.ValidMXRecords } else { $mxResult.Data.MXRecords }
+    $mxRecords = ($validMxForDisplay | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
+    
+    # Check if there are invalid MX records to warn about
+    $invalidMxCount = if ($mxResult.Data.InvalidMXRecords) { @($mxResult.Data.InvalidMXRecords).Count } else { 0 }
+    if ($invalidMxCount -gt 0) {
+      $invalidMxDetails = ($mxResult.Data.InvalidMXRecords | ForEach-Object { 
+        [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange) ($($_.Reason))") 
+      }) -join '<br>'
+      $mxRecords += "<br><span class='text-warning'><strong>⚠ Invalid MX records:</strong><br>$invalidMxDetails</span>"
+    }
+    
     $summaryTable += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
   } elseif ($mxResult.Status -eq 'WARN') {
     $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td class='td-detail-warn'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
@@ -3426,6 +3722,12 @@ function Write-IndexPage {
     
     # Collect condensed issues with line breaks
     $issues = @()
+    # Check for invalid MX records
+    if ($result.MXResult.Data.InvalidMXRecords -and @($result.MXResult.Data.InvalidMXRecords).Count -gt 0) {
+      foreach ($invalidMx in $result.MXResult.Data.InvalidMXRecords) {
+        $issues += "MX: Invalid record (preference=$($invalidMx.Preference), host=$($invalidMx.NameExchange)): $($invalidMx.Reason)"
+      }
+    }
     if ($result.SPFResult.Status -eq 'FAIL' -or $result.SPFResult.Status -eq 'WARN') {
       $issues += "SPF: " + ($result.SPFResult.Data.Reason -replace '^SPF: ', '')
       # Include top SPF warnings (up to 3) for summary visibility
@@ -3478,9 +3780,10 @@ function Write-IndexPage {
       '<span class="text-success">No issues</span>' 
     }
     
-    # Get MX records for display
+    # Get MX records for display (use valid MX records only)
     $mxRecordsText = if ($result.MXResult.Status -eq 'PASS' -or $result.MXResult.Status -eq 'OK') {
-      ($result.MXResult.Data.MXRecords | Sort-Object Preference,NameExchange | ForEach-Object { 
+      $validMxForIndex = if ($result.MXResult.Data.ValidMXRecords) { $result.MXResult.Data.ValidMXRecords } else { $result.MXResult.Data.MXRecords }
+      ($validMxForIndex | Sort-Object Preference,NameExchange | ForEach-Object { 
         [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") 
       }) -join '<br>'
     } elseif ($result.MXResult.Status -eq 'N/A') {
@@ -3555,8 +3858,9 @@ Write-Host "Checking domain: $Domain (Resolvers: $($Resolvers -join ', '))" -For
 
 # 1) MX Records
 $mxResult = Test-MXRecords -Domain $Domain
-$mx = $mxResult.Data.MXRecords
-$mxOk = @($mx).Count -gt 0
+# Use valid MX records to determine if domain can receive email
+$validMx = if ($mxResult.Data.ValidMXRecords) { $mxResult.Data.ValidMXRecords } else { @() }
+$mxOk = @($validMx).Count -gt 0
 $domainExists = $mxResult.Data.DomainExists
     if (-not $QuietMode) { Write-CheckResult $mxResult }
 
@@ -3604,8 +3908,9 @@ $tlsRptTxt = $tlsResult.Data.TlsRptTxt
 
 # Summary
 $hasMXRecords = [bool]$mxOk
+# Use valid MX records for display (exclude invalid ones like root)
 $mxRecordsDisplay = if ($hasMXRecords) { 
-    ($mx | Sort-Object Preference,NameExchange | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) -join ', '
+    ($validMx | Sort-Object Preference,NameExchange | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) -join ', '
 } else { 
     "N/A" 
 }
@@ -3697,7 +4002,8 @@ if ($BulkFile) {
         exit 1
     }
     
-    $rawDomains = @(Get-Content $BulkFile | 
+    # Read file with UTF-8 encoding to handle Swedish characters (ÅÄÖ) correctly
+    $rawDomains = @(Get-Content $BulkFile -Encoding UTF8 | 
                Where-Object { $_ -and $_.Trim() -and -not $_.Trim().StartsWith('#') } |
                ForEach-Object { $_.Trim().ToLower() })
     
@@ -3736,8 +4042,18 @@ Write-Host "Checking $($domains.Count) domain$(if ($domains.Count -gt 1) { 's' }
     for ($i = 0; $i -lt $total; $i++) {
     if ($total -gt 1) {
         # Quiet mode for bulk
-        Write-Host "Processing domain $($i + 1) of ${total}: $($domains[$i])" -ForegroundColor Yellow -NoNewline
-        $result = Invoke-DomainCheck -Domain $domains[$i] -Selectors $Selectors -QuietMode $true
+        $currentDomain = $domains[$i]
+        $isIdn = Test-IdnDomain -Domain $currentDomain
+        $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $currentDomain } else { $null }
+        
+        # Show domain with Punycode if IDNA is used
+        if ($isIdn -and $idnDomain) {
+            Write-Host "Processing domain $($i + 1) of ${total}: $currentDomain (Punycode: $idnDomain)" -ForegroundColor Yellow -NoNewline
+        } else {
+            Write-Host "Processing domain $($i + 1) of ${total}: $currentDomain" -ForegroundColor Yellow -NoNewline
+        }
+        
+        $result = Invoke-DomainCheck -Domain $currentDomain -Selectors $Selectors -QuietMode $true
         
         # Show overall status on same line
         $statusColor = switch ($result.Summary.Status) {
@@ -3751,7 +4067,19 @@ Write-Host "Checking $($domains.Count) domain$(if ($domains.Count -gt 1) { 's' }
         Write-Host ")"
     } else {
         # Verbose mode for single domain
-        $result = Invoke-DomainCheck -Domain $domains[$i] -Selectors $Selectors
+        $currentDomain = $domains[$i]
+        $isIdn = Test-IdnDomain -Domain $currentDomain
+        $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $currentDomain } else { $null }
+        
+        # Show IDNA information if applicable
+        if ($isIdn -and $idnDomain) {
+            Write-Host "Domain contains non-ASCII characters (IDNA):" -ForegroundColor Cyan
+            Write-Host "  Unicode form: $currentDomain" -ForegroundColor White
+            Write-Host "  Punycode form: $idnDomain (used for DNS lookup)" -ForegroundColor Gray
+            Write-Host ""
+        }
+        
+        $result = Invoke-DomainCheck -Domain $currentDomain -Selectors $Selectors
     }
         
         $allResults += $result
