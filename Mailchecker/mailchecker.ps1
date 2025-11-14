@@ -783,10 +783,7 @@ function Write-AssetsFiles {
 function Test-MXRecords {
     param([string]$Domain)
     
-    # Check if domain contains non-ASCII characters (IDNA)
-    $isIdn = Test-IdnDomain -Domain $Domain
-    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
-    
+    # IDNA conversion is done automatically in Resolve-MX, no need to show in output
     $mx = Resolve-MX $Domain
     $details = @()
     $infoMessages = @()
@@ -796,15 +793,8 @@ function Test-MXRecords {
     $domainExists = $true
     $nsRecords = @()
     
-    # Add IDNA information if domain contains non-ASCII characters
-    if ($isIdn) {
-        $details += "Domain contains non-ASCII characters (IDNA):"
-        $details += "  Unicode form: $Domain"
-        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
-        $details += ""
-    }
-    
     # Initialize valid and invalid MX arrays
+    # Note: IDNA conversion is done automatically for DNS lookups, but not shown in output
     $validMx = @()
     $invalidMx = @()
     
@@ -1069,10 +1059,7 @@ function Test-SPFRecords {
         }
     }
     
-    # Check if domain contains non-ASCII characters (IDNA)
-    $isIdn = Test-IdnDomain -Domain $Domain
-    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
-    
+    # IDNA conversion is done automatically in Resolve-SPF, no need to show in output
     $spfRecs = Resolve-SPF $Domain
     $details = @()
     $warnings = @()
@@ -1080,14 +1067,6 @@ function Test-SPFRecords {
     $status = 'FAIL'
     $spfHealthy = $true
     $reason = ""
-    
-    # Add IDNA information if domain contains non-ASCII characters
-    if ($isIdn) {
-        $details += "Domain contains non-ASCII characters (IDNA):"
-        $details += "  Unicode form: $Domain"
-        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
-        $details += ""
-    }
     
     if (@($spfRecs).Count -gt 0) {
         # Check for multi-SPF (strict profile: FAIL)
@@ -1300,18 +1279,7 @@ function Test-DKIMRecords {
         return New-CheckResult -Section 'DKIM' -Status 'N/A' -InfoMessages $infoMessages -Data @{ Reason = "DKIM: N/A (no mail flow)" }
     }
     
-    # Check if domain contains non-ASCII characters (IDNA)
-    $isIdn = Test-IdnDomain -Domain $Domain
-    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
-    
-    # Add IDNA information if domain contains non-ASCII characters
-    if ($isIdn) {
-        $details += "Domain contains non-ASCII characters (IDNA):"
-        $details += "  Unicode form: $Domain"
-        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
-        $details += ""
-    }
-    
+    # IDNA conversion is done automatically in Resolve-Txt, no need to show in output
     # Check DKIM selectors
     foreach($sel in $Selectors){
         $dkimHost = "$sel._domainkey.$Domain"
@@ -1421,18 +1389,7 @@ function Test-MTASts {
         return New-CheckResult -Section 'MTA-STS' -Status 'N/A' -InfoMessages $infoMessages -Data @{ Reason = "N/A: no MX records" }
     }
     
-    # Check if domain contains non-ASCII characters (IDNA)
-    $isIdn = Test-IdnDomain -Domain $Domain
-    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
-    
-    # Add IDNA information if domain contains non-ASCII characters
-    if ($isIdn) {
-        $details += "Domain contains non-ASCII characters (IDNA):"
-        $details += "  Unicode form: $Domain"
-        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
-        $details += ""
-    }
-    
+    # IDNA conversion is done automatically in Resolve-Txt and for URLs, no need to show in output
     # MTA-STS logic
     $MtaStsModeTesting = $false
     $MtaStsEnforced = $false
@@ -1472,19 +1429,11 @@ function Test-MTASts {
         $idnDomain = ConvertTo-IdnDomain -Domain $Domain
         $mtaStsUrl = "https://mta-sts.$idnDomain/.well-known/mta-sts.txt"
         $mtaStsUrlVal = $mtaStsUrl
-        # Also store the Unicode version for display
-        $mtaStsUrlUnicode = "https://mta-sts.$Domain/.well-known/mta-sts.txt"
         $mtaStsBody = Get-HttpText $mtaStsUrl
         
         if ($mtaStsBody) {
-            # Show both Unicode and Punycode URLs if domain contains non-ASCII
-            if (Test-IdnDomain -Domain $Domain) {
-                $details += "Fetched policy from:"
-                $details += "  Unicode URL: $mtaStsUrlUnicode"
-                $details += "  Punycode URL: $mtaStsUrl (used for HTTP request)"
-            } else {
-                $details += "Fetched policy from $mtaStsUrl"
-            }
+            # Show URL (Punycode conversion is done automatically, no need to show both forms)
+            $details += "Fetched policy from $mtaStsUrl"
             $details += $mtaStsBody
             
             # Parse mode from HTTPS policy
@@ -1566,18 +1515,7 @@ function Test-DMARC {
         }
     }
 
-    # Check if domain contains non-ASCII characters (IDNA)
-    $isIdn = Test-IdnDomain -Domain $Domain
-    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
-    
-    # Add IDNA information if domain contains non-ASCII characters
-    if ($isIdn) {
-        $details += "Domain contains non-ASCII characters (IDNA):"
-        $details += "  Unicode form: $Domain"
-        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
-        $details += ""
-    }
-
+    # IDNA conversion is done automatically in Resolve-Txt, no need to show in output
     $dmarcHost = "_dmarc.$Domain"
     
     # Check if _dmarc uses CNAME (not best practice)
@@ -1737,18 +1675,7 @@ function Test-TLSReport {
         return New-CheckResult -Section 'SMTP TLS Reporting (TLS-RPT)' -Status 'N/A' -InfoMessages $infoMessages -Data @{ Reason = "N/A: no MX records" }
     }
 
-    # Check if domain contains non-ASCII characters (IDNA)
-    $isIdn = Test-IdnDomain -Domain $Domain
-    $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $Domain } else { $Domain }
-    
-    # Add IDNA information if domain contains non-ASCII characters
-    if ($isIdn) {
-        $details += "Domain contains non-ASCII characters (IDNA):"
-        $details += "  Unicode form: $Domain"
-        $details += "  Punycode form: $idnDomain (used for DNS lookup)"
-        $details += ""
-    }
-
+    # IDNA conversion is done automatically in Resolve-Txt, no need to show in output
     $tlsRptHost = "_smtp._tls.$Domain"
     $tlsRptTxt = Resolve-Txt $tlsRptHost
 
@@ -3515,8 +3442,18 @@ $(($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlE
   $sections += ConvertTo-HtmlSection $tlsResult
 
   # Replace placeholders
-  $encodedDomain = [System.Web.HttpUtility]::HtmlEncode($Domain)
-  $html = $html -replace '\{\{DOMAIN\}\}', $encodedDomain
+  # Check if domain contains non-ASCII characters (IDNA) and add Punycode version
+  $isIdn = Test-IdnDomain -Domain $Domain
+  if ($isIdn) {
+    $idnDomain = ConvertTo-IdnDomain -Domain $Domain
+    $encodedDomain = [System.Web.HttpUtility]::HtmlEncode($Domain)
+    $encodedPunycode = [System.Web.HttpUtility]::HtmlEncode($idnDomain)
+    $domainDisplay = "$encodedDomain ($encodedPunycode)"
+  } else {
+    $encodedDomain = [System.Web.HttpUtility]::HtmlEncode($Domain)
+    $domainDisplay = $encodedDomain
+  }
+  $html = $html -replace '\{\{DOMAIN\}\}', $domainDisplay
   $html = $html -replace '\{\{TIMESTAMP\}\}', $now
   $html = $html -replace '\{\{REL_ASSETS_PATH\}\}', $RelAssetsPath
   $html = $html -replace '\{\{BACK_LINK_TOP\}\}', $backLinkTop
@@ -4068,17 +4005,7 @@ Write-Host "Checking $($domains.Count) domain$(if ($domains.Count -gt 1) { 's' }
     } else {
         # Verbose mode for single domain
         $currentDomain = $domains[$i]
-        $isIdn = Test-IdnDomain -Domain $currentDomain
-        $idnDomain = if ($isIdn) { ConvertTo-IdnDomain -Domain $currentDomain } else { $null }
-        
-        # Show IDNA information if applicable
-        if ($isIdn -and $idnDomain) {
-            Write-Host "Domain contains non-ASCII characters (IDNA):" -ForegroundColor Cyan
-            Write-Host "  Unicode form: $currentDomain" -ForegroundColor White
-            Write-Host "  Punycode form: $idnDomain (used for DNS lookup)" -ForegroundColor Gray
-            Write-Host ""
-        }
-        
+        # IDNA conversion is done automatically, no need to show in output
         $result = Invoke-DomainCheck -Domain $currentDomain -Selectors $Selectors
     }
         
