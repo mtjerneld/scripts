@@ -683,6 +683,7 @@ function New-CheckResult {
         [string[]]$Details = @(),
         [string[]]$Warnings = @(),
         [string[]]$InfoMessages = @(),
+        [string[]]$Failures = @(),
         [hashtable]$Data = @{}
     )
     
@@ -692,6 +693,7 @@ function New-CheckResult {
         Details = $Details
         Warnings = $Warnings
         InfoMessages = $InfoMessages
+        Failures = $Failures
         Data = $Data
     }
 }
@@ -955,10 +957,250 @@ function Get-SpfLookups($spf, $checked) {
   return $count
 }
 
+# Function to check if an included domain has a valid SPF record
+function Test-SpfIncludeDomain {
+  param([string]$IncludeDomain)
+  
+  # Convert to Punycode for DNS lookup if needed
+  $idnDomain = ConvertTo-IdnDomain -Domain $IncludeDomain
+  
+  # First, check if domain exists by trying to resolve SOA record
+  # SOA is authoritative for domain existence
+  $domainExists = $false
+  $hasSPF = $false
+  $spfRecs = @()
+  $status = 'Unknown'
+  
+  foreach ($srv in $Resolvers) {
+    try {
+      if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+        # Step 1: Check if domain exists by querying SOA record
+        try {
+          $soaResult = Resolve-DnsName -Name $idnDomain -Type SOA -Server $srv -ErrorAction Stop
+          if ($soaResult -and @($soaResult).Count -gt 0) {
+            $domainExists = $true
+          }
+        } catch {
+          $errMsg = if ($_.Exception.Message) { $_.Exception.Message } else { '' }
+          # Check if error is NXDOMAIN - PowerShell's Resolve-DnsName can throw different exception types
+          # Common patterns: "DNS_ERROR_NAME_DOES_NOT_EXIST", "NXDOMAIN", "Non-existent domain"
+          if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist|can.t find|can''t find|not found') {
+            # Domain doesn't exist - return immediately
+            return @{
+              Exists = $false
+              HasSPF = $false
+              Status = 'NXDOMAIN'
+              SPFRecords = @()
+            }
+          }
+          # If it's not clearly NXDOMAIN, try TXT query anyway to be sure
+        }
+        
+        # Step 2: If domain exists (or we couldn't determine), check for TXT/SPF records
+        try {
+          $txtResult = Resolve-DnsName -Name $idnDomain -Type TXT -Server $srv -ErrorAction Stop
+          
+          # Check if we got any results - empty array means no records found
+          if ($txtResult -and @($txtResult).Count -gt 0) {
+            $domainExists = $true
+            
+            # Extract TXT records
+            $txts = @()
+            foreach ($rec in $txtResult) {
+              if ($rec.PSObject.Properties['Strings']) {
+                $txtString = $rec.Strings -join ''
+                if ($txtString) {
+                  $txts += $txtString
+                }
+              }
+            }
+            
+            # Check if any TXT record contains SPF
+            $spfRecs = @($txts | Where-Object { $_ -match '(?i)\bv=spf1\b' })
+            $hasSPF = ($spfRecs.Count -gt 0)
+            
+            if ($hasSPF) {
+              $status = 'Success'
+            } else {
+              $status = 'NoSPF'
+            }
+            
+            return @{
+              Exists = $domainExists
+              HasSPF = $hasSPF
+              Status = $status
+              SPFRecords = $spfRecs
+            }
+          } else {
+            # No TXT records found - check if domain exists by trying SOA lookup
+            # This is important because subdomains can exist without TXT records
+            try {
+              $soaResult = Resolve-DnsName -Name $idnDomain -Type SOA -Server $srv -ErrorAction Stop
+              if ($soaResult -and @($soaResult).Count -gt 0) {
+                # Domain exists but has no SPF
+                return @{
+                  Exists = $true
+                  HasSPF = $false
+                  Status = 'NoSPF'
+                  SPFRecords = @()
+                }
+              }
+            } catch {
+              # SOA lookup failed - domain probably doesn't exist
+              $soaErrMsg = if ($_.Exception.Message) { $_.Exception.Message } else { '' }
+              if ($soaErrMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist') {
+                # Domain doesn't exist - return immediately
+                return @{
+                  Exists = $false
+                  HasSPF = $false
+                  Status = 'NXDOMAIN'
+                  SPFRecords = @()
+                }
+              }
+            }
+            # If we got here, we couldn't determine domain existence
+            # For SPF includes, assume NXDOMAIN (conservative approach)
+            return @{
+              Exists = $false
+              HasSPF = $false
+              Status = 'NXDOMAIN'
+              SPFRecords = @()
+            }
+          }
+        } catch {
+          $errMsg = if ($_.Exception.Message) { $_.Exception.Message } else { '' }
+          $errToString = $_.Exception.ToString()
+          
+          # Check if error is NXDOMAIN - this is authoritative for TXT lookups
+          # PowerShell's Resolve-DnsName can throw different exception types for NXDOMAIN
+          # Check both exception message and ToString() for better coverage
+          $isNxDomain = $false
+          if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist|can.t find|can''t find|not found|NonExistentDomain') {
+            $isNxDomain = $true
+          }
+          if ($errToString -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist|NonExistentDomain') {
+            $isNxDomain = $true
+          }
+          
+          if ($isNxDomain) {
+            # Domain doesn't exist - return immediately
+            return @{
+              Exists = $false
+              HasSPF = $false
+              Status = 'NXDOMAIN'
+              SPFRecords = @()
+            }
+          }
+          # If we got SOA but no TXT (and error is not NXDOMAIN), domain exists but has no TXT records (or no SPF)
+          if ($domainExists) {
+            return @{
+              Exists = $true
+              HasSPF = $false
+              Status = 'NoSPF'
+              SPFRecords = @()
+            }
+          }
+          # If no SOA and no TXT (and error is not clearly NXDOMAIN), we can't determine
+          # For SPF includes, if we can't determine, assume NXDOMAIN (conservative approach)
+          # This is better than missing the issue - SPF evaluation will fail anyway
+          return @{
+            Exists = $false
+            HasSPF = $false
+            Status = 'NXDOMAIN'
+            SPFRecords = @()
+          }
+        }
+      } else {
+        # Fallback: nslookup
+        # Try SOA first
+        $soaOut = nslookup -type=soa $idnDomain $srv 2>&1 | Out-String
+        if ($soaOut -match 'Non-existent domain|NXDOMAIN') {
+          return @{
+            Exists = $false
+            HasSPF = $false
+            Status = 'NXDOMAIN'
+            SPFRecords = @()
+          }
+        } elseif ($soaOut -match 'primary name server') {
+          $domainExists = $true
+        }
+        
+        # Try TXT
+        $txtOut = nslookup -type=txt $idnDomain $srv 2>&1 | Out-String
+        if ($txtOut -match 'Non-existent domain|NXDOMAIN') {
+          if (-not $domainExists) {
+            return @{
+              Exists = $false
+              HasSPF = $false
+              Status = 'NXDOMAIN'
+              SPFRecords = @()
+            }
+          } else {
+            return @{
+              Exists = $true
+              HasSPF = $false
+              Status = 'NoSPF'
+              SPFRecords = @()
+            }
+          }
+        } elseif ($txtOut -match '"([^"]*)"') {
+          $domainExists = $true
+          $txtMatches = [regex]::Matches($txtOut, '"([^"]*)"')
+          $txts = @()
+          foreach ($match in $txtMatches) {
+            $txts += $match.Groups[1].Value
+          }
+          
+          # Check if any TXT record contains SPF
+          $spfRecs = @($txts | Where-Object { $_ -match '(?i)\bv=spf1\b' })
+          $hasSPF = ($spfRecs.Count -gt 0)
+          
+          return @{
+            Exists = $domainExists
+            HasSPF = $hasSPF
+            Status = if ($hasSPF) { 'Success' } else { 'NoSPF' }
+            SPFRecords = $spfRecs
+          }
+        }
+      }
+    } catch {
+      # Catch-all for any exception
+      $errMsg = $_.Exception.Message
+      if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist') {
+        return @{
+          Exists = $false
+          HasSPF = $false
+          Status = 'NXDOMAIN'
+          SPFRecords = @()
+        }
+      }
+    }
+  }
+  
+  # If we get here and couldn't determine domain exists, assume it doesn't exist
+  # (This is conservative - better to flag as NXDOMAIN than miss the issue)
+  if (-not $domainExists) {
+    return @{
+      Exists = $false
+      HasSPF = $false
+      Status = 'NXDOMAIN'
+      SPFRecords = @()
+    }
+  }
+  
+  # If domain exists but we couldn't determine SPF status, assume no SPF
+  return @{
+    Exists = $domainExists
+    HasSPF = $hasSPF
+    Status = if ($hasSPF) { 'Success' } else { 'NoSPF' }
+    SPFRecords = $spfRecs
+  }
+}
+
 # Enhanced version that returns detailed lookup breakdown per include
 function Get-SpfLookupsDetailed($spf, $checked, $depth = 0, $path = @()) {
   if ($checked -contains $spf) { 
-    return @{ Total = 0; Details = @() }
+    return @{ Total = 0; Details = @(); InvalidIncludes = @() }
   }
   $checked += $spf
   
@@ -983,16 +1225,65 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0, $path = @()) {
   
   $totalCount = $directCount
   $details = @()
+  $invalidIncludes = @()
   
   # Recursive check for includes
   foreach ($inc in ([regex]::Matches($spf, '(?i)include:([^\s]+)'))) {
     $incDom = $inc.Groups[1].Value
-    $incSpf = Resolve-SPF $incDom
-    if ($incSpf) {
-      $newPath = @($path + "include:$incDom")
+    $newPath = @($path + "include:$incDom")
+    
+    # Validate that included domain exists and has SPF record
+    $includeCheck = Test-SpfIncludeDomain -IncludeDomain $incDom
+    
+    if (-not $includeCheck.Exists) {
+      # Domain does not exist (NXDOMAIN)
+      $invalidIncludes += [PSCustomObject]@{
+        Include = $incDom
+        Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
+        Reason = "Domain does not exist (NXDOMAIN)"
+        Status = 'NXDOMAIN'
+      }
+      # Still count the include as a lookup (RFC requires checking, even if it fails)
+      $totalCount += 1
+      $details += [PSCustomObject]@{
+        Include = $incDom
+        Lookups = 1
+        Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
+      }
+    } elseif (-not $includeCheck.HasSPF) {
+      # Domain exists but has no SPF record
+      $invalidIncludes += [PSCustomObject]@{
+        Include = $incDom
+        Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
+        Reason = "Domain exists but has no SPF record"
+        Status = 'NoSPF'
+      }
+      # Still count the include as a lookup (RFC requires checking, even if it fails)
+      $totalCount += 1
+      $details += [PSCustomObject]@{
+        Include = $incDom
+        Lookups = 1
+        Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
+      }
+    } else {
+      # Domain exists and has SPF record - process recursively
+      $incSpf = $includeCheck.SPFRecords[0]
       $incResult = Get-SpfLookupsDetailed $incSpf $checked ($depth + 1) $newPath
       $incTotal = 1 + $incResult.Total  # 1 for the include itself + recursive lookups
       $totalCount += $incResult.Total
+      
+      # Collect invalid includes from nested includes
+      if ($incResult.InvalidIncludes) {
+        $invalidIncludes += $incResult.InvalidIncludes
+      }
       
       # Debug logging for specific domains
       if ($incDom -match 'improve\.nordlo|zetup\.se') {
@@ -1019,12 +1310,60 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0, $path = @()) {
   # Recursive check for redirects
   foreach ($red in ([regex]::Matches($spf, '(?i)redirect=([^\s]+)'))) {
     $redDom = $red.Groups[1].Value
-    $redSpf = Resolve-SPF $redDom
-    if ($redSpf) {
-      $newPath = @($path + "redirect=$redDom")
+    $newPath = @($path + "redirect=$redDom")
+    
+    # Validate that redirected domain exists and has SPF record
+    $redirectCheck = Test-SpfIncludeDomain -IncludeDomain $redDom
+    
+    if (-not $redirectCheck.Exists) {
+      # Domain does not exist (NXDOMAIN)
+      $invalidIncludes += [PSCustomObject]@{
+        Include = "redirect=$redDom"
+        Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
+        Reason = "Domain does not exist (NXDOMAIN)"
+        Status = 'NXDOMAIN'
+      }
+      # Still count the redirect as a lookup
+      $totalCount += 1
+      $details += [PSCustomObject]@{
+        Include = "redirect=$redDom"
+        Lookups = 1
+        Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
+      }
+    } elseif (-not $redirectCheck.HasSPF) {
+      # Domain exists but has no SPF record
+      $invalidIncludes += [PSCustomObject]@{
+        Include = "redirect=$redDom"
+        Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
+        Reason = "Domain exists but has no SPF record"
+        Status = 'NoSPF'
+      }
+      # Still count the redirect as a lookup
+      $totalCount += 1
+      $details += [PSCustomObject]@{
+        Include = "redirect=$redDom"
+        Lookups = 1
+        Depth = $depth
+        Path = $newPath
+        PathStr = ($newPath -join ' -> ')
+      }
+    } else {
+      # Domain exists and has SPF record - process recursively
+      $redSpf = $redirectCheck.SPFRecords[0]
       $redResult = Get-SpfLookupsDetailed $redSpf $checked ($depth + 1) $newPath
       $redTotal = 1 + $redResult.Total
       $totalCount += $redResult.Total
+      
+      # Collect invalid includes from nested redirects
+      if ($redResult.InvalidIncludes) {
+        $invalidIncludes += $redResult.InvalidIncludes
+      }
       
       $details += [PSCustomObject]@{
         Include = "redirect=$redDom"
@@ -1041,6 +1380,7 @@ function Get-SpfLookupsDetailed($spf, $checked, $depth = 0, $path = @()) {
   return @{
     Total = $totalCount
     Details = $details
+    InvalidIncludes = $invalidIncludes
   }
 }
 
@@ -1064,16 +1404,20 @@ function Test-SPFRecords {
     $details = @()
     $warnings = @()
     $infoMessages = @()
-    $status = 'FAIL'
+    $failures = @()
+    $status = 'PASS'  # Start with PASS, will be changed if issues are found
     $spfHealthy = $true
     $reason = ""
+    $allInvalidIncludes = @()
+    $hasCriticalIssues = $false  # Track if there are critical issues that require FAIL status
     
     if (@($spfRecs).Count -gt 0) {
         # Check for multi-SPF (strict profile: FAIL)
         if (@($spfRecs).Count -gt 1) {
-            $warnings += "Warning: Multiple SPF records found - this violates RFC and causes unpredictable behavior."
+            $failures += "Failure: Multiple SPF records found - this violates RFC and causes unpredictable behavior."
             $spfHealthy = $false
             $status = 'FAIL'
+            $hasCriticalIssues = $true
             $reason = "SPF: multiple records (RFC violation)"
         }
         
@@ -1099,11 +1443,30 @@ function Test-SPFRecords {
             $lookupResult = Get-SpfLookupsDetailed $rec @()
             $lookupCount = $lookupResult.Total
             
+            # Check for invalid includes (domains that don't exist or have no SPF record)
+            if ($lookupResult.InvalidIncludes -and @($lookupResult.InvalidIncludes).Count -gt 0) {
+                $allInvalidIncludes += $lookupResult.InvalidIncludes
+                foreach ($invalid in $lookupResult.InvalidIncludes) {
+                    if ($invalid.Status -eq 'NXDOMAIN') {
+                        $failures += "Failure: SPF include '$($invalid.Include)' references a non-existent domain (NXDOMAIN), causing PermError."
+                        $spfHealthy = $false
+                        $status = 'FAIL'
+                        $hasCriticalIssues = $true
+                    } elseif ($invalid.Status -eq 'NoSPF') {
+                        $failures += "Failure: SPF include '$($invalid.Include)' references a domain without SPF record, causing PermError."
+                        $spfHealthy = $false
+                        $status = 'FAIL'
+                        $hasCriticalIssues = $true
+                    }
+                }
+            }
+            
             # Determine status based on lookup count (strict RFC 7208 interpretation)
             if ($lookupCount -gt 10) {
-                $warnings += "Warning: DNS lookups (SPF): $lookupCount (exceeds RFC limit of 10)"
+                $failures += "Failure: DNS lookups (SPF): $lookupCount (exceeds RFC limit of 10)"
                 $spfHealthy = $false
                 $status = 'FAIL'
+                $hasCriticalIssues = $true
             } elseif ($lookupCount -eq 10) {
                 $warnings += "Warning: DNS lookups (SPF): $lookupCount (at RFC limit - any change will break SPF)"
                 if ($status -ne 'FAIL') { $status = 'WARN' }
@@ -1203,14 +1566,21 @@ function Test-SPFRecords {
         
         # Determine status and reason based on findings (only if not already set to FAIL from multi-SPF)
         if (-not $reason) {
-            if ($maxLookups -gt 10) {
-                $status = 'FAIL'
-                $spfHealthy = $false
-                # Build reason with additional issues
-                $reasonParts = @(">10 lookups ($maxLookups)")
+            # Check for critical issues first (invalid includes and >10 lookups are already handled above and set hasCriticalIssues)
+            if ($hasCriticalIssues) {
+                # Critical issues require FAIL status - don't change it
+                # Invalid includes cause PermError which bubbles up, making the entire SPF policy invalid
+                $reasonParts = @()
+                if ($allInvalidIncludes.Count -gt 0) {
+                    $invalidIncludeDomains = @($allInvalidIncludes | ForEach-Object { $_.Include } | Select-Object -Unique)
+                    $reasonParts += "invalid include(s): " + ($invalidIncludeDomains -join ", ")
+                }
+                if ($maxLookups -gt 10) { $reasonParts += ">10 lookups ($maxLookups)" }
                 if ($hasSoftFail) { $reasonParts += "~all" }
                 if ($hasPtr) { $reasonParts += "ptr" }
-                $reason = "SPF: " + ($reasonParts -join ", ")
+                if ($reasonParts.Count -gt 0) {
+                    $reason = "SPF: " + ($reasonParts -join ", ")
+                }
             } elseif ($maxLookups -ge 9 -or $hasPtr -or $hasSoftFail) {
                 # 9-10 lookups OR ptr OR ~all → WARN
                 $status = 'WARN'
@@ -1242,9 +1612,10 @@ function Test-SPFRecords {
         $reason = "SPF: missing"
     }
     
-    return New-CheckResult -Section 'SPF' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
+    return New-CheckResult -Section 'SPF' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Failures $failures -Data @{ 
         SPFRecords = $spfRecs
         Healthy = $spfHealthy
+        InvalidIncludes = $allInvalidIncludes
         Reason = $reason
     }
 }
@@ -1727,14 +2098,19 @@ function Write-CheckResult {
         Write-Host $line
     }
     
-    # Info messages
-    foreach ($info in $Result.InfoMessages) {
-        Write-Host $info -ForegroundColor Cyan
+    # Failures (most critical - show first)
+    foreach ($failure in $Result.Failures) {
+        Write-Host $failure -ForegroundColor Red
     }
     
     # Warnings
     foreach ($warn in $Result.Warnings) {
         Write-Host $warn -ForegroundColor Yellow
+    }
+    
+    # Info messages
+    foreach ($info in $Result.InfoMessages) {
+        Write-Host $info -ForegroundColor Cyan
     }
     
     # Status
@@ -1810,13 +2186,18 @@ function ConvertTo-HtmlSection {
     }
     
     $allMessages = @()
-    if ($Result.InfoMessages -and $Result.InfoMessages.Count -gt 0) { $allMessages += $Result.InfoMessages }
+    # Add messages in priority order: Failures first (most critical), then Warnings, then InfoMessages
+    if ($Result.Failures -and $Result.Failures.Count -gt 0) { $allMessages += $Result.Failures }
     if ($Result.Warnings -and $Result.Warnings.Count -gt 0) { $allMessages += $Result.Warnings }
+    if ($Result.InfoMessages -and $Result.InfoMessages.Count -gt 0) { $allMessages += $Result.InfoMessages }
     if ($allMessages.Count -gt 0) {
         $html += "`n  <div class='info-block'>`n"
         foreach ($msg in $allMessages) {
             $cls = 'status-info'
-            if ($msg -match '^(?i)\s*Warning:') { 
+            # Check for Failure prefix first (most critical)
+            if ($msg -match '^(?i)\s*Failure:') { 
+                $cls = 'status-fail'
+            } elseif ($msg -match '^(?i)\s*Warning:') { 
                 $cls = 'status-warn'
             }
             $encodedMsg = [System.Web.HttpUtility]::HtmlEncode($msg)
@@ -3666,16 +4047,8 @@ function Write-IndexPage {
       }
     }
     if ($result.SPFResult.Status -eq 'FAIL' -or $result.SPFResult.Status -eq 'WARN') {
+      # Only show reason string - it already contains summary of all issues including invalid includes
       $issues += "SPF: " + ($result.SPFResult.Data.Reason -replace '^SPF: ', '')
-      # Include top SPF warnings (up to 3) for summary visibility
-      if ($result.SPFResult.Warnings -and $result.SPFResult.Warnings.Count -gt 0) {
-        $topSpfWarns = @($result.SPFResult.Warnings | Select-Object -First 3)
-        foreach ($w in $topSpfWarns) {
-          if (-not [string]::IsNullOrWhiteSpace($w)) {
-            $issues += "SPF: " + ($w -replace '^Warning:\s*', '')
-          }
-        }
-      }
     }
     if ($result.DKIMResult.Status -eq 'FAIL') {
       $issues += "DKIM: " + ($result.DKIMResult.Data.Reason -replace '^DKIM: ', '')
@@ -3790,7 +4163,14 @@ function Invoke-DomainCheck {
 $Domain = $Domain.Trim().ToLower()
 
     if (-not $QuietMode) {
-Write-Host "Checking domain: $Domain (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
+        # Check if domain contains non-ASCII characters (IDNA) and show Punycode version
+        $isIdn = Test-IdnDomain -Domain $Domain
+        if ($isIdn) {
+            $idnDomain = ConvertTo-IdnDomain -Domain $Domain
+            Write-Host "Checking domain: $Domain (Punycode: $idnDomain) (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
+        } else {
+            Write-Host "Checking domain: $Domain (Resolvers: $($Resolvers -join ', '))" -ForegroundColor Yellow
+        }
     }
 
 # 1) MX Records
@@ -4493,5 +4873,6 @@ if ($Html -or $FullHtmlExport) {
 } else {
     # No HTML output requested - just console output
     Write-Host "`nProcessing complete. Use -Html or -FullHtmlExport for HTML reports." -ForegroundColor Cyan
+    Write-Host "Or -All to also include ChatGPT analysis and cloud upload." -ForegroundColor Cyan
 }
 
