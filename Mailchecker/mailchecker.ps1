@@ -208,11 +208,23 @@ Version: mailchecker.ps1 v2.0
 # Azure Upload Helper Functions
 # ============================================================================
 
-function Import-EnvFile {
-    param([string]$EnvFilePath)
+function Import-EnvironmentFile {
+    <#
+    .SYNOPSIS
+    Centralized function for loading environment variables from .env files.
+    Supports required and optional keys, with wildcard pattern matching for optional keys.
+    #>
+    param(
+        [string]$EnvFilePath,
+        [string[]]$RequiredKeys,
+        [string[]]$OptionalKeys
+    )
     
     if (-not (Test-Path $EnvFilePath)) {
-        throw "Environment file not found: $EnvFilePath`nCreate a .env file with AZURE_STORAGE_ACCOUNT and AZURE_STORAGE_KEY"
+        if ($RequiredKeys -and $RequiredKeys.Count -gt 0) {
+            throw "Environment file not found: $EnvFilePath"
+        }
+        return
     }
     
     Write-Host "Loading environment from: $EnvFilePath" -ForegroundColor Cyan
@@ -220,35 +232,49 @@ function Import-EnvFile {
     Get-Content $EnvFilePath -Encoding UTF8 | ForEach-Object {
         $line = $_.Trim()
         
-        # Skip empty lines and comments
-        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) {
-            return
-        }
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
         
-        # Parse KEY=VALUE
         if ($line -match '^([^=]+)=(.*)$') {
             $key = $Matches[1].Trim()
-            $value = $Matches[2].Trim()
+            $value = $Matches[2].Trim() -replace '^["\x27]' -replace '["\x27]$'
             
-            # Remove quotes if present (double or single)
-            $value = $value -replace '^"', '' -replace "^'", '' -replace '"$', '' -replace "'$", ''
+            # Filter based on key patterns if specified
+            if ($RequiredKeys -or $OptionalKeys) {
+                $allKeys = @($RequiredKeys) + @($OptionalKeys)
+                $matchesPattern = $false
+                foreach ($pattern in $allKeys) {
+                    if ($key -like $pattern) {
+                        $matchesPattern = $true
+                        break
+                    }
+                }
+                if (-not $matchesPattern) { return }
+            }
             
-            # Special handling for AZURE_STORAGE_SAS: reject invalid values
-            if ($key -eq 'AZURE_STORAGE_SAS' -and $value.Contains('System.Object')) {
-                Write-Host "  [WARN] Ignoring invalid AZURE_STORAGE_SAS from .env file" -ForegroundColor Yellow
+            # Reject invalid values
+            if ($value.Contains('System.Object')) {
+                Write-Host "  [WARN] Ignoring invalid $key from .env file" -ForegroundColor Yellow
                 return
             }
             
-            # Set environment variable
             Set-Item -Path "env:$key" -Value $value
             Write-Verbose "Set env:$key"
         }
     }
     
-    # Validate required variables
-    if ([string]::IsNullOrWhiteSpace($env:AZURE_STORAGE_ACCOUNT)) {
-        throw "AZURE_STORAGE_ACCOUNT not found in $EnvFilePath"
+    # Validate required keys
+    foreach ($key in $RequiredKeys) {
+        if ([string]::IsNullOrWhiteSpace((Get-Item "env:$key" -ErrorAction SilentlyContinue).Value)) {
+            throw "$key not found in $EnvFilePath"
+        }
     }
+}
+
+function Import-EnvFile {
+    param([string]$EnvFilePath)
+    
+    # Use centralized function for Azure environment variables
+    Import-EnvironmentFile -EnvFilePath $EnvFilePath -RequiredKeys @('AZURE_STORAGE_ACCOUNT') -OptionalKeys @('AZURE_STORAGE_SAS', 'AZURE_STORAGE_KEY')
     
     Write-Host "  [OK] AZURE_STORAGE_ACCOUNT: $env:AZURE_STORAGE_ACCOUNT" -ForegroundColor Green
     
@@ -270,18 +296,9 @@ function Import-EnvFile {
 
 function Import-OpenAIEnv {
     param([string]$EnvFilePath)
-    if (-not (Test-Path $EnvFilePath)) { return }
-    Get-Content $EnvFilePath -Encoding UTF8 | ForEach-Object {
-        $line = $_.Trim()
-        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
-        if ($line -match '^([^=]+)=(.*)$') {
-            $key = $Matches[1].Trim()
-            if ($key -notlike 'OPENAI_*') { return }
-            $value = $Matches[2].Trim()
-            $value = $value -replace '^"', '' -replace "^'", '' -replace '"$', '' -replace "'$", ''
-            Set-Item -Path "env:$key" -Value $value
-        }
-    }
+    
+    # Use centralized function for OpenAI environment variables
+    Import-EnvironmentFile -EnvFilePath $EnvFilePath -OptionalKeys @('OPENAI_*')
 }
 
 function Test-AzCopyAvailable {
@@ -704,26 +721,8 @@ function New-OutputStructure {
         [string]$OutputPath
     )
     
-    # Determine final output path
-    $resolvedPath = $null
-    
-    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-        # Auto-generate path based on input file
-        if ([string]::IsNullOrWhiteSpace($InputFile)) {
-            # Single domain mode - use generic name
-            $baseName = "mailcheck-report"
-        } else {
-            # Bulk mode - use input filename without extension
-            $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
-        }
-        
-        $timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
-        $outputDir = Join-Path (Get-Location) "output"
-        $resolvedPath = Join-Path $outputDir "$baseName-$timestamp"
-    } else {
-        # Use provided path
-        $resolvedPath = $OutputPath
-    }
+    # Determine final output path using centralized function
+    $resolvedPath = New-ReportOutputPath -OutputPath $OutputPath -InputFile $InputFile
     
     # Create main directory
     if (-not (Test-Path $resolvedPath)) {
@@ -872,19 +871,18 @@ function Test-MXRecords {
             $warnings += "Critical: All MX records are invalid - domain cannot receive email"
         }
     } else {
-        # No MX records - check if domain exists by looking for NS records
-        $nsResult = Resolve-NS $Domain
-        $nsRecords = $nsResult.NSRecords
-        $nsStatus = $nsResult.Status
+        # No MX records - check if domain exists using SOA (more reliable than NS)
+        $domainCheck = Test-DomainExists -Domain $Domain
+        $domainExists = $domainCheck.Exists
         
-        if ($nsStatus -eq 'NXDOMAIN') {
+        if ($domainCheck.Status -eq 'NXDOMAIN') {
             # Domain does not exist (NXDOMAIN response)
             $details = @("Domain does not exist - DNS returned NXDOMAIN (Non-Existent Domain).")
             $warnings = @("Warning: Domain '$Domain' does not exist in DNS.")
             $status = 'FAIL'
             $reason = "Domain: does not exist (NXDOMAIN)"
             $domainExists = $false
-        } elseif ($nsStatus -eq 'SERVFAIL') {
+        } elseif ($domainCheck.Status -eq 'SERVFAIL') {
             # DNS server failed - domain might exist but DNS is misconfigured
             # Still run email security checks as domain may have SPF/DMARC records
             $details = @("DNS resolution failed - DNS query error (SERVFAIL/No response/Timeout).")
@@ -899,18 +897,23 @@ function Test-MXRecords {
             $status = 'WARN'  # WARN instead of FAIL since we'll still check email security
             $reason = "MX: N/A (DNS misconfigured)"
             $domainExists = $true  # Treat as existing so email checks are performed
-        } elseif (@($nsRecords).Count -gt 0) {
-            # Domain exists but has no MX records (send-only domain)
+        } elseif ($domainCheck.Exists) {
+            # Domain exists (SOA found) but has no MX records (send-only domain)
+            # Also get NS records for display purposes if available
+            $nsResult = Resolve-NS $Domain
+            $nsRecords = $nsResult.NSRecords
             $details = @("No MX records found via any configured resolver.")
-            $details += "NS records present: " + (($nsRecords | Select-Object -First 3) -join ', ')
-            if (@($nsRecords).Count -gt 3) {
-                $details += "  ... and $(@($nsRecords).Count - 3) more"
+            if (@($nsRecords).Count -gt 0) {
+                $details += "NS records present: " + (($nsRecords | Select-Object -First 3) -join ', ')
+                if (@($nsRecords).Count -gt 3) {
+                    $details += "  ... and $(@($nsRecords).Count - 3) more"
+                }
             }
             $infoMessages = @("Info: No MX records is not necessarily an error - domain may only send email (not receive).")
             $status = 'N/A'
             $reason = "MX: N/A (send-only domain)"
         } else {
-            # Unknown error
+            # Unknown error - couldn't determine domain status
             $details = @("Could not determine domain status - DNS query failed without specific error.")
             $warnings = @("Warning: Unable to verify if domain '$Domain' exists.")
             $status = 'FAIL'
@@ -957,242 +960,56 @@ function Get-SpfLookups($spf, $checked) {
   return $count
 }
 
+# Function to check if a domain exists (using SOA lookup)
+function Test-DomainExists {
+  <#
+  .SYNOPSIS
+  Checks if a domain exists by querying its SOA record.
+  Returns a hashtable with Exists (bool) and Status ('Success'|'NXDOMAIN'|'SERVFAIL').
+  #>
+  param([string]$Domain)
+  
+  try {
+    $result = Invoke-DnsQuery -Name $Domain -Type SOA
+    if ($result) {
+      return @{ Exists = $true; Status = 'Success' }
+    }
+  } catch {
+    $errMsg = $_.Exception.Message
+    if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist') {
+      return @{ Exists = $false; Status = 'NXDOMAIN' }
+    }
+    return @{ Exists = $false; Status = 'SERVFAIL' }
+  }
+  
+  # If no result and no exception, domain probably doesn't exist
+  return @{ Exists = $false; Status = 'NXDOMAIN' }
+}
+
 # Function to check if an included domain has a valid SPF record
 function Test-SpfIncludeDomain {
   param([string]$IncludeDomain)
   
-  # Convert to Punycode for DNS lookup if needed
-  $idnDomain = ConvertTo-IdnDomain -Domain $IncludeDomain
+  # First, check if domain exists using centralized function
+  $domainCheck = Test-DomainExists -Domain $IncludeDomain
   
-  # First, check if domain exists by trying to resolve SOA record
-  # SOA is authoritative for domain existence
-  $domainExists = $false
-  $hasSPF = $false
-  $spfRecs = @()
-  $status = 'Unknown'
-  
-  foreach ($srv in $Resolvers) {
-    try {
-      if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        # Step 1: Check if domain exists by querying SOA record
-        try {
-          $soaResult = Resolve-DnsName -Name $idnDomain -Type SOA -Server $srv -ErrorAction Stop
-          if ($soaResult -and @($soaResult).Count -gt 0) {
-            $domainExists = $true
-          }
-        } catch {
-          $errMsg = if ($_.Exception.Message) { $_.Exception.Message } else { '' }
-          # Check if error is NXDOMAIN - PowerShell's Resolve-DnsName can throw different exception types
-          # Common patterns: "DNS_ERROR_NAME_DOES_NOT_EXIST", "NXDOMAIN", "Non-existent domain"
-          if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist|can.t find|can''t find|not found') {
-            # Domain doesn't exist - return immediately
-            return @{
-              Exists = $false
-              HasSPF = $false
-              Status = 'NXDOMAIN'
-              SPFRecords = @()
-            }
-          }
-          # If it's not clearly NXDOMAIN, try TXT query anyway to be sure
-        }
-        
-        # Step 2: If domain exists (or we couldn't determine), check for TXT/SPF records
-        try {
-          $txtResult = Resolve-DnsName -Name $idnDomain -Type TXT -Server $srv -ErrorAction Stop
-          
-          # Check if we got any results - empty array means no records found
-          if ($txtResult -and @($txtResult).Count -gt 0) {
-            $domainExists = $true
-            
-            # Extract TXT records
-            $txts = @()
-            foreach ($rec in $txtResult) {
-              if ($rec.PSObject.Properties['Strings']) {
-                $txtString = $rec.Strings -join ''
-                if ($txtString) {
-                  $txts += $txtString
-                }
-              }
-            }
-            
-            # Check if any TXT record contains SPF
-            $spfRecs = @($txts | Where-Object { $_ -match '(?i)\bv=spf1\b' })
-            $hasSPF = ($spfRecs.Count -gt 0)
-            
-            if ($hasSPF) {
-              $status = 'Success'
-            } else {
-              $status = 'NoSPF'
-            }
-            
-            return @{
-              Exists = $domainExists
-              HasSPF = $hasSPF
-              Status = $status
-              SPFRecords = $spfRecs
-            }
-          } else {
-            # No TXT records found - check if domain exists by trying SOA lookup
-            # This is important because subdomains can exist without TXT records
-            try {
-              $soaResult = Resolve-DnsName -Name $idnDomain -Type SOA -Server $srv -ErrorAction Stop
-              if ($soaResult -and @($soaResult).Count -gt 0) {
-                # Domain exists but has no SPF
-                return @{
-                  Exists = $true
-                  HasSPF = $false
-                  Status = 'NoSPF'
-                  SPFRecords = @()
-                }
-              }
-            } catch {
-              # SOA lookup failed - domain probably doesn't exist
-              $soaErrMsg = if ($_.Exception.Message) { $_.Exception.Message } else { '' }
-              if ($soaErrMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist') {
-                # Domain doesn't exist - return immediately
-                return @{
-                  Exists = $false
-                  HasSPF = $false
-                  Status = 'NXDOMAIN'
-                  SPFRecords = @()
-                }
-              }
-            }
-            # If we got here, we couldn't determine domain existence
-            # For SPF includes, assume NXDOMAIN (conservative approach)
-            return @{
-              Exists = $false
-              HasSPF = $false
-              Status = 'NXDOMAIN'
-              SPFRecords = @()
-            }
-          }
-        } catch {
-          $errMsg = if ($_.Exception.Message) { $_.Exception.Message } else { '' }
-          $errToString = $_.Exception.ToString()
-          
-          # Check if error is NXDOMAIN - this is authoritative for TXT lookups
-          # PowerShell's Resolve-DnsName can throw different exception types for NXDOMAIN
-          # Check both exception message and ToString() for better coverage
-          $isNxDomain = $false
-          if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist|can.t find|can''t find|not found|NonExistentDomain') {
-            $isNxDomain = $true
-          }
-          if ($errToString -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist|NonExistentDomain') {
-            $isNxDomain = $true
-          }
-          
-          if ($isNxDomain) {
-            # Domain doesn't exist - return immediately
-            return @{
-              Exists = $false
-              HasSPF = $false
-              Status = 'NXDOMAIN'
-              SPFRecords = @()
-            }
-          }
-          # If we got SOA but no TXT (and error is not NXDOMAIN), domain exists but has no TXT records (or no SPF)
-          if ($domainExists) {
-            return @{
-              Exists = $true
-              HasSPF = $false
-              Status = 'NoSPF'
-              SPFRecords = @()
-            }
-          }
-          # If no SOA and no TXT (and error is not clearly NXDOMAIN), we can't determine
-          # For SPF includes, if we can't determine, assume NXDOMAIN (conservative approach)
-          # This is better than missing the issue - SPF evaluation will fail anyway
-          return @{
-            Exists = $false
-            HasSPF = $false
-            Status = 'NXDOMAIN'
-            SPFRecords = @()
-          }
-        }
-      } else {
-        # Fallback: nslookup
-        # Try SOA first
-        $soaOut = nslookup -type=soa $idnDomain $srv 2>&1 | Out-String
-        if ($soaOut -match 'Non-existent domain|NXDOMAIN') {
-          return @{
-            Exists = $false
-            HasSPF = $false
-            Status = 'NXDOMAIN'
-            SPFRecords = @()
-          }
-        } elseif ($soaOut -match 'primary name server') {
-          $domainExists = $true
-        }
-        
-        # Try TXT
-        $txtOut = nslookup -type=txt $idnDomain $srv 2>&1 | Out-String
-        if ($txtOut -match 'Non-existent domain|NXDOMAIN') {
-          if (-not $domainExists) {
-            return @{
-              Exists = $false
-              HasSPF = $false
-              Status = 'NXDOMAIN'
-              SPFRecords = @()
-            }
-          } else {
-            return @{
-              Exists = $true
-              HasSPF = $false
-              Status = 'NoSPF'
-              SPFRecords = @()
-            }
-          }
-        } elseif ($txtOut -match '"([^"]*)"') {
-          $domainExists = $true
-          $txtMatches = [regex]::Matches($txtOut, '"([^"]*)"')
-          $txts = @()
-          foreach ($match in $txtMatches) {
-            $txts += $match.Groups[1].Value
-          }
-          
-          # Check if any TXT record contains SPF
-          $spfRecs = @($txts | Where-Object { $_ -match '(?i)\bv=spf1\b' })
-          $hasSPF = ($spfRecs.Count -gt 0)
-          
-          return @{
-            Exists = $domainExists
-            HasSPF = $hasSPF
-            Status = if ($hasSPF) { 'Success' } else { 'NoSPF' }
-            SPFRecords = $spfRecs
-          }
-        }
-      }
-    } catch {
-      # Catch-all for any exception
-      $errMsg = $_.Exception.Message
-      if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist') {
-        return @{
-          Exists = $false
-          HasSPF = $false
-          Status = 'NXDOMAIN'
-          SPFRecords = @()
-        }
-      }
-    }
-  }
-  
-  # If we get here and couldn't determine domain exists, assume it doesn't exist
-  # (This is conservative - better to flag as NXDOMAIN than miss the issue)
-  if (-not $domainExists) {
+  if (-not $domainCheck.Exists) {
     return @{
       Exists = $false
       HasSPF = $false
-      Status = 'NXDOMAIN'
+      Status = $domainCheck.Status
       SPFRecords = @()
     }
   }
   
-  # If domain exists but we couldn't determine SPF status, assume no SPF
+  # Domain exists - check for SPF records using centralized function
+  $txts = Invoke-DnsQuery -Name $IncludeDomain -Type TXT -ReturnAll
+  $spfRecs = @($txts | Where-Object { $_ -match '(?i)\bv=spf1\b' })
+  
   return @{
-    Exists = $domainExists
-    HasSPF = $hasSPF
-    Status = if ($hasSPF) { 'Success' } else { 'NoSPF' }
+    Exists = $true
+    HasSPF = ($spfRecs.Count -gt 0)
+    Status = if ($spfRecs.Count -gt 0) { 'Success' } else { 'NoSPF' }
     SPFRecords = $spfRecs
   }
 }
@@ -2114,13 +1931,7 @@ function Write-CheckResult {
     }
     
     # Status
-    $color = switch ($Result.Status) {
-        'PASS' { 'Green' }
-        'OK'   { 'Green' }  # Legacy support
-        'FAIL' { 'Red' }
-        'WARN' { 'Yellow' }
-        'N/A'  { 'Yellow' }
-    }
+    $color = Get-StatusColor -Status $Result.Status
     Write-Host "$($Result.Section) status: $($Result.Status)" -ForegroundColor $color
 }
 
@@ -2207,13 +2018,7 @@ function ConvertTo-HtmlSection {
     }
     
     $statusText = "$($Result.Section) status: $($Result.Status)"
-    $clsFinal = switch ($Result.Status) {
-        'PASS' { 'status-ok' }
-        'OK'   { 'status-ok' }
-        'FAIL' { 'status-fail' }
-        'WARN' { 'status-warn' }
-        'N/A'  { 'status-info' }
-    }
+    $clsFinal = Get-StatusClass -Status $Result.Status
     $encodedStatus = [System.Web.HttpUtility]::HtmlEncode($statusText)
     $html += "  <p class='" + $clsFinal + "'>" + $encodedStatus + "</p>`n"
     
@@ -2228,22 +2033,9 @@ function Write-Section($title) {
 function Write-StatusLine {
   param([string]$Label, $Status, $Details = "")
   
-  # Map status to color
-  $color = switch ($Status) {
-    'PASS' { 'Green' }
-    'OK'   { 'Green' }  # Legacy support
-    'WARN' { 'Yellow' }
-    'FAIL' { 'Red' }
-    'N/A'  { 'Cyan' }
-    default { 'White' }
-  }
-  
-  # Map status to display text (OK is legacy, normalize to PASS)
-  $statusText = switch ($Status) {
-    'OK'   { 'PASS' }
-    'PASS' { 'PASS' }
-    default { $Status }
-  }
+  # Map status to color and text
+  $color = Get-StatusColor -Status $Status
+  $statusText = Get-StatusText -Status $Status
   
   Write-Host ("- {0}: " -f $Label) -NoNewline
   Write-Host $statusText -ForegroundColor $color
@@ -2353,150 +2145,319 @@ function ConvertTo-IdnHostname {
 # End IDNA Support
 # ============================================================================
 
+# ============================================================================
+# DNS Query Functions (Centralized)
+# ============================================================================
+
+function Invoke-NslookupFallback {
+    <#
+    .SYNOPSIS
+    Fallback DNS query using nslookup when Resolve-DnsName is not available.
+    #>
+    param(
+        [string]$Name,
+        [string]$Type,
+        [string]$Server,
+        [switch]$ReturnAll
+    )
+    
+    # Build nslookup command with type parameter
+    $typeArg = "-type=$($Type.ToLower())"
+    $out = nslookup $typeArg $Name $Server 2>&1 | Out-String
+    
+    switch ($Type.ToUpper()) {
+        'TXT' {
+            $txt = ($out | Select-String -Pattern '"([^"]*)"' -AllMatches).Matches.Value -replace '"',''
+            $joined = ($txt -join '')
+            if ($joined) {
+                if ($ReturnAll) { return @($joined) } else { return $joined }
+            }
+        }
+        'MX' {
+            $lines = $out | Where-Object { $_ -match 'mail exchanger =|preference =' }
+            $result = @()
+            foreach ($line in $lines) {
+                if ($line -match 'preference\s*=\s*(\d+),\s*mail exchanger\s*=\s*(\S+)') {
+                    $result += [pscustomobject]@{ Preference = [int]$Matches[1]; NameExchange = $Matches[2] }
+                } elseif ($line -match 'mail exchanger\s*=\s*(\S+)') {
+                    $result += [pscustomobject]@{ Preference = 0; NameExchange = $Matches[1] }
+                }
+            }
+            if (@($result).Count -gt 0) { return $result }
+        }
+        'NS' {
+            if ($out -match 'nameserver\s*=\s*(\S+)') {
+                $lines = $out -split "`n" | Where-Object { $_ -match 'nameserver\s*=\s*(\S+)' }
+                $nsResult = @()
+                foreach ($line in $lines) {
+                    if ($line -match 'nameserver\s*=\s*(\S+)') {
+                        $nsResult += $Matches[1]
+                    }
+                }
+                if (@($nsResult).Count -gt 0) { return $nsResult }
+            }
+        }
+        'SOA' {
+            if ($out -match 'primary name server') {
+                return $true  # Domain exists
+            }
+        }
+    }
+    
+    if ($ReturnAll) { return @() } else { return $null }
+}
+
+function Invoke-DnsQuery {
+    <#
+    .SYNOPSIS
+    Centralized DNS query function supporting TXT, MX, NS, and SOA record types.
+    Automatically handles IDNA conversion, CNAME following (for TXT), and nslookup fallback.
+    #>
+    param(
+        [string]$Name,
+        [string]$Type,  # TXT, MX, NS, SOA
+        [switch]$ReturnAll,  # Return all records vs joined (for TXT)
+        [switch]$ConvertIdna
+    )
+    
+    # Automatically convert to Punycode if domain contains non-ASCII characters
+    # or if ConvertIdna switch is explicitly set
+    $shouldConvert = $ConvertIdna -or (Test-IdnDomain -Domain $Name)
+    if ($shouldConvert) {
+        if ($Type -eq 'TXT') {
+            $Name = ConvertTo-IdnHostname -Hostname $Name
+        } else {
+            $Name = ConvertTo-IdnDomain -Domain $Name
+        }
+    }
+    
+    foreach ($srv in $Resolvers) {
+        try {
+            if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+                $ans = Resolve-DnsName -Name $Name -Type $Type -Server $srv -ErrorAction Stop
+                
+                switch ($Type.ToUpper()) {
+                    'TXT' {
+                        $txtRecs = $ans | Where-Object { $_.Type -eq 'TXT' -and $_.PSObject.Properties['Strings'] }
+                        $strings = @(foreach ($rec in $txtRecs) { ($rec.Strings -join '') })
+                        if ($strings.Count -gt 0) {
+                            if ($ReturnAll) {
+                                return $strings
+                            } else {
+                                return ($strings -join ' ')
+                            }
+                        }
+                        
+                        # Follow CNAME if no TXT records found
+                        $cname = ($ans | Where-Object { $_.Type -eq 'CNAME' } | Select-Object -First 1 -ExpandProperty NameHost -ErrorAction SilentlyContinue)
+                        if ($cname) {
+                            $cnameResult = Invoke-DnsQuery -Name $cname -Type TXT -ReturnAll:$ReturnAll -ConvertIdna:$false
+                            if ($cnameResult) { return $cnameResult }
+                        }
+                    }
+                    'MX' {
+                        $mxRecs = $ans |
+                            Where-Object {
+                                ($_.PSObject.Properties.Match('Section').Count -eq 0 -or $_.Section -eq 'Answer') -and
+                                (
+                                    $_.PSObject.Properties.Match('NameExchange').Count -gt 0 -or
+                                    ($_.PSObject.Properties.Match('Type').Count -gt 0 -and $_.Type -eq 'MX') -or
+                                    ($_.PSObject.Properties.Match('QueryType').Count -gt 0 -and $_.QueryType -eq 'MX')
+                                )
+                            } |
+                            Select-Object @{n='Preference';e={ if ($_.PSObject.Properties.Match('Preference')) { $_.Preference } else { 0 } }},
+                                          @{n='NameExchange';e={ $_.NameExchange }}
+                        if (@($mxRecs).Count -gt 0) { return $mxRecs }
+                    }
+                    'NS' {
+                        $nsRecs = $ans | Where-Object { $_.Type -eq 'NS' } | Select-Object -ExpandProperty NameHost
+                        if (@($nsRecs).Count -gt 0) { return $nsRecs }
+                    }
+                    'SOA' {
+                        $soaRecs = $ans | Where-Object { $_.Type -eq 'SOA' }
+                        if (@($soaRecs).Count -gt 0) { return $true }  # Domain exists
+                    }
+                }
+            } else {
+                # Fallback: nslookup
+                $fallbackResult = Invoke-NslookupFallback -Name $Name -Type $Type -Server $srv -ReturnAll:$ReturnAll
+                if ($fallbackResult) { return $fallbackResult }
+            }
+        } catch {
+            $errMsg = $_.Exception.Message
+            if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain|DNS_ERROR_NAME_DOES_NOT_EXIST|Name does not exist') {
+                # NXDOMAIN is expected for many lookups (e.g., DKIM selectors, subdomains)
+                # Return null instead of throwing - let the caller handle it
+                if ($ReturnAll) { return @() } else { return $null }
+            }
+            # Continue to next resolver for other errors
+        }
+    }
+    
+    if ($ReturnAll) { return @() } else { return $null }
+}
+
+# ============================================================================
+# Status Mapping Helper Functions
+# ============================================================================
+
+function Get-StatusColor {
+    <#
+    .SYNOPSIS
+    Returns the PowerShell ForegroundColor name for a given status.
+    #>
+    param([string]$Status)
+    
+    switch ($Status) {
+        { $_ -in 'PASS', 'OK' } { return 'Green' }
+        'WARN' { return 'Yellow' }
+        'FAIL' { return 'Red' }
+        'N/A'  { return 'Cyan' }
+        default { return 'White' }
+    }
+}
+
+function Get-StatusClass {
+    <#
+    .SYNOPSIS
+    Returns the CSS class name for a given status.
+    #>
+    param([string]$Status)
+    
+    switch ($Status) {
+        { $_ -in 'PASS', 'OK' } { return 'status-ok' }
+        'WARN' { return 'status-warn' }
+        'FAIL' { return 'status-fail' }
+        'N/A'  { return 'status-info' }
+        default { return '' }
+    }
+}
+
+function Get-StatusText {
+    <#
+    .SYNOPSIS
+    Normalizes status text (e.g., OK -> PASS) for display.
+    #>
+    param([string]$Status)
+    
+    if ($Status -eq 'OK') { return 'PASS' }
+    return $Status
+}
+
+function Get-StatusBadgeHtml {
+    <#
+    .SYNOPSIS
+    Generates HTML for a status badge with various display options.
+    #>
+    param(
+        [string]$Status,
+        [switch]$AsIcon,
+        [switch]$WithText
+    )
+    
+    $class = Get-StatusClass -Status $Status
+    $text = Get-StatusText -Status $Status
+    
+    if ($AsIcon) {
+        return "<span class='$class' title='$text'></span>"
+    } elseif ($WithText) {
+        $encoded = [System.Web.HttpUtility]::HtmlEncode($text)
+        return "<span class='$class'>$encoded</span>"
+    } else {
+        $encoded = [System.Web.HttpUtility]::HtmlEncode($text)
+        return "<td class='$class'>$encoded</td>"
+    }
+}
+
+# ============================================================================
+# CSV and Output Path Helper Functions
+# ============================================================================
+
+function ConvertTo-CsvSafe {
+    <#
+    .SYNOPSIS
+    Sanitizes a value for safe CSV export by removing tabs, newlines, and semicolons.
+    #>
+    param($Value)
+    
+    if ($null -eq $Value) { return "" }
+    
+    # Single normalization pipeline
+    return $Value.ToString() `
+        -replace "`t", " " `
+        -replace "[\r\n]+", " " `
+        -replace ";", "," `
+        | ForEach-Object { $_.Trim() }
+}
+
+function New-ReportOutputPath {
+    <#
+    .SYNOPSIS
+    Generates a standardized output path for reports based on input file or domain.
+    #>
+    param(
+        [string]$OutputPath,
+        [string]$InputFile,
+        [string]$Domain
+    )
+    
+    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+        return $OutputPath
+    }
+    
+    $timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+    
+    $baseName = if ($InputFile) {
+        [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
+    } elseif ($Domain) {
+        $Domain -replace '[^a-z0-9.-]', '-'
+    } else {
+        "mailcheck-report"
+    }
+    
+    return Join-Path (Join-Path (Get-Location) "output") "$baseName-$timestamp"
+}
+
 function Resolve-TxtAll {
   param([string]$Name)
 
-  # Convert to Punycode for DNS lookup if needed
-  $idnName = ConvertTo-IdnHostname -Hostname $Name
-
-  foreach ($srv in $Resolvers) {
-    try {
-      if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        $ans = Resolve-DnsName -Name $idnName -Type TXT -Server $srv -ErrorAction Stop
-        $txtRecs = $ans | Where-Object { $_.Type -eq 'TXT' -and $_.PSObject.Properties['Strings'] }
-
-        $strings = @(foreach ($rec in $txtRecs) { ($rec.Strings -join '') })
-        if ($strings.Count -gt 0) { return $strings }
-
-        # Follow any CNAME to the target and query TXT there
-        $cname = ($ans | Where-Object { $_.Type -eq 'CNAME' } | Select-Object -First 1 -ExpandProperty NameHost -ErrorAction SilentlyContinue)
-        if ($cname) {
-          $ans2 = Resolve-DnsName -Name $cname -Type TXT -Server $srv -ErrorAction Stop
-          $txtRecs2 = $ans2 | Where-Object { $_.Type -eq 'TXT' -and $_.PSObject.Properties['Strings'] }
-          $strings2 = @(foreach ($rec in $txtRecs2) { ($rec.Strings -join '') })
-          if ($strings2.Count -gt 0) { return $strings2 }
-        }
-      }
-      else {
-        # Fallback: nslookup - harder to separate multiple records, return as single-item array
-        $out = nslookup -type=txt $idnName $srv 2>$null
-        $txt = ($out | Select-String -Pattern '"([^"]*)"' -AllMatches).Matches.Value -replace '"',''
-        $joined = ($txt -join '')
-        if ($joined) { return @($joined) }
-      }
-    } catch { }
-  }
-  return @()
+  # Use centralized DNS query function
+  $result = Invoke-DnsQuery -Name $Name -Type TXT -ReturnAll
+  if ($result) { return $result } else { return @() }
 }
 
 function Resolve-Txt {
   param([string]$Name)
 
-  # Convert to Punycode for DNS lookup if needed
-  $idnName = ConvertTo-IdnHostname -Hostname $Name
-
-  foreach ($srv in $Resolvers) {
-    try {
-      if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-  # Primary query
-        $ans = Resolve-DnsName -Name $idnName -Type TXT -Server $srv -ErrorAction Stop
-        $txtRecs = $ans | Where-Object { $_.Type -eq 'TXT' -and $_.PSObject.Properties['Strings'] }
-
-        $strings = foreach ($rec in $txtRecs) { ($rec.Strings -join '') }
-        if ($strings -and $strings.Count -gt 0) { return ($strings -join ' ') }
-
-  # Follow any CNAME to the target and query TXT there
-        $cname = ($ans | Where-Object { $_.Type -eq 'CNAME' } | Select-Object -First 1 -ExpandProperty NameHost -ErrorAction SilentlyContinue)
-        if ($cname) {
-          $ans2 = Resolve-DnsName -Name $cname -Type TXT -Server $srv -ErrorAction Stop
-          $txtRecs2 = $ans2 | Where-Object { $_.Type -eq 'TXT' -and $_.PSObject.Properties['Strings'] }
-          $strings2 = foreach ($rec in $txtRecs2) { ($rec.Strings -join '') }
-          if ($strings2 -and $strings2.Count -gt 0) { return ($strings2 -join ' ') }
-        }
-      }
-      else {
-  # Fallback: nslookup
-        $out = nslookup -type=txt $idnName $srv 2>$null
-        $txt = ($out | Select-String -Pattern '"([^"]*)"' -AllMatches).Matches.Value -replace '"',''
-        $joined = ($txt -join '')
-        if ($joined) { return $joined }
-      }
-    } catch { }
-  }
-  return $null
+  # Use centralized DNS query function
+  return Invoke-DnsQuery -Name $Name -Type TXT
 }
 
 function Resolve-NS {
   param([string]$Domain)
-
-  # Convert to Punycode for DNS lookup if needed
-  $idnDomain = ConvertTo-IdnDomain -Domain $Domain
 
   $result = @{
     NSRecords = @()
     Status = 'Unknown'  # 'Success', 'NXDOMAIN', 'SERVFAIL', 'Unknown'
   }
 
-  foreach ($srv in $Resolvers) {
-    try {
-      if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        try {
-          $ans = Resolve-DnsName -Name $idnDomain -Type NS -Server $srv -ErrorAction Stop
-          $nsRecs = $ans | Where-Object { $_.Type -eq 'NS' } | Select-Object -ExpandProperty NameHost
-          if (@($nsRecs).Count -gt 0) { 
-            $result.NSRecords = $nsRecs
-            $result.Status = 'Success'
-            return $result
-          }
-        } catch {
-          # Check error message to determine type of failure
-          $errMsg = $_.Exception.Message
-          if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain') {
-            $result.Status = 'NXDOMAIN'
-          } else {
-            # Any other DNS error (SERVFAIL, timeout, no response, etc.) = DNS misconfigured
-            $result.Status = 'SERVFAIL'
-          }
-        }
-      }
-      else {
-        # Fallback: nslookup
-        $out = nslookup -type=ns $idnDomain $srv 2>&1 | Out-String
-        
-        # Check for specific error messages
-        if ($out -match 'Non-existent domain') {
-          $result.Status = 'NXDOMAIN'
-        } elseif ($out -match 'nameserver\s*=\s*(\S+)') {
-          # Found NS records
-          $lines = $out -split "`n" | Where-Object { $_ -match 'nameserver\s*=\s*(\S+)' }
-          $nsResult = @()
-          foreach ($line in $lines) {
-            if ($line -match 'nameserver\s*=\s*(\S+)') {
-              $nsResult += $Matches[1]
-            }
-          }
-          if (@($nsResult).Count -gt 0) {
-            $result.NSRecords = $nsResult
-            $result.Status = 'Success'
-            return $result
-          }
-        } else {
-          # Any error that's not NXDOMAIN (Server failed, No response, timeout, etc.)
-          if ($out -match 'Server failed|No response|timeout|Request timed out|connection timed out') {
-            $result.Status = 'SERVFAIL'
-          }
-        }
-      }
-    } catch {
-      # Catch-all for any exception
-      $errMsg = $_.Exception.Message
-      if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain') {
-        $result.Status = 'NXDOMAIN'
-      } else {
-        # Any other error = DNS misconfigured
-        $result.Status = 'SERVFAIL'
-      }
+  try {
+    # Use centralized DNS query function
+    $nsRecs = Invoke-DnsQuery -Name $Domain -Type NS
+    if ($nsRecs -and @($nsRecs).Count -gt 0) {
+      $result.NSRecords = $nsRecs
+      $result.Status = 'Success'
+      return $result
     }
+  } catch {
+    # Check if it's NXDOMAIN
+    $errMsg = $_.Exception.Message
+    if ($errMsg -match 'NXDOMAIN|does not exist|Non-existent domain') {
+      $result.Status = 'NXDOMAIN'
+      return $result
+    }
+    # Any other error = DNS misconfigured
+    $result.Status = 'SERVFAIL'
   }
   
   # If we got here without Success and no specific status was set, 
@@ -2511,74 +2472,23 @@ function Resolve-NS {
 function Resolve-MX {
   param([string]$Domain)
 
-  # Convert to Punycode for DNS lookup if needed
-  $idnDomain = ConvertTo-IdnDomain -Domain $Domain
-
-  foreach ($srv in $Resolvers) {
-    try {
-      if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        $ans = Resolve-DnsName -Name $idnDomain -Type MX -Server $srv -ErrorAction Stop
-
-        $mxRecs = $ans |
-          Where-Object {
-            # Section may be missing in some versions; accept the line anyway
-            ($_.PSObject.Properties.Match('Section').Count -eq 0 -or $_.Section -eq 'Answer') -and
-            (
-              $_.PSObject.Properties.Match('NameExchange').Count -gt 0 -or
-              ($_.PSObject.Properties.Match('Type').Count -gt 0 -and $_.Type -eq 'MX') -or
-              ($_.PSObject.Properties.Match('QueryType').Count -gt 0 -and $_.QueryType -eq 'MX')
-            )
-          } |
-          Select-Object @{n='Preference';e={ if ($_.PSObject.Properties.Match('Preference')) { $_.Preference } else { 0 } }},
-                        @{n='NameExchange';e={ $_.NameExchange }}
-
-        if (@($mxRecs).Count -gt 0) { return $mxRecs }
-      }
-      else {
-  # Fallback: nslookup
-        $out = nslookup -type=mx $idnDomain $srv 2>$null
-        $lines = $out | Where-Object { $_ -match 'mail exchanger =|preference =' }
-        $result = @()
-        foreach ($line in $lines) {
-          if ($line -match 'preference\s*=\s*(\d+),\s*mail exchanger\s*=\s*(\S+)') {
-            $result += [pscustomobject]@{ Preference = [int]$Matches[1]; NameExchange = $Matches[2] }
-          } elseif ($line -match 'mail exchanger\s*=\s*(\S+)') {
-            $result += [pscustomobject]@{ Preference = 0; NameExchange = $Matches[1] }
-          }
-        }
-        if (@($result).Count -gt 0) { return $result }
-      }
-    } catch { }
+  # Use centralized DNS query function
+  $result = Invoke-DnsQuery -Name $Domain -Type MX
+  if ($result) {
+    return $result
+  } else {
+    return @()
   }
-  return @()
 }
 
 function Resolve-SPF {
   param([string]$Domain)
 
-  # Convert to Punycode for DNS lookup if needed
-  $idnDomain = ConvertTo-IdnDomain -Domain $Domain
-
-  foreach ($srv in $Resolvers) {
-    try {
-      if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        $ans = Resolve-DnsName -Name $idnDomain -Type TXT -Server $srv -ErrorAction Stop
-        $txts = foreach($rec in $ans) {
-          if ($rec.PSObject.Properties['Strings']) { ($rec.Strings -join '') }
-        }
-        $spf = @($txts | Where-Object { $_ -match '(?i)\bv=spf1\b' })
-        if ($spf.Count -gt 0) { return $spf }
-      } else {
-  # Fallback: nslookup (find block near "v=spf1" and join quoted strings)
-        $out = nslookup -type=txt $idnDomain $srv 2>$null
-        $hit = $out | Select-String -Pattern 'v=spf1' -Context 0,3 | Select-Object -First 1
-        if ($hit) {
-          $lines = @($hit.Line) + $hit.Context.PostContext
-          $txt = ($lines | Select-String -Pattern '"([^"]*)"' -AllMatches).Matches.Value -replace '"','' -join ''
-          if ($txt) { return @($txt) }
-        }
-      }
-    } catch { }
+  # Use centralized DNS query function to get all TXT records
+  $txts = Invoke-DnsQuery -Name $Domain -Type TXT -ReturnAll
+  if ($txts) {
+    $spf = @($txts | Where-Object { $_ -match '(?i)\bv=spf1\b' })
+    if ($spf.Count -gt 0) { return $spf }
   }
   return @()
 }
@@ -3628,20 +3538,7 @@ function Write-AnalysisReport {
     [pscustomobject]$AnalysisObj
   )
   $tmpl = Get-Content -Path $TemplatePath -Raw -ErrorAction Stop
-  function Get-StatusChipHtmlLocal {
-    param([string]$status)
-    $cls = switch ($status) {
-      'PASS' { 'status-chip ok' }
-      'OK'   { 'status-chip ok' }
-      'WARN' { 'status-chip warn' }
-      'FAIL' { 'status-chip fail' }
-      default { 'status-chip info' }
-    }
-    $label = if ($status -eq 'OK') { 'PASS' } else { $status }
-    $encoded = [System.Web.HttpUtility]::HtmlEncode($label)
-    return ('<span class="' + $cls + '">' + $encoded + '</span>')
-  }
-  $statusChip = Get-StatusChipHtmlLocal $AnalysisObj.overall_status
+  $statusChip = Get-StatusBadgeHtml -Status $AnalysisObj.overall_status -WithText
   
   # Build conditional sections - only show if we have data
   $keyFindingsSection = ''
@@ -3699,6 +3596,227 @@ function Write-AnalysisReport {
   $out | Out-File -FilePath $indexPath -Encoding utf8 -Force
 }
 
+# ============================================================================
+# HTML Generation Helper Functions
+# ============================================================================
+
+function Get-CleanReason {
+    <#
+    .SYNOPSIS
+    Remove duplicate section prefixes from reason strings.
+    
+    .DESCRIPTION
+    Cleans reason strings by removing section prefixes like "SPF: ", "DKIM: ", etc.
+    Also handles "Warning:" prefix removal.
+    #>
+    param(
+        [string]$Reason,
+        [string]$Section = $null
+    )
+    
+    if ([string]::IsNullOrWhiteSpace($Reason)) {
+        return $Reason
+    }
+    
+    # Remove section prefixes: SPF:, DKIM:, DMARC:, MTA-STS:, TLS-RPT:
+    $cleaned = $Reason -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT):\s*', ''
+    
+    # Also remove "Warning:" prefix if present
+    $cleaned = $cleaned -replace '^Warning:\s*', ''
+    
+    return $cleaned
+}
+
+function Get-DomainDisplayName {
+    <#
+    .SYNOPSIS
+    Generate HTML-safe domain display name with Punycode for IDNA domains.
+    
+    .DESCRIPTION
+    Returns an HTML-encoded domain name. For IDNA domains, includes the Punycode
+    version in parentheses: "domain.se (xn--domain-se)"
+    #>
+    param(
+        [string]$Domain
+    )
+    
+    if ([string]::IsNullOrWhiteSpace($Domain)) {
+        return ''
+    }
+    
+    $isIdn = Test-IdnDomain -Domain $Domain
+    if ($isIdn) {
+        $idnDomain = ConvertTo-IdnDomain -Domain $Domain
+        $encodedDomain = [System.Web.HttpUtility]::HtmlEncode($Domain)
+        $encodedPunycode = [System.Web.HttpUtility]::HtmlEncode($idnDomain)
+        return "$encodedDomain ($encodedPunycode)"
+    } else {
+        return [System.Web.HttpUtility]::HtmlEncode($Domain)
+    }
+}
+
+function Get-IssuesBoxHtml {
+    <#
+    .SYNOPSIS
+    Build the issues box HTML showing FAIL/WARN issues or success message.
+    
+    .DESCRIPTION
+    Analyzes check results to collect all FAIL and WARN issues, then generates
+    appropriate HTML with either an issues box or a success message.
+    #>
+    param(
+        [array]$Results  # Array of check results (mxResult, spfResult, etc.)
+    )
+    
+    $issues = @()
+    $hasFail = $false
+    
+    foreach ($result in $Results) {
+        if ($null -eq $result) { continue }
+        
+        if ($result.Status -eq 'FAIL') {
+            # Skip domain existence failures (NXDOMAIN) - these are not email security issues
+            $reason = if ($result.Data -and $result.Data.Reason) { $result.Data.Reason } else { '' }
+            if ($reason -match 'Domain: does not exist|NXDOMAIN') {
+                continue
+            }
+            
+            $hasFail = $true
+            $cleanReason = Get-CleanReason -Reason $reason
+            $issues += "$($result.Section): $cleanReason"
+        } elseif ($result.Status -eq 'WARN') {
+            $cleanReason = Get-CleanReason -Reason $result.Data.Reason
+            $issues += "$($result.Section): $cleanReason"
+            # Also include individual warnings for visibility in Issues Found
+            if ($result.Warnings -and $result.Warnings.Count -gt 0) {
+                foreach ($w in $result.Warnings) {
+                    if (-not [string]::IsNullOrWhiteSpace($w)) {
+                        $cleanWarning = Get-CleanReason -Reason $w
+                        $issues += "$($result.Section): $cleanWarning"
+                    }
+                }
+            }
+        }
+    }
+    
+    if ($issues.Count -gt 0) {
+        $boxClass = if ($hasFail) { "issues-box-fail" } else { "issues-box" }
+        $issuesHtml = ($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlEncode($_))</li>" }) -join "`n"
+        return @"
+    <div class="$boxClass">
+        <h3>Issues Found</h3>
+        <ul>
+$issuesHtml
+        </ul>
+    </div>
+"@
+    } else {
+        return @"
+    <div class="success-box">
+        <h3>All Checks Passed</h3>
+        <p>No issues detected in the email security configuration.</p>
+    </div>
+"@
+    }
+}
+
+function Get-SummaryTableHtml {
+    <#
+    .SYNOPSIS
+    Build the summary table HTML showing all checks with status badges.
+    
+    .DESCRIPTION
+    Generates a summary table with rows for each check type (MX, SPF, DKIM, etc.)
+    including status badges and details. Handles special cases for MX records.
+    #>
+    param(
+        $mxResult,
+        $spfResult,
+        $dkimResult,
+        $dmarcResult,
+        $mtaStsResult,
+        $tlsResult
+    )
+    
+    $html = "<h2>Summary</h2>`n"
+    $html += "<table class='summary-table'><tr><th class='col-check'>Check</th><th class='col-status'>Status</th><th>Details</th></tr>"
+    
+    # MX Records row with special handling
+    if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
+        # Use valid MX records for display
+        $validMxForDisplay = if ($mxResult.Data.ValidMXRecords) { $mxResult.Data.ValidMXRecords } else { $mxResult.Data.MXRecords }
+        $mxRecords = ($validMxForDisplay | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
+        
+        # Check if there are invalid MX records to warn about
+        $invalidMxCount = if ($mxResult.Data.InvalidMXRecords) { @($mxResult.Data.InvalidMXRecords).Count } else { 0 }
+        if ($invalidMxCount -gt 0) {
+            $invalidMxDetails = ($mxResult.Data.InvalidMXRecords | ForEach-Object { 
+                [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange) ($($_.Reason))") 
+            }) -join '<br>'
+            $mxRecords += "<br><span class='text-warning'><strong>⚠ Invalid MX records:</strong><br>$invalidMxDetails</span>"
+        }
+        
+        $html += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
+    } elseif ($mxResult.Status -eq 'WARN') {
+        $statusBadge = Get-StatusBadgeHtml -Status $mxResult.Status
+        $html += "<tr><td>MX Records</td>$statusBadge<td class='td-detail-warn'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+    } elseif ($mxResult.Data.DomainExists -eq $false) {
+        $statusBadge = Get-StatusBadgeHtml -Status $mxResult.Status
+        $html += "<tr><td>MX Records</td>$statusBadge<td class='td-detail-error'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+    } else {
+        $statusBadge = Get-StatusBadgeHtml -Status $mxResult.Status
+        $html += "<tr><td>MX Records</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
+    }
+    
+    # Other check rows
+    $statusBadge = Get-StatusBadgeHtml -Status $spfResult.Status
+    $html += "<tr><td>SPF</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
+    
+    $statusBadge = Get-StatusBadgeHtml -Status $dkimResult.Status
+    $html += "<tr><td>DKIM</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
+    
+    $statusBadge = Get-StatusBadgeHtml -Status $dmarcResult.Status
+    $html += "<tr><td>DMARC</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
+    
+    $statusBadge = Get-StatusBadgeHtml -Status $mtaStsResult.Status
+    $html += "<tr><td>MTA-STS</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
+    
+    $statusBadge = Get-StatusBadgeHtml -Status $tlsResult.Status
+    $html += "<tr><td>TLS-RPT</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
+    
+    $html += "</table>"
+    return $html
+}
+
+function Get-CheckSectionsHtml {
+    <#
+    .SYNOPSIS
+    Build HTML sections for all check details using ConvertTo-HtmlSection.
+    
+    .DESCRIPTION
+    Concatenates all check detail sections by calling ConvertTo-HtmlSection
+    for each result and returns the combined HTML.
+    #>
+    param(
+        $mxResult,
+        $spfResult,
+        $dkimResult,
+        $dmarcResult,
+        $mtaStsResult,
+        $tlsResult
+    )
+    
+    $sections = ""
+    $sections += ConvertTo-HtmlSection $mxResult
+    $sections += ConvertTo-HtmlSection $spfResult
+    $sections += ConvertTo-HtmlSection $dkimResult
+    $sections += ConvertTo-HtmlSection $dmarcResult
+    $sections += ConvertTo-HtmlSection $mtaStsResult
+    $sections += ConvertTo-HtmlSection $tlsResult
+    
+    return $sections
+}
+
 function Get-DomainReportHtml {
   param(
     [string]$RelAssetsPath,
@@ -3723,117 +3841,13 @@ function Get-DomainReportHtml {
   $backLinkTop = if ($IncludeBackLink) { '    <a href="../index.html" class="nav-link">Back to Summary</a>' } else { '' }
   $backLinkBottom = if ($IncludeBackLink) { '        <p><a href="../index.html" class="back-link">Back to Summary</a></p>' } else { '' }
   
-  # Build issues box
-  $issues = @()
-  $hasFail = $false
-  foreach ($result in @($mxResult, $spfResult, $dkimResult, $mtaStsResult, $dmarcResult, $tlsResult)) {
-    if ($result.Status -eq 'FAIL') {
-      $hasFail = $true
-      # Remove duplicate section prefix from reason (e.g., "MTA-STS: missing" becomes "missing")
-      # For TLS-RPT, section is "SMTP TLS Reporting (TLS-RPT)" but reason starts with "TLS-RPT:"
-      $cleanReason = $result.Data.Reason -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT):\s*', ''
-      $issues += "$($result.Section): $cleanReason"
-    } elseif ($result.Status -eq 'WARN') {
-      # Remove duplicate section prefix from reason
-      $cleanReason = $result.Data.Reason -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT):\s*', ''
-      $issues += "$($result.Section): $cleanReason"
-      # Also include individual warnings for visibility in Issues Found
-      if ($result.Warnings -and $result.Warnings.Count -gt 0) {
-        foreach ($w in $result.Warnings) {
-          if (-not [string]::IsNullOrWhiteSpace($w)) {
-            $issues += "$($result.Section): " + ($w -replace '^Warning:\s*', '')
-          }
-        }
-      }
-      }
-    }
-  if ($issues.Count -gt 0) {
-    $boxClass = if ($hasFail) { "issues-box-fail" } else { "issues-box" }
-    $issuesBox = @"
-    <div class="$boxClass">
-        <h3>Issues Found</h3>
-        <ul>
-$(($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlEncode($_))</li>" }) -join "`n")
-        </ul>
-    </div>
-"@
-  } else {
-    $issuesBox = @"
-    <div class="success-box">
-        <h3>All Checks Passed</h3>
-        <p>No issues detected in the email security configuration.</p>
-    </div>
-"@
-  }
-
-  # Build summary table
-  $summaryTable = "<h2>Summary</h2>`n"
-  $summaryTable += "<table class='summary-table'><tr><th class='col-check'>Check</th><th class='col-status'>Status</th><th>Details</th></tr>"
-  
-  $renderStatusCell = {
-    param($status)
-    $cls = switch ($status) {
-      'PASS' { 'status-ok' }
-      'OK' { 'status-ok' }
-      'WARN' { 'status-warn' }
-      'FAIL' { 'status-fail' }
-      'N/A' { 'status-info' }
-      default { '' }
-    }
-    $text = switch ($status) { 'OK' { 'PASS' } default { $status } }
-    return "<td class='$cls'>$text</td>"
-  }
-  
-  if ($mxResult.Status -eq 'PASS' -or $mxResult.Status -eq 'OK') {
-    # Use valid MX records for display
-    $validMxForDisplay = if ($mxResult.Data.ValidMXRecords) { $mxResult.Data.ValidMXRecords } else { $mxResult.Data.MXRecords }
-    $mxRecords = ($validMxForDisplay | Sort-Object Preference,NameExchange | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange)") }) -join '<br>'
-    
-    # Check if there are invalid MX records to warn about
-    $invalidMxCount = if ($mxResult.Data.InvalidMXRecords) { @($mxResult.Data.InvalidMXRecords).Count } else { 0 }
-    if ($invalidMxCount -gt 0) {
-      $invalidMxDetails = ($mxResult.Data.InvalidMXRecords | ForEach-Object { 
-        [System.Web.HttpUtility]::HtmlEncode("$($_.Preference) $($_.NameExchange) ($($_.Reason))") 
-      }) -join '<br>'
-      $mxRecords += "<br><span class='text-warning'><strong>⚠ Invalid MX records:</strong><br>$invalidMxDetails</span>"
-    }
-    
-    $summaryTable += "<tr><td>MX Records</td><td class='status-ok' colspan='2'>$mxRecords</td></tr>"
-  } elseif ($mxResult.Status -eq 'WARN') {
-    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td class='td-detail-warn'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
-  } elseif ($mxResult.Data.DomainExists -eq $false) {
-    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td class='td-detail-error'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
-  } else {
-    $summaryTable += "<tr><td>MX Records</td>" + (& $renderStatusCell $mxResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
-  }
-  $summaryTable += "<tr><td>SPF</td>" + (& $renderStatusCell $spfResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
-  $summaryTable += "<tr><td>DKIM</td>" + (& $renderStatusCell $dkimResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
-  $summaryTable += "<tr><td>DMARC</td>" + (& $renderStatusCell $dmarcResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
-  $summaryTable += "<tr><td>MTA-STS</td>" + (& $renderStatusCell $mtaStsResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
-  $summaryTable += "<tr><td>TLS-RPT</td>" + (& $renderStatusCell $tlsResult.Status) + "<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
-  $summaryTable += "</table>"
-
-  # Build sections
-  $sections = ""
-  $sections += ConvertTo-HtmlSection $mxResult
-  $sections += ConvertTo-HtmlSection $spfResult
-  $sections += ConvertTo-HtmlSection $dkimResult
-  $sections += ConvertTo-HtmlSection $dmarcResult
-  $sections += ConvertTo-HtmlSection $mtaStsResult
-  $sections += ConvertTo-HtmlSection $tlsResult
+  # Build HTML components using helper functions
+  $issuesBox = Get-IssuesBoxHtml -Results @($mxResult, $spfResult, $dkimResult, $mtaStsResult, $dmarcResult, $tlsResult)
+  $summaryTable = Get-SummaryTableHtml -mxResult $mxResult -spfResult $spfResult -dkimResult $dkimResult -dmarcResult $dmarcResult -mtaStsResult $mtaStsResult -tlsResult $tlsResult
+  $sections = Get-CheckSectionsHtml -mxResult $mxResult -spfResult $spfResult -dkimResult $dkimResult -dmarcResult $dmarcResult -mtaStsResult $mtaStsResult -tlsResult $tlsResult
+  $domainDisplay = Get-DomainDisplayName -Domain $Domain
 
   # Replace placeholders
-  # Check if domain contains non-ASCII characters (IDNA) and add Punycode version
-  $isIdn = Test-IdnDomain -Domain $Domain
-  if ($isIdn) {
-    $idnDomain = ConvertTo-IdnDomain -Domain $Domain
-    $encodedDomain = [System.Web.HttpUtility]::HtmlEncode($Domain)
-    $encodedPunycode = [System.Web.HttpUtility]::HtmlEncode($idnDomain)
-    $domainDisplay = "$encodedDomain ($encodedPunycode)"
-  } else {
-    $encodedDomain = [System.Web.HttpUtility]::HtmlEncode($Domain)
-    $domainDisplay = $encodedDomain
-  }
   $html = $html -replace '\{\{DOMAIN\}\}', $domainDisplay
   $html = $html -replace '\{\{TIMESTAMP\}\}', $now
   $html = $html -replace '\{\{REL_ASSETS_PATH\}\}', $RelAssetsPath
@@ -3995,7 +4009,11 @@ function Write-IndexPage {
       $encodedActivityPlanName = [System.Web.HttpUtility]::HtmlEncode($ActivityPlanFileName)
     $downloadLinks += "        <a class='btn btn-download btn-activity-plan' href='" + $encodedActivityPlanName + "'>Download Activity Plan</a>`n"
     }
-  $downloadLinks += "        <a class='btn btn-primary' href='analysis/index.html'>View Analysis &amp; Remediation</a>`n"
+    # Only show analysis button if ChatGPT analysis was invoked (analysis/index.html exists)
+    $analysisIndexPath = Join-Path $RootPath 'analysis/index.html'
+    if (Test-Path $analysisIndexPath) {
+      $downloadLinks += "        <a class='btn btn-primary' href='analysis/index.html'>View Analysis &amp; Remediation</a>`n"
+    }
     $downloadLinks += "    </div>`n"
 
   # Helper to render status badge - build strings without nested expansion
@@ -4031,12 +4049,7 @@ function Write-IndexPage {
     $encodedDomain = [System.Web.HttpUtility]::HtmlEncode($domain)
     
     $overallStatus = $result.Summary.Status
-    $statusClass = switch ($overallStatus) {
-        'PASS' { 'status-ok' }
-        'WARN' { 'status-warn' }
-        'FAIL' { 'status-fail' }
-        default { '' }
-      }
+    $statusClass = Get-StatusClass -Status $overallStatus
     
     # Collect condensed issues with line breaks
     $issues = @()
@@ -4269,16 +4282,18 @@ $summary = [pscustomobject]@{
 
     if (-not $QuietMode) {
         Write-Section "Summary"
-        Write-Host "Tested domain: $Domain" -ForegroundColor White
+        # Show domain with Punycode if IDNA is used
+        $isIdn = Test-IdnDomain -Domain $Domain
+        if ($isIdn) {
+            $idnDomain = ConvertTo-IdnDomain -Domain $Domain
+            Write-Host "Tested domain: $Domain ($idnDomain)" -ForegroundColor White
+        } else {
+            Write-Host "Tested domain: $Domain" -ForegroundColor White
+        }
 
 # Overall status
 Write-Host "`nOverall Status: " -NoNewline
-$statusColor = switch ($summary.Status) {
-    'PASS' { 'Green' }
-    'WARN' { 'Yellow' }
-    'FAIL' { 'Red' }
-    default { 'White' }
-}
+$statusColor = Get-StatusColor -Status $summary.Status
 Write-Host $summary.Status -ForegroundColor $statusColor
 
 # Status per check
@@ -4373,12 +4388,7 @@ Write-Host "Checking $($domains.Count) domain$(if ($domains.Count -gt 1) { 's' }
         $result = Invoke-DomainCheck -Domain $currentDomain -Selectors $Selectors -QuietMode $true
         
         # Show overall status on same line
-        $statusColor = switch ($result.Summary.Status) {
-            'PASS' { 'Green' }
-            'WARN' { 'Yellow' }
-            'FAIL' { 'Red' }
-            default { 'White' }
-        }
+        $statusColor = Get-StatusColor -Status $result.Summary.Status
         Write-Host " (Overall status: " -NoNewline
         Write-Host $result.Summary.Status -ForegroundColor $statusColor -NoNewline
         Write-Host ")"
@@ -4429,11 +4439,7 @@ if ($Html -or $FullHtmlExport) {
         # Export CSV (always with FullHtmlExport)
         # Create enhanced CSV with individual reason columns
         # Sanitize function to remove tabs, newlines, and other problematic characters
-        function ConvertTo-CsvSafe($value) {
-            if ($null -eq $value) { return "" }
-            # Replace tabs with spaces, remove newlines, replace semicolons with commas, and trim
-            return $value.ToString() -replace "`t", " " -replace "`r`n", " " -replace "`n", " " -replace "`r", " " -replace ";", ","
-        }
+        # Use global ConvertTo-CsvSafe function (defined earlier)
         
         $csvData = $allResults | ForEach-Object {
             [PSCustomObject]@{
