@@ -25,7 +25,7 @@ param(
   [string]$BulkFile,
 
   [Parameter(Mandatory=$false)]
-  [string]$Selectors = "default,s1,s2,selector1,selector2,google,mail,k1",
+  [string]$Selectors = "default,s1,s2,s3,k1,k2,k3,selector1,selector2,google,mail,dkim,smtp,email",
 
   [Parameter(Mandatory=$false)]
   [string[]]$DnsServer,
@@ -1443,11 +1443,14 @@ function Test-DKIMRecords {
         [string[]]$Selectors,
         [bool]$HasMX,
         [bool]$HasSpfWithMechanisms,
-        [bool]$DomainExists = $true
+        [bool]$DomainExists = $true,
+        [array]$MxRecords = @(),
+        [string]$SpfRecord = $null
     )
     
     $details = @()
     $warnings = @()
+    $failures = @()
     $infoMessages = @()
     $status = 'FAIL'
     $dkimResults = @()
@@ -1475,9 +1478,35 @@ function Test-DKIMRecords {
         if ($txt -is [System.Collections.IEnumerable]) { $txt = ($txt -join "") }
 
         $hasV = $false; $hasP = $false
+        
+        # Check if TXT record contains valid DKIM format
         if ($txt) {
             $hasV = [bool]($txt -match "(?i)\bv\s*=\s*DKIM1\b")
             $hasP = [bool](($txt -match "(?i)\bp\s*=\s*[^;]+") -or ($txt -match "(?i)\bp\s*=\s*\S+$"))
+        }
+        
+        # If TXT doesn't exist OR exists but is not a valid DKIM record, check for CNAME (Microsoft 365 uses CNAME for DKIM)
+        if (-not $txt -or ($txt -and -not $hasP)) {
+            try {
+                if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+                    # Check for CNAME record directly
+                    $cnameResult = Resolve-DnsName -Name $dkimHost -Type CNAME -ErrorAction Stop
+                    $cnameRec = $cnameResult | Where-Object { $_.Type -eq 'CNAME' } | Select-Object -First 1
+                    if ($cnameRec -and $cnameRec.NameHost) {
+                        # Found CNAME - follow it to get the actual DKIM key
+                        $cnameTarget = $cnameRec.NameHost
+                        $cnameTxt = Resolve-Txt $cnameTarget
+                        if ($cnameTxt -is [System.Collections.IEnumerable]) { $cnameTxt = ($cnameTxt -join "") }
+                        if ($cnameTxt) {
+                            $txt = $cnameTxt  # Use the CNAME target's TXT record
+                            $hasV = [bool]($txt -match "(?i)\bv\s*=\s*DKIM1\b")
+                            $hasP = [bool](($txt -match "(?i)\bp\s*=\s*[^;]+") -or ($txt -match "(?i)\bp\s*=\s*\S+$"))
+                        }
+                    }
+                }
+            } catch {
+                # If CNAME lookup fails (no CNAME record or other error), continue with original TXT
+            }
         }
 
         $raw = $null
@@ -1515,6 +1544,36 @@ function Test-DKIMRecords {
 
     $anyValid = @($validSelectors).Count -gt 0
 
+    # Provider-aware validation: Check if DKIM selectors match mail provider
+    $providerMismatch = $false
+    $expectedProvider = $null
+    if ($anyValid) {
+        # Detect mail provider from MX records and SPF
+        $expectedProvider = Get-MailProvider -MxRecords $MxRecords -SpfRecord $SpfRecord
+        
+        # Only check for mismatch if provider is detected (not null or 'Unknown')
+        if ($expectedProvider -and $expectedProvider -ne 'Unknown') {
+            $expectedSelectors = Get-ExpectedDkimSelectors -Provider $expectedProvider
+            $foundMatchingSelector = $false
+            
+            # Check if any valid selector matches expected selectors for this provider
+            foreach ($valid in $validSelectors) {
+                if ($valid.Selector -in $expectedSelectors) {
+                    $foundMatchingSelector = $true
+                    break
+                }
+            }
+            
+            # If valid selectors found but none match expected provider selectors
+            if (-not $foundMatchingSelector) {
+                $providerMismatch = $true
+                $foundSelectorNames = ($validSelectors | ForEach-Object { $_.Selector }) -join ', '
+                $expectedSelectorNames = $expectedSelectors -join ', '
+                $warnings += "Warning: DKIM selectors found, but none match detected mail provider ($expectedProvider). Found: $foundSelectorNames. Expected: $expectedSelectorNames."
+            }
+        }
+    }
+
     # Check for warnings and info messages
     foreach ($dkim in @($validSelectors)) {
         if ($dkim.FullTXT -match '(?i)\bt=y\b') {
@@ -1530,20 +1589,140 @@ function Test-DKIMRecords {
 
     $reason = ""
     if ($anyValid) {
-        $infoMessages += "DKIM validation successful - at least one valid selector found with proper public key."
-        $status = 'PASS'
         $validSelectorNames = ($validSelectors | ForEach-Object { $_.Selector }) -join ', '
-        $reason = "DKIM: valid selectors ($validSelectorNames)"
+        
+        if ($providerMismatch) {
+            # Valid DKIM selectors found but they don't match the detected mail provider
+            $status = 'WARN'  # WARN not FAIL - allows for hybrid setups
+            $reason = "DKIM: valid selectors ($validSelectorNames) but may not match mail provider ($expectedProvider)"
+        } else {
+            # Valid DKIM selectors found
+            $status = 'PASS'
+            $reason = "DKIM: valid selectors ($validSelectorNames)"
+            
+            # Add info message if provider was matched successfully
+            if ($expectedProvider -and $expectedProvider -ne 'Unknown') {
+                $infoMessages += "DKIM selectors match mail provider ($expectedProvider)."
+            } else {
+                $infoMessages += "DKIM validation successful - at least one valid selector found with proper public key."
+            }
+        }
     } else {
-        $warnings += "DKIM validation failed - no valid selectors found with proper public keys."
+        $failures += "Failure: DKIM validation failed - no valid selectors found with proper public keys."
         $status = 'FAIL'
         $reason = "DKIM: no valid selectors"
     }
     
-    return New-CheckResult -Section 'DKIM' -Status $status -Details $details -Warnings $warnings -InfoMessages $infoMessages -Data @{ 
+    return New-CheckResult -Section 'DKIM' -Status $status -Details $details -Warnings $warnings -Failures $failures -InfoMessages $infoMessages -Data @{ 
         DKIMResults = $dkimResults
         AnyValid = $anyValid
+        ProviderMismatch = $providerMismatch
+        ExpectedProvider = $expectedProvider
         Reason = $reason
+    }
+}
+
+function Get-MailProvider {
+    <#
+    .SYNOPSIS
+    Detects mail provider based on MX records and SPF record patterns.
+    
+    .DESCRIPTION
+    Analyzes MX records and SPF records to identify the mail service provider.
+    Returns provider name or 'Unknown' if no pattern matches, or $null if no MX records.
+    #>
+    param(
+        $MxRecords,
+        $SpfRecord
+    )
+    
+    # If no MX records, cannot detect provider
+    if (-not $MxRecords -or @($MxRecords).Count -eq 0) {
+        return $null
+    }
+    
+    $mxHosts = @($MxRecords | ForEach-Object { $_.NameExchange.ToLower() })
+    
+    # Microsoft 365 - check MX records
+    if ($mxHosts | Where-Object { $_ -match '\.mail\.protection\.outlook\.com$|\.outlook\.com$' }) {
+        return 'Microsoft365'
+    }
+    
+    # Google Workspace - check MX records
+    if ($mxHosts | Where-Object { $_ -match '\.google\.com$|\.googlemail\.com$' }) {
+        return 'GoogleWorkspace'
+    }
+    
+    # Zoho - check MX records
+    if ($mxHosts | Where-Object { $_ -match '\.zoho\.com$|\.zohomail\.com$' }) {
+        return 'Zoho'
+    }
+    
+    # Proofpoint - check MX records
+    if ($mxHosts | Where-Object { $_ -match '\.pphosted\.com$' }) {
+        return 'Proofpoint'
+    }
+    
+    # Check SPF records for providers that might not have distinctive MX records
+    if ($SpfRecord) {
+        $spfLower = $SpfRecord.ToLower()
+        
+        # Amazon SES
+        if ($spfLower -match 'amazonses\.com') {
+            return 'AmazonSES'
+        }
+        
+        # SendGrid
+        if ($spfLower -match 'sendgrid\.net') {
+            return 'SendGrid'
+        }
+        
+        # Mailgun
+        if ($spfLower -match 'mailgun\.org') {
+            return 'Mailgun'
+        }
+    }
+    
+    # No pattern matched
+    return 'Unknown'
+}
+
+function Get-ExpectedDkimSelectors {
+    <#
+    .SYNOPSIS
+    Returns expected DKIM selectors for a given mail provider.
+    
+    .DESCRIPTION
+    Returns an array of expected selector names that the mail provider typically uses for DKIM signing.
+    #>
+    param([string]$Provider)
+    
+    switch ($Provider) {
+        'Microsoft365' {
+            return @('selector1', 'selector2', 'k1', 'k2', 'k3', 's1', 's2')
+        }
+        'GoogleWorkspace' {
+            return @('google', 'default')
+        }
+        'AmazonSES' {
+            return @('amazonses')
+        }
+        'SendGrid' {
+            return @('s1', 's2', 'sendgrid')
+        }
+        'Mailgun' {
+            return @('mta', 'mailo', 'mailgun', 'k1')
+        }
+        'Zoho' {
+            return @('zoho', 'zmail', 'default')
+        }
+        'Proofpoint' {
+            return @('pp-default', 'default', 's1')
+        }
+        default {
+            # Unknown provider or no provider - return common default selectors
+            return @('default', 's1', 'k1')
+        }
     }
 }
 
@@ -4215,7 +4394,7 @@ if (@($spfRecs).Count -gt 0) {
 }
 
 $selectorList = ($Selectors -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$dkimResult = Test-DKIMRecords -Domain $Domain -Selectors $selectorList -HasMX $mxOk -HasSpfWithMechanisms $hasSpfWithMechanisms -DomainExists $domainExists
+$dkimResult = Test-DKIMRecords -Domain $Domain -Selectors $selectorList -HasMX $mxOk -HasSpfWithMechanisms $hasSpfWithMechanisms -DomainExists $domainExists -MxRecords $validMx -SpfRecord $(if ($spfRecs.Count -gt 0) { $spfRecs[0] } else { $null })
 $DKIM_AnySelector_Valid = $dkimResult.Data.AnyValid
     if (-not $QuietMode) { Write-CheckResult $dkimResult }
 
