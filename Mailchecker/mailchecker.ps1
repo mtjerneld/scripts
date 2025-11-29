@@ -2477,6 +2477,310 @@ function Invoke-DnsQuery {
 }
 
 # ============================================================================
+# Centralized Issue and Recommendation Handling
+# ============================================================================
+
+# Issue metadata - centraliserad definition av alla möjliga problem
+$script:IssueDefinitions = @{
+    # SPF Issues
+    'SPF_MISSING' = @{
+        Pattern = '^missing$|\bmissing\b'
+        Section = 'SPF'
+        Severity = 'FAIL'
+        FriendlyText = 'SPF record is missing'
+        TechnicalText = 'No SPF record found'
+        Category = 'Configuration'
+    }
+    'SPF_SOFT_FAIL' = @{
+        Pattern = '~all|soft fail'
+        Section = 'SPF'
+        Severity = 'WARN'
+        FriendlyText = 'Using soft fail policy - recommend upgrading to hard fail'
+        TechnicalText = '~all (soft fail)'
+        Category = 'Policy'
+    }
+    'SPF_LOOKUPS_EXCEEDED' = @{
+        Pattern = '>10 lookups|\d+ lookups.*exceed'
+        Section = 'SPF'
+        Severity = 'FAIL'
+        FriendlyText = 'Too many DNS lookups (exceeds RFC limit)'
+        TechnicalText = 'DNS lookup limit exceeded'
+        Category = 'Configuration'
+    }
+    'SPF_LOOKUPS_AT_LIMIT' = @{
+        Pattern = 'at limit|10 lookups'
+        Section = 'SPF'
+        Severity = 'WARN'
+        FriendlyText = 'DNS lookups at RFC limit - no room for changes'
+        TechnicalText = 'At DNS lookup limit'
+        Category = 'Configuration'
+    }
+    'SPF_INVALID_INCLUDE' = @{
+        Pattern = 'invalid include|NXDOMAIN|no SPF record'
+        Section = 'SPF'
+        Severity = 'FAIL'
+        FriendlyText = 'References non-existent or invalid domains'
+        TechnicalText = 'Invalid include directive'
+        Category = 'Configuration'
+    }
+    
+    # DMARC Issues
+    'DMARC_MISSING' = @{
+        Pattern = '^missing$|\bmissing\b'
+        Section = 'DMARC'
+        Severity = 'FAIL'
+        FriendlyText = 'DMARC record is missing'
+        TechnicalText = 'No DMARC record found'
+        Category = 'Configuration'
+    }
+    'DMARC_P_NONE' = @{
+        Pattern = '\bp=none\b|monitoring.*mode'
+        Section = 'DMARC'
+        Severity = 'WARN'
+        FriendlyText = 'Monitoring mode only (not enforced)'
+        TechnicalText = 'p=none'
+        Category = 'Policy'
+    }
+    'DMARC_P_QUARANTINE' = @{
+        Pattern = 'p=quarantine.*not.*enforced'
+        Section = 'DMARC'
+        Severity = 'WARN'
+        FriendlyText = 'Quarantine mode (not fully enforced)'
+        TechnicalText = 'p=quarantine'
+        Category = 'Policy'
+    }
+    'DMARC_PCT_PARTIAL' = @{
+        Pattern = 'pct=\d+|pct<100'
+        Section = 'DMARC'
+        Severity = 'WARN'
+        FriendlyText = 'Partial policy coverage (not all messages checked)'
+        TechnicalText = 'pct<100'
+        Category = 'Policy'
+    }
+    'DMARC_NO_REPORTING' = @{
+        Pattern = 'rua=missing|no reporting'
+        Section = 'DMARC'
+        Severity = 'WARN'
+        FriendlyText = 'No reporting addresses configured'
+        TechnicalText = 'Missing rua/ruf'
+        Category = 'Monitoring'
+    }
+    
+    # DKIM Issues
+    'DKIM_MISSING' = @{
+        Pattern = 'no valid|missing'
+        Section = 'DKIM'
+        Severity = 'FAIL'
+        FriendlyText = 'No valid DKIM selectors found'
+        TechnicalText = 'No valid selectors'
+        Category = 'Configuration'
+    }
+    'DKIM_PROVIDER_MISMATCH' = @{
+        Pattern = 'may not match.*provider'
+        Section = 'DKIM'
+        Severity = 'WARN'
+        FriendlyText = 'Selectors may not match mail provider'
+        TechnicalText = 'Provider mismatch'
+        Category = 'Configuration'
+    }
+    
+    # MTA-STS Issues
+    'MTASTS_MISSING' = @{
+        Pattern = '\bmissing\b|not found|not configured'
+        Section = 'MTA-STS'
+        Severity = 'FAIL'
+        FriendlyText = 'Not configured'
+        TechnicalText = 'MTA-STS not configured'
+        Category = 'Configuration'
+    }
+    'MTASTS_TESTING' = @{
+        Pattern = 'mode=testing|testing mode'
+        Section = 'MTA-STS'
+        Severity = 'WARN'
+        FriendlyText = 'Testing mode (not enforced)'
+        TechnicalText = 'mode=testing'
+        Category = 'Policy'
+    }
+    
+    # TLS-RPT Issues
+    'TLSRPT_MISSING' = @{
+        Pattern = '\bmissing\b|not configured'
+        Section = 'SMTP TLS Reporting (TLS-RPT)'
+        Severity = 'WARN'
+        FriendlyText = 'Not configured (recommended for monitoring)'
+        TechnicalText = 'TLS-RPT not configured'
+        Category = 'Monitoring'
+    }
+    
+    # MX Issues
+    'MX_INVALID_RECORDS' = @{
+        Pattern = 'invalid record|root domain'
+        Section = 'MX Records'
+        Severity = 'FAIL'
+        FriendlyText = 'Contains invalid MX records'
+        TechnicalText = 'Invalid MX records'
+        Category = 'Configuration'
+    }
+    'MX_DNS_MISCONFIGURED' = @{
+        Pattern = 'DNS misconfigured|SERVFAIL'
+        Section = 'MX Records'
+        Severity = 'WARN'
+        FriendlyText = 'DNS server errors (SERVFAIL)'
+        TechnicalText = 'DNS misconfigured'
+        Category = 'Infrastructure'
+    }
+}
+
+function Get-IssueType {
+    <#
+    .SYNOPSIS
+    Identifies the issue type based on reason text and section.
+    
+    .DESCRIPTION
+    Matches reason text against predefined patterns to categorize issues.
+    Returns issue metadata including severity, friendly text, and category.
+    #>
+    param(
+        [string]$ReasonText,
+        [string]$Section
+    )
+    
+    if ([string]::IsNullOrWhiteSpace($ReasonText)) {
+        return $null
+    }
+    
+    # Clean the reason text
+    $cleanText = $ReasonText -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT|MX Records|MX):\s*', '' `
+                              -replace '^Warning:\s*', '' `
+                              -replace '^\s+|\s+$', ''
+    
+    # Find matching issue definition
+    foreach ($issueKey in $script:IssueDefinitions.Keys) {
+        $issueDef = $script:IssueDefinitions[$issueKey]
+        
+        # Match section and pattern
+        if ($issueDef.Section -eq $Section -and $cleanText -match $issueDef.Pattern) {
+            return @{
+                Key = $issueKey
+                Section = $issueDef.Section
+                Severity = $issueDef.Severity
+                FriendlyText = $issueDef.FriendlyText
+                TechnicalText = $issueDef.TechnicalText
+                Category = $issueDef.Category
+                OriginalText = $cleanText
+            }
+        }
+    }
+    
+    # No match found - return generic issue
+    return @{
+        Key = 'UNKNOWN'
+        Section = $Section
+        Severity = 'WARN'
+        FriendlyText = $cleanText
+        TechnicalText = $cleanText
+        Category = 'Other'
+        OriginalText = $cleanText
+    }
+}
+
+function Get-ProcessedIssues {
+    <#
+    .SYNOPSIS
+    Processes check results to extract and deduplicate issues.
+    
+    .DESCRIPTION
+    Extracts issues from check results, identifies issue types,
+    deduplicates based on semantic equivalence, and returns
+    structured issue objects.
+    #>
+    param(
+        [array]$Results  # Array of check results
+    )
+    
+    $issues = @()
+    $seenIssueKeys = @{}
+    
+    foreach ($result in $Results) {
+        if ($null -eq $result) { continue }
+        
+        # Skip domain existence failures
+        $reason = if ($result.Data -and $result.Data.Reason) { $result.Data.Reason } else { '' }
+        if ($reason -match 'Domain: does not exist|NXDOMAIN') {
+            continue
+        }
+        
+        # Process based on status
+        if ($result.Status -eq 'FAIL' -or $result.Status -eq 'WARN') {
+            # Process warnings first (more detailed)
+            $warningIssues = @()
+            if ($result.Warnings -and $result.Warnings.Count -gt 0) {
+                foreach ($warning in $result.Warnings) {
+                    if (-not [string]::IsNullOrWhiteSpace($warning)) {
+                        $issueType = Get-IssueType -ReasonText $warning -Section $result.Section
+                        if ($issueType) {
+                            $warningIssues += $issueType
+                        }
+                    }
+                }
+            }
+            
+            # Process reason
+            if (-not [string]::IsNullOrWhiteSpace($reason)) {
+                $reasonIssue = Get-IssueType -ReasonText $reason -Section $result.Section
+                
+                # Only add reason if it's not redundant with warnings
+                $isRedundant = $false
+                if ($reasonIssue) {
+                    foreach ($warnIssue in $warningIssues) {
+                        if ($warnIssue.Key -eq $reasonIssue.Key) {
+                            $isRedundant = $true
+                            break
+                        }
+                    }
+                }
+                
+                if (-not $isRedundant -and $reasonIssue) {
+                    # For complex reasons with multiple parts, split and process
+                    if ($reason -match '[;,]' -and $result.Status -eq 'WARN') {
+                        $reasonParts = $reason -split '[;,]' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+                        foreach ($part in $reasonParts) {
+                            $partIssue = Get-IssueType -ReasonText $part -Section $result.Section
+                            if ($partIssue) {
+                                # Check if this part is redundant with warnings
+                                $partRedundant = $false
+                                foreach ($warnIssue in $warningIssues) {
+                                    if ($warnIssue.Key -eq $partIssue.Key) {
+                                        $partRedundant = $true
+                                        break
+                                    }
+                                }
+                                if (-not $partRedundant) {
+                                    $warningIssues += $partIssue
+                                }
+                            }
+                        }
+                    } else {
+                        $warningIssues += $reasonIssue
+                    }
+                }
+            }
+            
+            # Add unique issues (deduplicate by key)
+            foreach ($issue in $warningIssues) {
+                $dedupKey = "$($issue.Section):$($issue.Key)"
+                if (-not $seenIssueKeys.ContainsKey($dedupKey)) {
+                    $issues += $issue
+                    $seenIssueKeys[$dedupKey] = $true
+                }
+            }
+        }
+    }
+    
+    return $issues
+}
+
+# ============================================================================
 # Status Mapping Helper Functions
 # ============================================================================
 
@@ -3840,55 +4144,40 @@ function Get-IssuesBoxHtml {
     Build the issues box HTML showing FAIL/WARN issues or success message.
     
     .DESCRIPTION
-    Analyzes check results to collect all FAIL and WARN issues, then generates
-    appropriate HTML with either an issues box or a success message.
+    Uses structured issue processing to generate HTML with proper
+    deduplication and categorization.
     #>
     param(
         [array]$Results  # Array of check results (mxResult, spfResult, etc.)
     )
     
-    $issues = @()
-    $hasFail = $false
+    $issues = Get-ProcessedIssues -Results $Results
     
-    foreach ($result in $Results) {
-        if ($null -eq $result) { continue }
-        
-        if ($result.Status -eq 'FAIL') {
-            # Skip domain existence failures (NXDOMAIN) - these are not email security issues
-            $reason = if ($result.Data -and $result.Data.Reason) { $result.Data.Reason } else { '' }
-            if ($reason -match 'Domain: does not exist|NXDOMAIN') {
-                continue
-            }
-            
-            $hasFail = $true
-            $cleanReason = Get-CleanReason -Reason $reason
-            $issues += "$($result.Section): $cleanReason"
-        } elseif ($result.Status -eq 'WARN') {
-            $cleanReason = Get-CleanReason -Reason $result.Data.Reason
-            $issues += "$($result.Section): $cleanReason"
-            # Also include individual warnings for visibility in Issues Found
-            if ($result.Warnings -and $result.Warnings.Count -gt 0) {
-                foreach ($w in $result.Warnings) {
-                    if (-not [string]::IsNullOrWhiteSpace($w)) {
-                        $cleanWarning = Get-CleanReason -Reason $w
-                        $issues += "$($result.Section): $cleanWarning"
-                    }
-                }
-            }
-        }
-    }
+    # Determine overall severity
+    $hasFail = ($issues | Where-Object { $_.Severity -eq 'FAIL' }).Count -gt 0
     
     if ($issues.Count -gt 0) {
+        # Group by category for better organization
+        $groupedIssues = $issues | Group-Object -Property Category
+        
         $boxClass = if ($hasFail) { "issues-box-fail" } else { "issues-box" }
-        $issuesHtml = ($issues | ForEach-Object { "            <li>$([System.Web.HttpUtility]::HtmlEncode($_))</li>" }) -join "`n"
-        return @"
-    <div class="$boxClass">
-        <h3>Issues Found</h3>
-        <ul>
-$issuesHtml
-        </ul>
-    </div>
-"@
+        $html = "    <div class='$boxClass'>`n"
+        $html += "        <h3>Issues Found</h3>`n"
+        
+        foreach ($group in $groupedIssues) {
+            if ($group.Count -gt 0) {
+                $html += "        <h4>$($group.Name)</h4>`n"
+                $html += "        <ul>`n"
+                foreach ($issue in $group.Group) {
+                    $encodedText = [System.Web.HttpUtility]::HtmlEncode("$($issue.Section): $($issue.FriendlyText)")
+                    $html += "            <li>$encodedText</li>`n"
+                }
+                $html += "        </ul>`n"
+            }
+        }
+        
+        $html += "    </div>"
+        return $html
     } else {
         return @"
     <div class="success-box">
@@ -3899,6 +4188,79 @@ $issuesHtml
     }
 }
 
+function Get-FriendlySummaryText {
+    <#
+    .SYNOPSIS
+    Generates friendly, readable summary text for summary table.
+    
+    .DESCRIPTION
+    Uses structured issue identification to provide consistent
+    user-friendly summaries across all check types.
+    Always returns a non-empty string when possible.
+    #>
+    param($Result)
+    
+    if ($null -eq $Result) { return '' }
+    
+    # Get base reason text for fallback
+    $reason = if ($Result.Data -and $Result.Data.Reason) { $Result.Data.Reason } else { '' }
+    $cleanReason = $reason -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT|MX Records|MX):\s*', '' `
+                           -replace '^Warning:\s*', '' `
+                           -replace '^\s+|\s+$', ''
+    
+    # For WARN or FAIL status, try to identify the primary issue
+    if ($Result.Status -eq 'WARN' -or $Result.Status -eq 'FAIL') {
+        $issues = Get-ProcessedIssues -Results @($Result)
+        
+        if ($issues.Count -gt 0) {
+            $firstIssueText = $issues[0].FriendlyText
+            # Only use issue text if it's not empty and not just the raw text
+            if (-not [string]::IsNullOrWhiteSpace($firstIssueText) -and 
+                $firstIssueText -ne $issues[0].OriginalText -and
+                $firstIssueText.Length -lt 200) {
+                return $firstIssueText
+            }
+        }
+        
+        # If no structured issues found, try using first warning as fallback
+        if ($Result.Warnings -and $Result.Warnings.Count -gt 0) {
+            $firstWarning = $Result.Warnings[0]
+            $cleanWarning = $firstWarning -replace '^(Warning|Info):\s*', '' -replace '^\s+|\s+$', ''
+            # Use first sentence of warning if it's reasonable length
+            if (-not [string]::IsNullOrWhiteSpace($cleanWarning)) {
+                $firstSentence = ($cleanWarning -split '\.')[0].Trim()
+                if (-not [string]::IsNullOrWhiteSpace($firstSentence) -and $firstSentence.Length -lt 120) {
+                    return $firstSentence + '.'
+                }
+                if ($cleanWarning.Length -lt 120) {
+                    return $cleanWarning
+                }
+            }
+        }
+    }
+    
+    # Fallback to cleaned reason
+    # For multi-part reasons, show first meaningful part only for summary
+    if (-not [string]::IsNullOrWhiteSpace($cleanReason)) {
+        if ($cleanReason -match '[;,]') {
+            $parts = $cleanReason -split '[;,]' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+            foreach ($part in $parts) {
+                # Skip purely informational parts like "adkim=r" or "aspf=r" for summary
+                if ($part -notmatch '^(adkim|aspf)=[rs]$' -and $part.Length -gt 0) {
+                    return $part
+                }
+            }
+            # If all parts were skipped, return first part anyway
+            if ($parts.Count -gt 0) {
+                return $parts[0]
+            }
+        }
+        return $cleanReason
+    }
+    
+    return ''
+}
+
 function Get-SummaryTableHtml {
     <#
     .SYNOPSIS
@@ -3907,6 +4269,7 @@ function Get-SummaryTableHtml {
     .DESCRIPTION
     Generates a summary table with rows for each check type (MX, SPF, DKIM, etc.)
     including status badges and details. Handles special cases for MX records.
+    For WARN status, uses friendly text from warnings instead of technical reason strings.
     #>
     param(
         $mxResult,
@@ -3947,21 +4310,61 @@ function Get-SummaryTableHtml {
         $html += "<tr><td>MX Records</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($mxResult.Data.Reason))</td></tr>"
     }
     
-    # Other check rows
+    # Other check rows - use friendly text for WARN/FAIL status
     $statusBadge = Get-StatusBadgeHtml -Status $spfResult.Status
-    $html += "<tr><td>SPF</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($spfResult.Data.Reason))</td></tr>"
+    if ($spfResult.Status -eq 'WARN' -or $spfResult.Status -eq 'FAIL') {
+        $spfSummaryText = Get-FriendlySummaryText -Result $spfResult
+        if ([string]::IsNullOrWhiteSpace($spfSummaryText)) {
+            $spfSummaryText = if ($spfResult.Data.Reason) { $spfResult.Data.Reason -replace '^SPF:\s*', '' } else { '' }
+        }
+    } else {
+        $spfSummaryText = if ($spfResult.Data.Reason) { $spfResult.Data.Reason } else { '' }
+    }
+    $html += "<tr><td>SPF</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($spfSummaryText))</td></tr>"
     
     $statusBadge = Get-StatusBadgeHtml -Status $dkimResult.Status
-    $html += "<tr><td>DKIM</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dkimResult.Data.Reason))</td></tr>"
+    if ($dkimResult.Status -eq 'WARN' -or $dkimResult.Status -eq 'FAIL') {
+        $dkimSummaryText = Get-FriendlySummaryText -Result $dkimResult
+        if ([string]::IsNullOrWhiteSpace($dkimSummaryText)) {
+            $dkimSummaryText = if ($dkimResult.Data.Reason) { $dkimResult.Data.Reason -replace '^DKIM:\s*', '' } else { '' }
+        }
+    } else {
+        $dkimSummaryText = if ($dkimResult.Data.Reason) { $dkimResult.Data.Reason } else { '' }
+    }
+    $html += "<tr><td>DKIM</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dkimSummaryText))</td></tr>"
     
     $statusBadge = Get-StatusBadgeHtml -Status $dmarcResult.Status
-    $html += "<tr><td>DMARC</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dmarcResult.Data.Reason))</td></tr>"
+    if ($dmarcResult.Status -eq 'WARN' -or $dmarcResult.Status -eq 'FAIL') {
+        $dmarcSummaryText = Get-FriendlySummaryText -Result $dmarcResult
+        if ([string]::IsNullOrWhiteSpace($dmarcSummaryText)) {
+            $dmarcSummaryText = if ($dmarcResult.Data.Reason) { $dmarcResult.Data.Reason -replace '^DMARC:\s*', '' } else { '' }
+        }
+    } else {
+        $dmarcSummaryText = if ($dmarcResult.Data.Reason) { $dmarcResult.Data.Reason } else { '' }
+    }
+    $html += "<tr><td>DMARC</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($dmarcSummaryText))</td></tr>"
     
     $statusBadge = Get-StatusBadgeHtml -Status $mtaStsResult.Status
-    $html += "<tr><td>MTA-STS</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsResult.Data.Reason))</td></tr>"
+    if ($mtaStsResult.Status -eq 'WARN' -or $mtaStsResult.Status -eq 'FAIL') {
+        $mtaStsSummaryText = Get-FriendlySummaryText -Result $mtaStsResult
+        if ([string]::IsNullOrWhiteSpace($mtaStsSummaryText)) {
+            $mtaStsSummaryText = if ($mtaStsResult.Data.Reason) { $mtaStsResult.Data.Reason -replace '^MTA-STS:\s*', '' } else { '' }
+        }
+    } else {
+        $mtaStsSummaryText = if ($mtaStsResult.Data.Reason) { $mtaStsResult.Data.Reason } else { '' }
+    }
+    $html += "<tr><td>MTA-STS</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($mtaStsSummaryText))</td></tr>"
     
     $statusBadge = Get-StatusBadgeHtml -Status $tlsResult.Status
-    $html += "<tr><td>TLS-RPT</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($tlsResult.Data.Reason))</td></tr>"
+    if ($tlsResult.Status -eq 'WARN' -or $tlsResult.Status -eq 'FAIL') {
+        $tlsSummaryText = Get-FriendlySummaryText -Result $tlsResult
+        if ([string]::IsNullOrWhiteSpace($tlsSummaryText)) {
+            $tlsSummaryText = if ($tlsResult.Data.Reason) { $tlsResult.Data.Reason -replace '^TLS-RPT:\s*', '' } else { '' }
+        }
+    } else {
+        $tlsSummaryText = if ($tlsResult.Data.Reason) { $tlsResult.Data.Reason } else { '' }
+    }
+    $html += "<tr><td>TLS-RPT</td>$statusBadge<td class='td-small'>$([System.Web.HttpUtility]::HtmlEncode($tlsSummaryText))</td></tr>"
     
     $html += "</table>"
     return $html
@@ -4968,9 +5371,16 @@ if ($Html -or $FullHtmlExport) {
             }
         }
 
-        # If ChatGPT analysis exists, add a note
+        # If ChatGPT analysis exists, update index page to include analysis button
         $analysisIndex = Join-Path $outputStructure.RootPath 'analysis/index.html'
-        if (Test-Path $analysisIndex) { Write-Host "AI analysis available: $analysisIndex" -ForegroundColor Cyan }
+        if (Test-Path $analysisIndex) { 
+            Write-Host "AI analysis available: $analysisIndex" -ForegroundColor Cyan
+            # Regenerate index page to include Analysis button now that analysis/index.html exists
+            Write-IndexPage -RootPath $outputStructure.RootPath -AllResults $allResults `
+                            -CsvFileName $csvFileName -JsonFileName $jsonFileName `
+                            -ActivityPlanFileName $activityPlanFileName
+            Write-Host "  [OK] Updated index page with Analysis button" -ForegroundColor Green
+        }
         
         # Create clickable file link for modern terminals
         $indexPath = Join-Path $outputStructure.RootPath "index.html"
