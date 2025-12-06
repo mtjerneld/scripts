@@ -1338,7 +1338,7 @@ function Test-SPFRecords {
                         $mxHosts = @($mxAnswers | ForEach-Object { $_.NameExchange.ToLower() })
                         $allMs365Mx = ($mxHosts | Where-Object { $_ -like '*.mail.protection.outlook.com' }).Count -eq $mxHosts.Count
                         if ($allMs365Mx) {
-                            $warnings += "Warning: SPF uses 'mx' but all MX are Microsoft 365 (*.mail.protection.outlook.com) and spf.protection.outlook.com is included - 'mx' is likely redundant."
+                            $infoMessages += "Info: SPF uses 'mx' but all MX are Microsoft 365 (*.mail.protection.outlook.com) and spf.protection.outlook.com is included - 'mx' is likely redundant."
                         }
                     }
                 }
@@ -2484,7 +2484,7 @@ function Invoke-DnsQuery {
 $script:IssueDefinitions = @{
     # SPF Issues
     'SPF_MISSING' = @{
-        Pattern = '^missing$|\bmissing\b'
+        Pattern = '^\s*missing\s*$|^SPF.*missing|SPF.*not found|No SPF'
         Section = 'SPF'
         Severity = 'FAIL'
         FriendlyText = 'SPF record is missing'
@@ -2508,11 +2508,27 @@ $script:IssueDefinitions = @{
         Category = 'Configuration'
     }
     'SPF_LOOKUPS_AT_LIMIT' = @{
-        Pattern = 'at limit|10 lookups'
+        Pattern = 'at\s+RFC?\s*limit|at\s+limit|10\s*\(.*limit|10\s+lookups|lookups.*10.*limit|RFC\s+limit|DNS\s+lookups.*10.*RFC|lookups.*\(SPF\):.*10.*RFC'
         Section = 'SPF'
         Severity = 'WARN'
         FriendlyText = 'DNS lookups at RFC limit - no room for changes'
         TechnicalText = 'At DNS lookup limit'
+        Category = 'Configuration'
+    }
+    'SPF_LOOKUPS_NEAR_LIMIT' = @{
+        Pattern = 'near limit|9 lookups'
+        Section = 'SPF'
+        Severity = 'WARN'
+        FriendlyText = 'Near DNS lookup limit (9/10 used)'
+        TechnicalText = 'Near RFC lookup limit'
+        Category = 'Configuration'
+    }
+    'SPF_PTR_DEPRECATED' = @{
+        Pattern = '\bptr\b.*deprecated|ptr mechanism|SPF uses ptr'
+        Section = 'SPF'
+        Severity = 'WARN'
+        FriendlyText = 'Uses deprecated ptr mechanism'
+        TechnicalText = 'ptr (deprecated)'
         Category = 'Configuration'
     }
     'SPF_INVALID_INCLUDE' = @{
@@ -2526,7 +2542,7 @@ $script:IssueDefinitions = @{
     
     # DMARC Issues
     'DMARC_MISSING' = @{
-        Pattern = '^missing$|\bmissing\b'
+        Pattern = '^\s*missing\s*$|^DMARC.*missing|DMARC.*not found|No DMARC'
         Section = 'DMARC'
         Severity = 'FAIL'
         FriendlyText = 'DMARC record is missing'
@@ -2583,6 +2599,14 @@ $script:IssueDefinitions = @{
         TechnicalText = 'Provider mismatch'
         Category = 'Configuration'
     }
+    'DKIM_TEST_MODE' = @{
+        Pattern = 'test mode|t=y'
+        Section = 'DKIM'
+        Severity = 'WARN'
+        FriendlyText = 'DKIM selector in test mode'
+        TechnicalText = 't=y (test mode)'
+        Category = 'Configuration'
+    }
     
     # MTA-STS Issues
     'MTASTS_MISSING' = @{
@@ -2604,7 +2628,7 @@ $script:IssueDefinitions = @{
     
     # TLS-RPT Issues
     'TLSRPT_MISSING' = @{
-        Pattern = '\bmissing\b|not configured'
+        Pattern = '^\s*missing\s*$|TLS-RPT.*missing|TLS-RPT.*not configured|not configured'
         Section = 'SMTP TLS Reporting (TLS-RPT)'
         Severity = 'WARN'
         FriendlyText = 'Not configured (recommended for monitoring)'
@@ -2639,6 +2663,7 @@ function Get-IssueType {
     .DESCRIPTION
     Matches reason text against predefined patterns to categorize issues.
     Returns issue metadata including severity, friendly text, and category.
+    Uses normalized section matching for flexible matching.
     #>
     param(
         [string]$ReasonText,
@@ -2649,6 +2674,11 @@ function Get-IssueType {
         return $null
     }
     
+    # Normalize section name for flexible matching
+    # Remove parenthesized content (e.g., "SMTP TLS Reporting (TLS-RPT)" -> "SMTP TLS Reporting")
+    $normalizedSection = $Section -replace '\s*\([^)]+\)\s*$', ''
+    $normalizedSection = $normalizedSection.Trim()
+    
     # Clean the reason text
     $cleanText = $ReasonText -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT|MX Records|MX):\s*', '' `
                               -replace '^Warning:\s*', '' `
@@ -2658,8 +2688,14 @@ function Get-IssueType {
     foreach ($issueKey in $script:IssueDefinitions.Keys) {
         $issueDef = $script:IssueDefinitions[$issueKey]
         
-        # Match section and pattern
-        if ($issueDef.Section -eq $Section -and $cleanText -match $issueDef.Pattern) {
+        # Flexible section matching: exact match, normalized match, or partial match
+        $sectionMatches = ($issueDef.Section -eq $Section) -or 
+                         ($issueDef.Section -eq $normalizedSection) -or
+                         ($normalizedSection -match [regex]::Escape($issueDef.Section)) -or
+                         ($issueDef.Section -match [regex]::Escape($normalizedSection))
+        
+        # Match pattern
+        if ($sectionMatches -and $cleanText -match $issueDef.Pattern) {
             return @{
                 Key = $issueKey
                 Section = $issueDef.Section
@@ -2714,12 +2750,18 @@ function Get-ProcessedIssues {
         if ($result.Status -eq 'FAIL' -or $result.Status -eq 'WARN') {
             # Process warnings first (more detailed)
             $warningIssues = @()
+            $warningIssueKeys = @{}  # Track keys to avoid duplicates within warnings
             if ($result.Warnings -and $result.Warnings.Count -gt 0) {
                 foreach ($warning in $result.Warnings) {
                     if (-not [string]::IsNullOrWhiteSpace($warning)) {
                         $issueType = Get-IssueType -ReasonText $warning -Section $result.Section
                         if ($issueType) {
-                            $warningIssues += $issueType
+                            $warnDedupKey = "$($issueType.Section):$($issueType.Key)"
+                            # Only add if we haven't seen this issue key from warnings yet
+                            if (-not $warningIssueKeys.ContainsKey($warnDedupKey)) {
+                                $warningIssues += $issueType
+                                $warningIssueKeys[$warnDedupKey] = $true
+                            }
                         }
                     }
                 }
@@ -2766,12 +2808,18 @@ function Get-ProcessedIssues {
                 }
             }
             
-            # Add unique issues (deduplicate by key)
+            # Add unique issues (deduplicate by key and friendly text)
             foreach ($issue in $warningIssues) {
                 $dedupKey = "$($issue.Section):$($issue.Key)"
-                if (-not $seenIssueKeys.ContainsKey($dedupKey)) {
+                # Also create a fallback dedup key based on friendly text for extra safety
+                $dedupFriendlyKey = "$($issue.Section):$($issue.FriendlyText)"
+                
+                # Check both keys to avoid duplicates
+                if (-not $seenIssueKeys.ContainsKey($dedupKey) -and 
+                    -not $seenIssueKeys.ContainsKey($dedupFriendlyKey)) {
                     $issues += $issue
                     $seenIssueKeys[$dedupKey] = $true
+                    $seenIssueKeys[$dedupFriendlyKey] = $true
                 }
             }
         }
@@ -4196,69 +4244,25 @@ function Get-FriendlySummaryText {
     .DESCRIPTION
     Uses structured issue identification to provide consistent
     user-friendly summaries across all check types.
-    Always returns a non-empty string when possible.
+    Simplified implementation with clear fallback chain.
     #>
     param($Result)
     
     if ($null -eq $Result) { return '' }
     
-    # Get base reason text for fallback
-    $reason = if ($Result.Data -and $Result.Data.Reason) { $Result.Data.Reason } else { '' }
-    $cleanReason = $reason -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT|MX Records|MX):\s*', '' `
-                           -replace '^Warning:\s*', '' `
-                           -replace '^\s+|\s+$', ''
-    
-    # For WARN or FAIL status, try to identify the primary issue
+    # Try structured issue identification first for WARN/FAIL
     if ($Result.Status -eq 'WARN' -or $Result.Status -eq 'FAIL') {
         $issues = Get-ProcessedIssues -Results @($Result)
         
-        if ($issues.Count -gt 0) {
-            $firstIssueText = $issues[0].FriendlyText
-            # Only use issue text if it's not empty and not just the raw text
-            if (-not [string]::IsNullOrWhiteSpace($firstIssueText) -and 
-                $firstIssueText -ne $issues[0].OriginalText -and
-                $firstIssueText.Length -lt 200) {
-                return $firstIssueText
-            }
-        }
-        
-        # If no structured issues found, try using first warning as fallback
-        if ($Result.Warnings -and $Result.Warnings.Count -gt 0) {
-            $firstWarning = $Result.Warnings[0]
-            $cleanWarning = $firstWarning -replace '^(Warning|Info):\s*', '' -replace '^\s+|\s+$', ''
-            # Use first sentence of warning if it's reasonable length
-            if (-not [string]::IsNullOrWhiteSpace($cleanWarning)) {
-                $firstSentence = ($cleanWarning -split '\.')[0].Trim()
-                if (-not [string]::IsNullOrWhiteSpace($firstSentence) -and $firstSentence.Length -lt 120) {
-                    return $firstSentence + '.'
-                }
-                if ($cleanWarning.Length -lt 120) {
-                    return $cleanWarning
-                }
-            }
+        if ($issues.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($issues[0].FriendlyText)) {
+            return $issues[0].FriendlyText
         }
     }
     
-    # Fallback to cleaned reason
-    # For multi-part reasons, show first meaningful part only for summary
-    if (-not [string]::IsNullOrWhiteSpace($cleanReason)) {
-        if ($cleanReason -match '[;,]') {
-            $parts = $cleanReason -split '[;,]' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-            foreach ($part in $parts) {
-                # Skip purely informational parts like "adkim=r" or "aspf=r" for summary
-                if ($part -notmatch '^(adkim|aspf)=[rs]$' -and $part.Length -gt 0) {
-                    return $part
-                }
-            }
-            # If all parts were skipped, return first part anyway
-            if ($parts.Count -gt 0) {
-                return $parts[0]
-            }
-        }
-        return $cleanReason
-    }
-    
-    return ''
+    # Fallback: use reason directly (cleaning already done in Get-ProcessedIssues)
+    $reason = if ($Result.Data -and $Result.Data.Reason) { $Result.Data.Reason } else { '' }
+    return ($reason -replace '^(SPF|DKIM|DMARC|MTA-STS|TLS-RPT|MX Records|MX):\s*', '' `
+                    -replace '^Warning:\s*', '').Trim()
 }
 
 function Get-SummaryTableHtml {
