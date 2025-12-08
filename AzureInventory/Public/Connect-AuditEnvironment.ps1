@@ -163,8 +163,11 @@ function Connect-AuditEnvironment {
         $envFilePath = Join-Path (Get-Location).Path $envFilePath
     }
     
+    # Track if .env file was found
+    $envFileExists = Test-Path $envFilePath
+    
     # Load environment variables from .env file if it exists
-    if (Test-Path $envFilePath) {
+    if ($envFileExists) {
         Write-Host ''
         Write-Host ('Loading environment from: ' + $envFilePath) -ForegroundColor Cyan
         $envVarsLoaded = 0
@@ -205,21 +208,35 @@ function Connect-AuditEnvironment {
         Write-Host ''
         Write-Host ('No .env file found at: ' + $envFilePath) -ForegroundColor Yellow
         Write-Host 'Using interactive authentication or parameters.' -ForegroundColor Gray
+        
+        # Prompt for tenant ID if not provided via parameter
+        if ([string]::IsNullOrWhiteSpace($TenantId)) {
+            Write-Host ''
+            Write-Host 'Tenant ID is recommended for authentication.' -ForegroundColor Yellow
+            Write-Host 'Find this in Azure Portal > Entra ID > Overview, or use: (Get-AzContext).Tenant.Id' -ForegroundColor Gray
+            Write-Host ''
+            $promptedTenantId = Read-Host 'Please enter your Azure Tenant ID (or press Enter to skip)'
+            if (-not [string]::IsNullOrWhiteSpace($promptedTenantId)) {
+                $TenantId = $promptedTenantId.Trim()
+                Write-Host ('Tenant ID set: ' + $TenantId.Substring(0, [Math]::Min(8, $TenantId.Length)) + '...') -ForegroundColor Green
+            }
+        }
     }
     
     # Get credentials from parameters, environment variables, or .env file (in that order)
+    # If no .env file exists, ignore environment variables for Service Principal auth (use only parameters)
     $tenantIdToUse = $TenantId
-    if (-not $tenantIdToUse) {
+    if (-not $tenantIdToUse -and $envFileExists) {
         $tenantIdToUse = $env:AZURE_TENANT_ID
     }
     
     $appIdToUse = $ApplicationId
-    if (-not $appIdToUse) {
+    if (-not $appIdToUse -and $envFileExists) {
         $appIdToUse = $env:AZURE_CLIENT_ID
     }
     
     $secretToUse = $ClientSecret
-    if (-not $secretToUse) {
+    if (-not $secretToUse -and $envFileExists) {
         $secretToUse = $env:AZURE_CLIENT_SECRET
     }
     
@@ -295,15 +312,68 @@ function Connect-AuditEnvironment {
             $appIdToUse = $appIdToUse.Trim()
             $secretToUse = $secretToUse.Trim()
             
+            # Check for placeholder values
+            $placeholderPatterns = @(
+                'your-tenant-id',
+                'your-client-id',
+                'your-client-secret',
+                'your-entra-id',
+                'example',
+                'placeholder',
+                'xxxx-xxxx-xxxx'
+            )
+            
+            $hasPlaceholder = $false
+            $placeholderFound = @()
+            
+            foreach ($pattern in $placeholderPatterns) {
+                if ($tenantIdToUse -match $pattern -or $appIdToUse -match $pattern -or $secretToUse -match $pattern) {
+                    $hasPlaceholder = $true
+                    if ($tenantIdToUse -match $pattern) { $placeholderFound += 'Tenant ID' }
+                    if ($appIdToUse -match $pattern) { $placeholderFound += 'Client ID' }
+                    if ($secretToUse -match $pattern) { $placeholderFound += 'Client Secret' }
+                }
+            }
+            
+            if ($hasPlaceholder) {
+                Write-Host ''
+                Write-Host '[ERROR] Placeholder values detected in credentials!' -ForegroundColor Red
+                Write-Host ('The following values appear to be placeholders: ' + ($placeholderFound -join ', ')) -ForegroundColor Yellow
+                Write-Host ''
+                Write-Host 'Please replace the placeholder values with your actual Azure credentials:' -ForegroundColor Yellow
+                Write-Host '  1. Create a Service Principal:' -ForegroundColor Cyan
+                Write-Host '     az ad sp create-for-rbac --name "AzureSecurityAudit" --role "Reader"' -ForegroundColor White
+                Write-Host '  2. Update your .env file with the actual values from the output' -ForegroundColor Cyan
+                Write-Host '  3. Or provide credentials via parameters:' -ForegroundColor Cyan
+                Write-Host '     Connect-AuditEnvironment -TenantId "actual-tenant-id" -ApplicationId "actual-client-id" -ClientSecret "actual-secret"' -ForegroundColor White
+                Write-Host ''
+                throw 'Invalid credentials: Placeholder values detected. Please use actual Azure credentials.'
+            }
+            
             # Validate GUID format for Tenant ID and Client ID
             $guidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+            $validationErrors = @()
+            
             if ($tenantIdToUse -notmatch $guidPattern) {
-                Write-Host '[WARNING] Tenant ID does not appear to be a valid GUID format' -ForegroundColor Yellow
-                Write-Host ('  Tenant ID: ' + $tenantIdToUse + ' (length: ' + $tenantIdToUse.Length + ')') -ForegroundColor Gray
+                $validationErrors += 'Tenant ID must be a valid GUID (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)'
             }
             if ($appIdToUse -notmatch $guidPattern) {
-                Write-Host '[WARNING] Client ID does not appear to be a valid GUID format' -ForegroundColor Yellow
-                Write-Host ('  Client ID: ' + $appIdToUse + ' (length: ' + $appIdToUse.Length + ')') -ForegroundColor Gray
+                $validationErrors += 'Client ID must be a valid GUID (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)'
+            }
+            if ([string]::IsNullOrWhiteSpace($secretToUse) -or $secretToUse.Length -lt 8) {
+                $validationErrors += 'Client Secret must be at least 8 characters long'
+            }
+            
+            if ($validationErrors.Count -gt 0) {
+                Write-Host ''
+                Write-Host '[ERROR] Credential validation failed!' -ForegroundColor Red
+                foreach ($validationError in $validationErrors) {
+                    Write-Host ('  - ' + $validationError) -ForegroundColor Yellow
+                }
+                Write-Host ''
+                Write-Host 'Please check your credentials and try again.' -ForegroundColor Yellow
+                Write-Host 'Find your Tenant ID in Azure Portal > Entra ID > Overview' -ForegroundColor Gray
+                throw ('Credential validation failed: ' + ($validationErrors -join '; '))
             }
             
             Write-Host ('  Tenant ID: ' + $tenantIdToUse) -ForegroundColor Gray

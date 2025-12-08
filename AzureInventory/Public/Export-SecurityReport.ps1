@@ -333,6 +333,34 @@ $cssContent
     color: var(--text);
 }
 
+.reference-links {
+    list-style: none;
+    padding: 0;
+    margin: 0.5rem 0 0 0;
+}
+
+.reference-links li {
+    margin-bottom: 0.5rem;
+}
+
+.reference-links a {
+    color: var(--pri-600);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.reference-links a:hover {
+    color: var(--pri-700);
+    text-decoration: underline;
+}
+
+.reference-links a::before {
+    content: "🔗";
+    font-size: 0.9rem;
+}
+
 .remediation-row {
     background-color: var(--bg);
 }
@@ -805,39 +833,58 @@ $cssContent
         
         # EOL/Deprecated Components Alert
         if ($eolFindings.Count -gt 0) {
+            $eolCount = $eolFindings.Count
+            $pastDueCount = ($eolFindings | Where-Object { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) }).Count
+            $upcomingCount = $eolCount - $pastDueCount
+            
             $html += @"
-        <h2>⚠ Deprecated Components Requiring Action</h2>
-        <div class="alert-box warning">
-            <h3>Deprecated Components Found</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Resource</th>
-                        <th>Category</th>
-                        <th>Control</th>
-                        <th>EOL Date</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
+        <h2>Deprecated Components Requiring Action</h2>
+        <div class="subscription-box">
+            <div class="subscription-header collapsed" data-subscription-id="deprecated-components" style="cursor: pointer;">
+                <span class="expand-icon"></span>
+                <h3>Deprecated Components Found</h3>
+                <span class="header-severity-summary">
+                    <span class="severity-count critical">$pastDueCount Past Due</span>
+                    <span class="severity-count medium">$upcomingCount Upcoming</span>
+                </span>
+            </div>
+            <div class="subscription-content" id="deprecated-components" style="display: none;">
+                <table class="resource-summary-table">
+                    <thead>
+                        <tr>
+                            <th>Subscription</th>
+                            <th>Resource Group</th>
+                            <th>Resource</th>
+                            <th>Category</th>
+                            <th>Control</th>
+                            <th>EOL Date</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
 "@
             foreach ($finding in $eolFindings) {
                 $eolDate = [DateTime]::Parse($finding.EOLDate)
                 $status = if ($eolDate -lt (Get-Date)) { "PAST DUE" } else { "Upcoming" }
                 $statusClass = if ($status -eq "PAST DUE") { "status-fail" } else { "status-warn" }
+                $subscriptionName = if ($finding.SubscriptionName) { $finding.SubscriptionName } else { $finding.SubscriptionId }
+                $resourceGroup = if ($finding.ResourceGroup) { $finding.ResourceGroup } else { "N/A" }
                 $html += @"
-                    <tr>
-                        <td>$(Encode-Html $finding.ResourceName)</td>
-                        <td>$(Encode-Html $finding.Category)</td>
-                        <td>$(Encode-Html $finding.ControlName)</td>
-                        <td>$(Encode-Html $finding.EOLDate)</td>
-                        <td class="$statusClass">$status</td>
-                    </tr>
+                        <tr>
+                            <td>$(Encode-Html $subscriptionName)</td>
+                            <td>$(Encode-Html $resourceGroup)</td>
+                            <td>$(Encode-Html $finding.ResourceName)</td>
+                            <td>$(Encode-Html $finding.Category)</td>
+                            <td>$(Encode-Html $finding.ControlName)</td>
+                            <td>$(Encode-Html $finding.EOLDate)</td>
+                            <td class="$statusClass">$status</td>
+                        </tr>
 "@
             }
             $html += @"
-                </tbody>
-            </table>
+                    </tbody>
+                </table>
+            </div>
         </div>
 "@
         }
@@ -1111,6 +1158,33 @@ $cssContent
                                                 <pre><code>$remediationCommand</code></pre>
                                             </div>
 "@
+                            if ($finding.References -and $finding.References.Count -gt 0) {
+                                $html += @"
+                                            <div class="remediation-section">
+                                                <h4>More Information</h4>
+                                                <ul class="reference-links">
+"@
+                                foreach ($ref in $finding.References) {
+                                    $refText = $ref
+                                    # Extract readable text from Tenable URLs
+                                    if ($ref -match 'tenable\.com') {
+                                        $refText = "Tenable Audit Item"
+                                    } elseif ($ref -match 'learn\.microsoft\.com') {
+                                        $refText = "Microsoft Learn Documentation"
+                                    } elseif ($ref -match 'workbench\.cisecurity\.org') {
+                                        $refText = "CIS Workbench"
+                                    }
+                                    $html += @"
+                                                    <li><a href="$(Encode-Html $ref)" target="_blank" rel="noopener noreferrer">$(Encode-Html $refText)</a></li>
+"@
+                                }
+                                $html += @"
+                                                </ul>
+                                            </div>
+"@
+                            }
+                            $html += @"
+"@
                     if ($note) {
                         $html += @"
                                             <div class="remediation-section">
@@ -1154,9 +1228,29 @@ $cssContent
                 # Get all findings for this subscription (both PASS and FAIL)
                 $subAllFindings = $findings | Where-Object { $_.SubscriptionId -eq $subId }
                 $subFailedFindings = $failedFindings | Where-Object { $_.SubscriptionId -eq $subId }
-                $subName = ($subAllFindings | Select-Object -First 1 -ExpandProperty SubscriptionName)
+                
+                # Get subscription name from SubscriptionNames mapping (preferred) or from findings
+                $subName = $null
+                
+                # Debug: Check if SubscriptionNames exists and has this key
+                Write-Verbose "Looking up name for subscription: $subId"
+                Write-Verbose "  SubscriptionNames exists: $($null -ne $AuditResult.SubscriptionNames)"
+                if ($AuditResult.SubscriptionNames) {
+                    Write-Verbose "  SubscriptionNames type: $($AuditResult.SubscriptionNames.GetType().Name)"
+                    Write-Verbose "  SubscriptionNames count: $($AuditResult.SubscriptionNames.Count)"
+                    Write-Verbose "  Has key '$subId': $($AuditResult.SubscriptionNames.ContainsKey($subId))"
+                    if ($AuditResult.SubscriptionNames.ContainsKey($subId)) {
+                        $subName = $AuditResult.SubscriptionNames[$subId]
+                        Write-Verbose "  Found name: '$subName'"
+                    }
+                }
+                if (-not $subName) {
+                    $subName = ($subAllFindings | Select-Object -First 1 -ExpandProperty SubscriptionName)
+                    Write-Verbose "  Fallback to findings name: '$subName'"
+                }
                 if (-not $subName) {
                     $subName = $subId
+                    Write-Verbose "  Fallback to ID: '$subName'"
                 }
                 
                 # Group findings by resource (ResourceName + ResourceGroup)
@@ -1323,8 +1417,17 @@ $cssContent
                             $cisLevel = if ($finding.CisLevel) { Encode-Html $finding.CisLevel } else { "N/A" }
                             $controlDetailKey = "$resourceKey|$($finding.ControlId)"
                             
+                            $findingSeverityLower = $finding.Severity.ToLower()
+                            $findingCategoryLower = $finding.Category.ToLower()
+                            $findingSearchable = "$($finding.ControlId) $($finding.ControlName) $($finding.Severity) $($finding.Category)".ToLower()
+                            
                             $html += @"
-                                        <tr class="control-detail-row" data-control-detail-key="$(Encode-Html $controlDetailKey)" style="cursor: pointer;">
+                                        <tr class="control-detail-row" 
+                                            data-control-detail-key="$(Encode-Html $controlDetailKey)" 
+                                            data-severity-lower="$findingSeverityLower"
+                                            data-category-lower="$findingCategoryLower"
+                                            data-searchable="$findingSearchable"
+                                            style="cursor: pointer;">
                                             <td>$(Encode-Html $finding.ControlId)</td>
                                             <td>$(Encode-Html $finding.ControlName)</td>
                                             <td><span class="$findingSeverityClass">$(Encode-Html $finding.Severity)</span></td>
@@ -1342,6 +1445,33 @@ $cssContent
                                                         <h4>Remediation Command</h4>
                                                         <pre><code>$remediationCommand</code></pre>
                                                     </div>
+"@
+                            if ($finding.References -and $finding.References.Count -gt 0) {
+                                $html += @"
+                                                    <div class="remediation-section">
+                                                        <h4>More Information</h4>
+                                                        <ul class="reference-links">
+"@
+                                foreach ($ref in $finding.References) {
+                                    $refText = $ref
+                                    # Extract readable text from Tenable URLs
+                                    if ($ref -match 'tenable\.com') {
+                                        $refText = "Tenable Audit Item"
+                                    } elseif ($ref -match 'learn\.microsoft\.com') {
+                                        $refText = "Microsoft Learn Documentation"
+                                    } elseif ($ref -match 'workbench\.cisecurity\.org') {
+                                        $refText = "CIS Workbench"
+                                    }
+                                    $html += @"
+                                                            <li><a href="$(Encode-Html $ref)" target="_blank" rel="noopener noreferrer">$(Encode-Html $refText)</a></li>
+"@
+                                }
+                                $html += @"
+                                                        </ul>
+                                                    </div>
+"@
+                            }
+                            $html += @"
 "@
                             if ($note) {
                                 $html += @"
@@ -1440,57 +1570,101 @@ $cssContent
                     
                     // Filter subscription boxes (Failed Controls by Subscription)
                     subscriptionBoxes.forEach(box => {
-                        const boxSeverity = box.getAttribute('data-severity-lower') || '';
                         const boxSubscription = box.getAttribute('data-subscription-lower') || '';
                         const searchableText = box.getAttribute('data-searchable') || '';
                         
-                        const severityMatch = selectedSeverity === 'all' || boxSeverity === selectedSeverity;
                         const subscriptionMatch = selectedSubscription === 'all' || boxSubscription === selectedSubscription;
                         const searchMatch = searchText === '' || searchableText.includes(searchText);
                         
-                        // Check if any resource rows inside match category filter
+                        // Check if any resource rows inside match ALL active filters
                         const resourceRowsInBox = box.querySelectorAll('.resource-row');
                         let hasMatchingResource = false;
-                        if (selectedCategory === 'all') {
-                            hasMatchingResource = true;
-                        } else {
-                            resourceRowsInBox.forEach(row => {
-                                const rowCategory = row.getAttribute('data-category-lower') || '';
-                                if (rowCategory === selectedCategory) {
-                                    hasMatchingResource = true;
-                                }
-                            });
-                        }
+                        let visibleResourceCount = 0;
                         
-                        if (severityMatch && subscriptionMatch && searchMatch && hasMatchingResource) {
-                            box.style.display = 'block';
-                            // Filter resource rows inside this subscription box
-                            resourceRowsInBox.forEach(row => {
-                                const rowSeverity = row.getAttribute('data-severity-lower') || '';
-                                const rowCategory = row.getAttribute('data-category-lower') || '';
-                                const rowSearchable = row.getAttribute('data-searchable') || '';
-                                
-                                const rowSeverityMatch = selectedSeverity === 'all' || rowSeverity === selectedSeverity;
-                                const rowCategoryMatch = selectedCategory === 'all' || rowCategory === selectedCategory;
-                                const rowSearchMatch = searchText === '' || rowSearchable.includes(searchText);
-                                
-                                if (rowSeverityMatch && rowCategoryMatch && rowSearchMatch) {
-                                    row.classList.remove('hidden');
-                                    visibleCount++;
-                                    // Keep detail row collapsed - only expand on click
-                                } else {
-                                    row.classList.add('hidden');
-                                    // Hide associated detail row and collapse resource row
-                                    row.classList.remove('expanded');
-                                    const resourceKey = row.getAttribute('data-resource-key');
-                                    if (resourceKey) {
-                                        const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
-                                        if (detailRow) {
-                                            detailRow.classList.add('hidden');
+                        // First pass: determine which resource rows match
+                        resourceRowsInBox.forEach(row => {
+                            const resourceKey = row.getAttribute('data-resource-key');
+                            const rowCategory = row.getAttribute('data-category-lower') || '';
+                            const rowSearchable = row.getAttribute('data-searchable') || '';
+                            
+                            // Check if ANY control inside this resource matches the severity filter
+                            let hasMatchingSeverityControl = false;
+                            let hasMatchingCategoryControl = false;
+                            
+                            if (resourceKey) {
+                                const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
+                                if (detailRow) {
+                                    const controlDetailRows = detailRow.querySelectorAll('.control-detail-row');
+                                    controlDetailRows.forEach(controlRow => {
+                                        const controlSeverity = controlRow.getAttribute('data-severity-lower') || '';
+                                        const controlCategory = controlRow.getAttribute('data-category-lower') || '';
+                                        
+                                        if (selectedSeverity === 'all' || controlSeverity === selectedSeverity) {
+                                            hasMatchingSeverityControl = true;
                                         }
+                                        if (selectedCategory === 'all' || controlCategory === selectedCategory) {
+                                            hasMatchingCategoryControl = true;
+                                        }
+                                    });
+                                }
+                            }
+                            
+                            const rowSearchMatch = searchText === '' || rowSearchable.includes(searchText);
+                            const rowShouldShow = hasMatchingSeverityControl && hasMatchingCategoryControl && rowSearchMatch;
+                            
+                            if (rowShouldShow) {
+                                hasMatchingResource = true;
+                                row.classList.remove('hidden');
+                                visibleResourceCount++;
+                                visibleCount++;
+                                
+                                // Filter control-detail-row elements inside this resource's detail row
+                                if (resourceKey) {
+                                    const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
+                                    if (detailRow) {
+                                        const controlDetailRows = detailRow.querySelectorAll('.control-detail-row');
+                                        
+                                        controlDetailRows.forEach(controlRow => {
+                                            const controlSeverity = controlRow.getAttribute('data-severity-lower') || '';
+                                            const controlCategory = controlRow.getAttribute('data-category-lower') || '';
+                                            const controlSearchable = controlRow.getAttribute('data-searchable') || '';
+                                            
+                                            const controlSeverityMatch = selectedSeverity === 'all' || controlSeverity === selectedSeverity;
+                                            const controlCategoryMatch = selectedCategory === 'all' || controlCategory === selectedCategory;
+                                            const controlSearchMatch = searchText === '' || controlSearchable.includes(searchText);
+                                            
+                                            if (controlSeverityMatch && controlCategoryMatch && controlSearchMatch) {
+                                                controlRow.classList.remove('hidden');
+                                            } else {
+                                                controlRow.classList.add('hidden');
+                                                // Hide associated remediation row
+                                                const controlDetailKey = controlRow.getAttribute('data-control-detail-key');
+                                                if (controlDetailKey) {
+                                                    const remediationRow = document.querySelector('.remediation-row[data-parent-control-detail-key="' + controlDetailKey + '"]');
+                                                    if (remediationRow) {
+                                                        remediationRow.classList.add('hidden');
+                                                    }
+                                                }
+                                            }
+                                        });
                                     }
                                 }
-                            });
+                            } else {
+                                row.classList.add('hidden');
+                                row.classList.remove('expanded');
+                                // Hide associated detail row
+                                if (resourceKey) {
+                                    const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
+                                    if (detailRow) {
+                                        detailRow.classList.add('hidden');
+                                    }
+                                }
+                            }
+                        });
+                        
+                        // Show/hide subscription box based on whether it has matching resources
+                        if (subscriptionMatch && searchMatch && hasMatchingResource) {
+                            box.style.display = 'block';
                         } else {
                             box.style.display = 'none';
                         }

@@ -76,6 +76,79 @@ Premiumkonton som `BlockBlobStorage` och `FileStorage` påverkas inte av denna p
 - Ändrar inte `supportsHttpsTrafficOnly`.
 - Byter endast lokal CLI-kontent med `az account set` för att läsa resurser i respektive subscription.
 
+---
+
+## Nya inventeringsskript (TLS/legacy-relaterade)
+
+Alla skript är read-only och kör mot alla subscriptions du har åtkomst till (samma mönster som `az-storage-gpv2-tls-audit.sh`). Varje skript skapar en tidsstämplad CSV i aktuell katalog och skriver även en tabell till terminalen.
+
+### 1) az-sql-tls-audit.sh
+- Inventerar Azure SQL Servers och läser `minimalTlsVersion` och `publicNetworkAccess`.
+- CSV-kolumner: `SubscriptionName,SubscriptionId,ResourceGroup,ServerName,MinimumTlsVersion,PublicNetworkAccess,IsCompliant`.
+- Compliance: `MinimumTlsVersion` ska vara 1.2.
+
+Körning:
+```bash
+./az-sql-tls-audit.sh
+```
+
+### 2) az-appservice-tls-audit.sh
+- Inventerar Web Apps/Function Apps och läser `minTlsVersion`, `ftpsState` och `httpsOnly`.
+- CSV-kolumner: `SubscriptionName,SubscriptionId,ResourceGroup,SiteName,Kind,MinimumTlsVersion,FtpsState,HttpsOnly,IsCompliant`.
+- Compliance: `minTlsVersion` = 1.2 och `httpsOnly` = true.
+
+Körning:
+```bash
+./az-appservice-tls-audit.sh
+```
+
+### 3) az-adds-ldaps-audit.sh
+- Inventerar Azure AD Domain Services och läser secure LDAP-inställningar samt certifikatets utgångsdatum.
+- CSV-kolumner: `SubscriptionName,SubscriptionId,ResourceGroup,DomainServiceName,SecureLdapEnabled,SecureLdapExternalAccess,CertificateExpiry,IsCompliant`.
+- Compliance: secure LDAP aktiverad och certifikatet giltigt.
+
+Körning:
+```bash
+./az-adds-ldaps-audit.sh
+```
+
+### 4) az-monitor-agents-audit.sh
+- Inventerar VM/VMSS-tillägg och identifierar legacy-agenter (OMS/MMA) samt nya Azure Monitor-agenter.
+- CSV-kolumner: `SubscriptionName,SubscriptionId,ResourceGroup,VmType,Name,ExtensionPublisher,ExtensionType,ExtensionVersion,IsLegacyAgent,IsCompliant`.
+- Heuristik:
+  - Legacy: `OmsAgentForLinux`, `MicrosoftMonitoringAgent`, `MMAExtension`, `Microsoft.EnterpriseCloud.Monitoring`
+  - Compliant: `AzureMonitorLinuxAgent`, `AzureMonitorWindowsAgent`
+
+Körning:
+```bash
+./az-monitor-agents-audit.sh
+```
+
+### 5) az-automation-agents-audit.sh
+- Inventerar Automation Accounts, Hybrid Worker Groups och Workers, samt länkad Log Analytics workspace.
+- CSV-kolumner: `SubscriptionName,SubscriptionId,ResourceGroup,AutomationAccount,HybridWorkerGroup,WorkerName,LinkedWorkspaceResourceId,Notes,IsCompliant`.
+- Not: `IsCompliant` sätts till `unknown` här; korskoppla med monitor-agent CSV för att se om workers kör legacy agent.
+
+Körning:
+```bash
+./az-automation-agents-audit.sh
+```
+
+### 6) az-entra-legacy-apps-inventory.sh
+- Inventerar Entra ID-appar via Microsoft Graph (kräver `jq` och Graph-behörigheter) och flaggar legacy-mönster: public client, implicit grant, OOB-redirects.
+- CSV-kolumner: `AppId,DisplayName,SignInAudience,PublicClient,IsFallbackPublicClient,ImplicitGrantEnabled,HasOOBRedirect,IsCompliant`.
+- Not: Detta är heuristik för legacy-konfigurationer — det är inte en TLS-kontroll.
+
+Körning:
+```bash
+./az-entra-legacy-apps-inventory.sh
+```
+
+## Förutsättningar för nya skript
+- Azure CLI (`az`) och inloggning med `az login`.
+- Behörighet: minst Reader på de subscriptions som ska inventeras.
+- För `az-entra-legacy-apps-inventory.sh`: `jq` samt Microsoft Graph-åtkomst (t.ex. `Application.Read.All` eller `Directory.Read.All`) med delegerat samtycke.
+
 ## Statusfält (i CSV och tabell)
 
 Följande statusvärden används i utdata för att beskriva vad som behöver åtgärdas:

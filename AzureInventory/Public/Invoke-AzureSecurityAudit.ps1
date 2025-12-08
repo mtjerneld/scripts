@@ -154,6 +154,15 @@ function Invoke-AzureSecurityAudit {
     $currentContext = Get-AzContext
     $currentTenantId = if ($currentContext -and $currentContext.Tenant) { $currentContext.Tenant.Id } else { $null }
     
+    # Build subscription ID to Name mapping for report generation
+    $subscriptionNames = @{}
+    foreach ($sub in $subscriptions) {
+        $subName = if ([string]::IsNullOrWhiteSpace($sub.Name)) { $sub.Id } else { $sub.Name }
+        $subscriptionNames[$sub.Id] = $subName
+        Write-Verbose "Mapped subscription: $($sub.Id) -> '$subName'"
+    }
+    Write-Verbose "SubscriptionNames hashtable has $($subscriptionNames.Count) entries"
+    
     # Suppress warnings about other tenants during scanning
     $originalWarningPreference = $WarningPreference
     
@@ -166,27 +175,55 @@ function Invoke-AzureSecurityAudit {
             continue
         }
         
-        Write-Host "`n[$current/$total] Scanning: $($sub.Name) ($($sub.Id))" -ForegroundColor Yellow
+        # Get subscription display name (use ID as fallback if name is empty)
+        $subDisplayName = if ([string]::IsNullOrWhiteSpace($sub.Name)) { $sub.Id } else { $sub.Name }
+        Write-Host "`n[$current/$total] Scanning: $subDisplayName ($($sub.Id))" -ForegroundColor Yellow
         
         # Suppress warnings during context switching
         $WarningPreference = 'SilentlyContinue'
+        $subscriptionNameToUse = $null
         try {
             if (-not (Get-SubscriptionContext -SubscriptionId $sub.Id -ErrorAction SilentlyContinue)) {
-                $errors.Add("Failed to set context for subscription $($sub.Name) ($($sub.Id))")
+                Write-Warning "Failed to set context for subscription $subDisplayName ($($sub.Id)) - skipping"
+                $errors.Add("Failed to set context for subscription $subDisplayName ($($sub.Id))")
                 continue
             }
             
-            # Verify context was set correctly
+            # Verify context was set correctly and get subscription name from context
             $verifyContext = Get-AzContext
             if ($verifyContext.Subscription.Id -ne $sub.Id) {
-                Write-Warning "Context verification failed: Expected $($sub.Id), got $($verifyContext.Subscription.Id)"
-                $errors.Add("Context verification failed for subscription $($sub.Name) ($($sub.Id))")
+                Write-Warning "Context verification failed: Expected $($sub.Id), got $($verifyContext.Subscription.Id) - skipping"
+                $errors.Add("Context verification failed for subscription $subDisplayName ($($sub.Id))")
                 continue
             }
-            Write-Verbose "Context verified: $($verifyContext.Subscription.Name) ($($verifyContext.Subscription.Id))"
+            
+            # Use subscription name from verified context (more reliable than $sub.Name)
+            $subscriptionNameToUse = if ($verifyContext.Subscription.Name) { 
+                $verifyContext.Subscription.Name 
+            } elseif ($sub.Name) { 
+                $sub.Name 
+            } else { 
+                $sub.Id 
+            }
+            
+            # Update subscription name mapping with verified name
+            $subscriptionNames[$sub.Id] = $subscriptionNameToUse
+            Write-Verbose "Context verified: $subscriptionNameToUse ($($verifyContext.Subscription.Id))"
+            
+            # Verify we can actually read resources in this subscription
+            try {
+                $testResource = Get-AzResource -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -eq $testResource) {
+                    Write-Verbose "No resources found or unable to read resources in subscription $subscriptionNameToUse"
+                }
+            }
+            catch {
+                Write-Verbose "Warning: May have limited permissions in subscription ${subscriptionNameToUse}: $_"
+            }
         }
         catch {
-            $errors.Add("Failed to set context for subscription $($sub.Name) ($($sub.Id)): $_")
+            Write-Warning "Failed to set context for subscription $subDisplayName ($($sub.Id)): $_ - skipping"
+            $errors.Add("Failed to set context for subscription $subDisplayName ($($sub.Id)): $_")
             continue
         }
         finally {
@@ -202,7 +239,8 @@ function Invoke-AzureSecurityAudit {
             Write-Host "  - $category..." -NoNewline
             try {
                 # Pass IncludeLevel2 parameter to scanner functions
-                $findings = & $scanners[$category] -subId $sub.Id -subName $sub.Name -includeL2:$IncludeLevel2
+                # Use subscriptionNameToUse which comes from verified context
+                $findings = & $scanners[$category] -subId $sub.Id -subName $subscriptionNameToUse -includeL2:$IncludeLevel2
                 
                 # Handle null or empty results
                 if ($null -eq $findings) {
@@ -276,7 +314,13 @@ function Invoke-AzureSecurityAudit {
             }
             catch {
                 Write-Host " ERROR: $_" -ForegroundColor Red
-                $errors.Add("$category scan failed for $($sub.Name): $_")
+                $errors.Add("$category scan failed for ${subscriptionNameToUse}: $_")
+                
+                # Check if it's a permissions error
+                if ($_.Exception.Message -match 'authorization|permission|access|forbidden|unauthorized' -or 
+                    $_.Exception.Message -match '403|401') {
+                    Write-Host "    [WARNING] This may be a permissions issue. Ensure you have Reader role on subscription ${subscriptionNameToUse}" -ForegroundColor Yellow
+                }
             }
         }
     }
@@ -437,17 +481,18 @@ function Invoke-AzureSecurityAudit {
     $complianceScores = Calculate-CisComplianceScore -Findings $allFindings -IncludeLevel2:$IncludeLevel2
     
     $result = [PSCustomObject]@{
-        ScanStartTime       = $scanStart
-        ScanEndTime         = Get-Date
-        TenantId            = $tenantId
+        ScanStartTime        = $scanStart
+        ScanEndTime          = Get-Date
+        TenantId             = $tenantId
         SubscriptionsScanned = $subscriptions.Id
-        TotalResources      = $uniqueResources
-        FindingsBySeverity  = $findingsBySeverity
-        FindingsByCategory  = $findingsByCategory
-        Findings            = $allFindings
-        ComplianceScores    = $complianceScores
-        Errors              = $errors
-        ToolVersion         = "1.0.0"
+        SubscriptionNames    = $subscriptionNames
+        TotalResources       = $uniqueResources
+        FindingsBySeverity   = $findingsBySeverity
+        FindingsByCategory   = $findingsByCategory
+        Findings             = $allFindings
+        ComplianceScores     = $complianceScores
+        Errors               = $errors
+        ToolVersion          = "1.0.0"
     }
     
     # Generate reports

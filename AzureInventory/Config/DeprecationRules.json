@@ -1,0 +1,61 @@
+{
+  "deprecations": [
+    {
+      "component": "Log Analytics Agent (MMA)",
+      "status": "RETIRED",
+      "deadline": "2024-08-31",
+      "detectionMethod": "Extension: MicrosoftMonitoringAgent or OmsAgentForLinux",
+      "actionRequired": "Migrate to Azure Monitor Agent (AMA) immediately",
+      "migrationGuide": "Remove legacy MMA agent and install AzureMonitorWindowsAgent or AzureMonitorLinuxAgent extension",
+      "severity": "Critical"
+    },
+    {
+      "component": "TLS 1.0/1.1 (General)",
+      "status": "Deprecated",
+      "deadline": "2025-08-31",
+      "detectionMethod": "minimumTlsVersion property = TLS1_0 or TLS1_1",
+      "actionRequired": "Upgrade to TLS 1.2 minimum",
+      "migrationGuide": "Update minimumTlsVersion to TLS1_2 for all services",
+      "severity": "Critical"
+    },
+    {
+      "component": "Azure Storage TLS 1.0/1.1",
+      "status": "Deprecated",
+      "deadline": "2026-02-03",
+      "detectionMethod": "Storage account minimumTlsVersion = TLS1_0 or TLS1_1",
+      "actionRequired": "Upgrade storage accounts to TLS 1.2 minimum",
+      "migrationGuide": "az storage account update --name {name} --resource-group {rg} --min-tls-version TLS1_2",
+      "severity": "Critical"
+    },
+    {
+      "component": "GPv1/BlobStorage Accounts",
+      "status": "Deprecated",
+      "deadline": "2026-10-13",
+      "detectionMethod": "Storage account kind = Storage or BlobStorage",
+      "actionRequired": "Upgrade to General Purpose v2 (StorageV2)",
+      "migrationGuide": "az storage account update --name {name} --resource-group {rg} --set kind=StorageV2",
+      "severity": "Medium"
+    },
+    {
+      "component": "Azure Disk Encryption (ADE)",
+      "status": "Retiring",
+      "deadline": "2028-09-15",
+      "detectionMethod": "ADE extension present on VM",
+      "actionRequired": "Migrate to Encryption at Host",
+      "migrationGuide": "Enable Encryption at Host instead of ADE extension for better performance and security",
+      "severity": "Medium"
+    },
+    {
+      "component": "Dependency Agent",
+      "status": "Retiring",
+      "deadline": "2028-06-30",
+      "detectionMethod": "Extension: DependencyAgentWindows or DependencyAgentLinux",
+      "actionRequired": "Migrate to AMA-based monitoring",
+      "migrationGuide": "Use Azure Monitor Agent with DCR (Data Collection Rules) for dependency monitoring",
+      "severity": "Medium"
+    }
+  ]
+}
+
+
+

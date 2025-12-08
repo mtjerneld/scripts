@@ -88,4 +88,45 @@ function Get-ControlsForCategory {
     return $filtered
 }
 
+<#
+.SYNOPSIS
+    Gets description and references for a control from ControlDefinitions.
+
+.DESCRIPTION
+    Retrieves the description (or businessImpact as fallback) and references array
+    for a given control definition object.
+
+.PARAMETER Control
+    The control definition object from ControlDefinitions.json.
+
+.OUTPUTS
+    Hashtable with Description and References keys.
+#>
+function Get-ControlDescriptionAndReferences {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSObject]$Control
+    )
+    
+    $description = if ($Control.description) { 
+        $Control.description 
+    } elseif ($Control.businessImpact) { 
+        $Control.businessImpact 
+    } else { 
+        "" 
+    }
+    
+    $references = if ($Control.references) { 
+        $Control.references 
+    } else { 
+        @() 
+    }
+    
+    return @{
+        Description = $description
+        References = $references
+    }
+}
+
 

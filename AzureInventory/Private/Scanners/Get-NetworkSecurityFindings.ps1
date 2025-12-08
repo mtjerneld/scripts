@@ -188,6 +188,10 @@ function Get-NetworkSecurityFindings {
                 # Control 6.2: No SSH from Internet
                 if ($sshControl) {
                     $checksPerformed++
+                    $descAndRefs = Get-ControlDescriptionAndReferences -Control $sshControl
+                    $description = $descAndRefs.Description
+                    $references = $descAndRefs.References
+                    
                     if ($hasSshIssue) {
                         $remediationCmd = $sshControl.remediationCommand -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName
                         $finding = New-SecurityFinding `
@@ -205,8 +209,9 @@ function Get-NetworkSecurityFindings {
                             -CurrentValue "SSH (22) allowed from Internet" `
                             -ExpectedValue $sshControl.expectedValue `
                             -Status "FAIL" `
-                            -RemediationSteps $sshControl.businessImpact `
-                            -RemediationCommand $remediationCmd
+                            -RemediationSteps $description `
+                            -RemediationCommand $remediationCmd `
+                            -References $references
                         $findings.Add($finding)
                     }
                     else {
@@ -226,8 +231,9 @@ function Get-NetworkSecurityFindings {
                             -CurrentValue "No SSH (22) allowed from Internet" `
                             -ExpectedValue $sshControl.expectedValue `
                             -Status "PASS" `
-                            -RemediationSteps $sshControl.businessImpact `
-                            -RemediationCommand ""
+                            -RemediationSteps $description `
+                            -RemediationCommand "" `
+                            -References $references
                         $findings.Add($finding)
                     }
                 }

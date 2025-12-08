@@ -1,0 +1,1065 @@
+{
+  "metadata": {
+    "version": "2.0",
+    "cisVersion": "CIS Azure Foundations Benchmark v2.0",
+    "lastUpdated": "2024-12-07",
+    "description": "Control definitions for Azure Security Audit Tool with Level 1/2 distinction and commercial service flags"
+  },
+  "controls": [
+    {
+      "controlId": "3.15",
+      "controlName": "Minimum TLS Version 1.2",
+      "category": "Storage",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "Critical",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.minimumTlsVersion",
+      "expectedValue": "TLS1_2",
+      "checkLogic": "value == 'TLS1_2' or value == 'TLS1_3'",
+      "valueMapping": {
+        "TLS1_0": "TLS 1.0 (Insecure - EOL Feb 2026)",
+        "TLS1_1": "TLS 1.1 (Insecure - EOL Feb 2026)",
+        "TLS1_2": "TLS 1.2 (Secure)",
+        "TLS1_3": "TLS 1.3 (Secure)",
+        "null": "Not configured (defaults to TLS 1.0)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
+      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query minimumTlsVersion",
+      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --min-tls-version TLS1_2",
+      "businessImpact": "Prevents use of insecure TLS 1.0/1.1 protocols. TLS 1.0/1.1 will be deprecated in February 2026.",
+      "eolDate": "2026-02-03",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/common/transport-layer-security-configure-minimum-version",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.15]"
+      ],
+      "description": "Prevents use of insecure TLS 1.0/1.1 protocols. TLS 1.0/1.1 will be deprecated in February 2026. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "3.1",
+      "controlName": "Secure Transfer Required",
+      "category": "Storage",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.supportsHttpsTrafficOnly",
+      "expectedValue": "true",
+      "checkLogic": "value == true",
+      "valueMapping": {
+        "true": "Enabled (Secure)",
+        "false": "Disabled (Insecure)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
+      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query enableHttpsTrafficOnly",
+      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --https-only true",
+      "businessImpact": "Enforces HTTPS-only traffic to prevent unencrypted data transfer.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/common/storage-require-secure-transfer",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.1]"
+      ],
+      "description": "Enforces HTTPS-only traffic to prevent unencrypted data transfer. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "3.7",
+      "controlName": "Public Blob Access",
+      "category": "Storage",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.allowBlobPublicAccess",
+      "expectedValue": "false",
+      "checkLogic": "value == false",
+      "valueMapping": {
+        "true": "Allowed (Public access enabled)",
+        "false": "Blocked (Public access disabled)"
+      },
+      "exceptions": [
+        {
+          "condition": "properties.primaryEndpoints.web != null",
+          "reason": "Static Website hosting requires public blob access",
+          "adjustedSeverity": "Low",
+          "status": "REVIEW"
+        },
+        {
+          "condition": "tags.public-access == 'approved'",
+          "reason": "Explicitly approved for public access",
+          "adjustedSeverity": "Low",
+          "status": "ACCEPTED"
+        },
+        {
+          "condition": "tags.environment in ['dev', 'test', 'sandbox']",
+          "reason": "Development/test environment",
+          "adjustedSeverity": "Medium",
+          "status": "REVIEW"
+        }
+      ],
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
+      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query allowBlobPublicAccess",
+      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --allow-blob-public-access false",
+      "businessImpact": "Prevents unauthorized public access to blob containers. May break Static Website hosting.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/blobs/anonymous-read-access-configure",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.7]"
+      ],
+      "description": "Prevents unauthorized public access to blob containers. May break Static Website hosting. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "3.8",
+      "controlName": "Default Network Access",
+      "category": "Storage",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.networkAcls.defaultAction",
+      "expectedValue": "Deny",
+      "checkLogic": "value == 'Deny'",
+      "valueMapping": {
+        "Allow": "Allow (All networks can access)",
+        "Deny": "Deny (Only selected networks can access)"
+      },
+      "exceptions": [
+        {
+          "condition": "properties.primaryEndpoints.web != null",
+          "reason": "Static Website hosting may require public network access",
+          "adjustedSeverity": "Medium",
+          "status": "REVIEW"
+        },
+        {
+          "condition": "tags.network-access == 'public-required'",
+          "reason": "Public network access documented as required",
+          "adjustedSeverity": "Low",
+          "status": "ACCEPTED"
+        },
+        {
+          "condition": "tags.environment in ['dev', 'test']",
+          "reason": "Development/test environment",
+          "adjustedSeverity": "Medium",
+          "status": "REVIEW"
+        }
+      ],
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
+      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query networkRuleSet.defaultAction",
+      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --default-action Deny",
+      "businessImpact": "Implements zero-trust network security by denying access by default. Requires explicit VNet/IP whitelist configuration.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.8]"
+      ],
+      "description": "Implements zero-trust network security by denying access by default. Requires explicit VNet/IP whitelist configuration. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "3.2",
+      "controlName": "Infrastructure Encryption",
+      "category": "Storage",
+      "priority": "P1",
+      "level": "L2",
+      "severity": "Low",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.encryption.requireInfrastructureEncryption",
+      "expectedValue": "true",
+      "checkLogic": "value == true",
+      "valueMapping": {
+        "true": "Enabled (Double encryption)",
+        "false": "Disabled (Single encryption)",
+        "null": "Not configured (Single encryption)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts/{name}?api-version=2024-01-01",
+      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query encryption.requireInfrastructureEncryption",
+      "remediationCommand": "Cannot be changed after creation. Must recreate storage account with --require-infrastructure-encryption flag.",
+      "businessImpact": "Level 2 - Required only for critical data. Provides double encryption at the storage service level. Cannot be enabled post-creation.",
+      "cannotRemediate": true,
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/common/infrastructure-encryption-enable",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.2]"
+      ],
+      "description": "Level 2 - Required only for critical data. Provides double encryption at the storage service level. Cannot be enabled post-creation. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "3.9",
+      "controlName": "Azure Services Bypass",
+      "category": "Storage",
+      "priority": "P2",
+      "level": "L2",
+      "severity": "Low",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.networkAcls.bypass",
+      "expectedValue": "AzureServices",
+      "checkLogic": "value contains 'AzureServices'",
+      "valueMapping": {
+        "AzureServices": "Trusted Azure services can bypass",
+        "None": "No services can bypass"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts/{name}?api-version=2024-01-01",
+      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query networkRuleSet.bypass",
+      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --bypass AzureServices",
+      "businessImpact": "Level 2 - Allows trusted Azure services (Azure Backup, Log Analytics, etc.) to bypass network rules when needed.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security#trusted-access-based-on-a-managed-identity",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.9]"
+      ],
+      "description": "Level 2 - Allows trusted Azure services (Azure Backup, Log Analytics, etc.) to bypass network rules when needed. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "3.12",
+      "controlName": "Customer-Managed Keys (CMK)",
+      "category": "Storage",
+      "priority": "P2",
+      "level": "L2",
+      "severity": "Low",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.encryption.keySource",
+      "expectedValue": "Microsoft.Keyvault",
+      "checkLogic": "value == 'Microsoft.Keyvault'",
+      "valueMapping": {
+        "Microsoft.Storage": "Microsoft-managed keys (Default)",
+        "Microsoft.Keyvault": "Customer-managed keys (Enhanced control)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts/{name}?api-version=2024-01-01",
+      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query encryption.keySource",
+      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --encryption-key-source Microsoft.Keyvault --encryption-key-vault <keyVaultUri> --encryption-key-name <keyName>",
+      "businessImpact": "Level 2 - Required only for critical data. Provides enhanced control over encryption keys using Azure Key Vault. Requires Key Vault setup and additional management overhead.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/common/customer-managed-keys-overview",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.12]"
+      ],
+      "description": "Level 2 - Required only for critical data. Provides enhanced control over encryption keys using Azure Key Vault. Requires Key Vault setup and additional management overhead. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "Storage Account Kind (Legacy Detection)",
+      "category": "Storage",
+      "priority": "P1",
+      "level": "N/A",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "kind",
+      "expectedValue": "StorageV2",
+      "checkLogic": "value not in ['Storage', 'BlobStorage']",
+      "valueMapping": {
+        "StorageV2": "General Purpose v2 (Current)",
+        "Storage": "General Purpose v1 (Legacy - EOL Oct 2026)",
+        "BlobStorage": "Blob Storage (Legacy - EOL Oct 2026)",
+        "FileStorage": "File Storage (Specialized)",
+        "BlockBlobStorage": "Block Blob Storage (Specialized)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
+      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query kind",
+      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --set kind=StorageV2",
+      "businessImpact": "Legacy storage account types (GPv1, BlobStorage) are being deprecated October 2026. Upgrade to StorageV2 for full feature support.",
+      "eolDate": "2026-10-13",
+      "references": [
+        "https://azure.microsoft.com/en-us/updates/action-required-switch-to-azure-storage-account-standard-general-purpose-v2-by-13-october-2026/"
+      ],
+      "description": "Legacy storage account types (GPv1, BlobStorage) are being deprecated October 2026. Upgrade to StorageV2 for full feature support."
+    },
+    {
+      "controlId": "4.1.2",
+      "controlName": "SQL Firewall - No Allow All",
+      "category": "SQL",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "Critical",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "firewallRules",
+      "expectedValue": "No rule with 0.0.0.0-255.255.255.255 or 0.0.0.0-0.0.0.0",
+      "checkLogic": "no rule where (startIpAddress == '0.0.0.0' AND endIpAddress in ['0.0.0.0', '255.255.255.255'])",
+      "valueMapping": {
+        "0.0.0.0-255.255.255.255": "Allow from all internet (Critical risk)",
+        "0.0.0.0-0.0.0.0": "Allow Azure services (Medium risk)",
+        "Specific IP/Range": "Restricted access (Secure)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Sql/servers/{serverName}/firewallRules?api-version=2023-08-01",
+      "cliCommand": "az sql server firewall-rule list --server {serverName} --resource-group {rg}",
+      "remediationCommand": "az sql server firewall-rule delete --server {serverName} --resource-group {rg} --name {ruleName}",
+      "businessImpact": "Prevents exposure of SQL databases to the entire internet. The most common attack vector for SQL breaches.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-sql/database/firewall-configure",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_4.1.2]"
+      ],
+      "description": "Prevents exposure of SQL databases to the entire internet. The most common attack vector for SQL breaches. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "4.1.1",
+      "controlName": "SQL Auditing Enabled",
+      "category": "SQL",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "auditingSettings/default.properties.state",
+      "expectedValue": "Enabled",
+      "checkLogic": "value == 'Enabled'",
+      "valueMapping": {
+        "Enabled": "Auditing enabled",
+        "Disabled": "Auditing disabled"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Sql/servers/{serverName}/auditingSettings/default?api-version=2023-08-01",
+      "cliCommand": "az sql server audit-policy show --resource-group {rg} --server {serverName}",
+      "remediationCommand": "az sql server audit-policy update --resource-group {rg} --server {serverName} --state Enabled --storage-account {storageAccount}",
+      "businessImpact": "Enables tracking of database activities and security events for compliance and forensic analysis. Required for most compliance frameworks.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-sql/database/auditing-overview",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_4.1.1]"
+      ],
+      "description": "Enables tracking of database activities and security events for compliance and forensic analysis. Required for most compliance frameworks. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "4.1.5",
+      "controlName": "Transparent Data Encryption (TDE)",
+      "category": "SQL",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "transparentDataEncryption/current.properties.state",
+      "expectedValue": "Enabled",
+      "checkLogic": "value == 'Enabled'",
+      "valueMapping": {
+        "Enabled": "Encryption enabled",
+        "Disabled": "Encryption disabled"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Sql/servers/{serverName}/databases/{dbName}/transparentDataEncryption/current?api-version=2023-08-01",
+      "cliCommand": "az sql db tde show --server {serverName} --database {dbName} --resource-group {rg}",
+      "remediationCommand": "az sql db tde set --resource-group {rg} --server {serverName} --database {dbName} --status Enabled",
+      "businessImpact": "Encrypts data at rest to protect sensitive information. Native Azure SQL feature with no performance impact.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-sql/database/transparent-data-encryption-tde-overview",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_4.1.5]"
+      ],
+      "description": "Encrypts data at rest to protect sensitive information. Native Azure SQL feature with no performance impact. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "SQL Server - TLS Version",
+      "category": "SQL",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "Critical",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.minimalTlsVersion",
+      "expectedValue": "1.2",
+      "checkLogic": "value == '1.2' or value == '1.3'",
+      "valueMapping": {
+        "1.0": "TLS 1.0 (Insecure)",
+        "1.1": "TLS 1.1 (Insecure)",
+        "1.2": "TLS 1.2 (Secure)",
+        "1.3": "TLS 1.3 (Secure)",
+        "null": "Not configured"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Sql/servers/{serverName}?api-version=2023-08-01",
+      "cliCommand": "az sql server show --name {serverName} --resource-group {rg} --query minimalTlsVersion",
+      "remediationCommand": "az sql server update --name {serverName} --resource-group {rg} --minimal-tls-version 1.2",
+      "businessImpact": "Enforces secure TLS connections for SQL Server. Prevents use of deprecated TLS 1.0/1.1.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-sql/database/connectivity-settings#minimal-tls-version"
+      ],
+      "description": "Enforces secure TLS connections for SQL Server. Prevents use of deprecated TLS 1.0/1.1."
+    },
+    {
+      "controlId": "4.2.1",
+      "controlName": "Microsoft Defender for SQL",
+      "category": "SQL",
+      "priority": "P1",
+      "level": "L2",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": true,
+      "commercialCost": "$15 USD per server/month",
+      "enabled": false,
+      "propertyPath": "advancedThreatProtectionSettings/Default.properties.state",
+      "expectedValue": "Enabled",
+      "checkLogic": "value == 'Enabled'",
+      "valueMapping": {
+        "Enabled": "Defender for SQL enabled",
+        "Disabled": "Defender for SQL disabled"
+      },
+      "alternatives": [
+        {
+          "name": "Third-party vulnerability scanning",
+          "tools": "Qualys, Nessus, Rapid7",
+          "description": "Use database vulnerability assessment tools"
+        },
+        {
+          "name": "SIEM-based threat detection",
+          "tools": "Splunk, ELK, Azure Sentinel",
+          "description": "Monitor SQL audit logs for anomalies"
+        },
+        {
+          "name": "Database Activity Monitoring",
+          "tools": "Imperva, DataSunrise, McAfee DAM",
+          "description": "Third-party DAM solutions"
+        }
+      ],
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Sql/servers/{serverName}/advancedThreatProtectionSettings/Default?api-version=2023-08-01",
+      "cliCommand": "az sql server advanced-threat-protection-setting show --resource-group {rg} --server {serverName}",
+      "remediationCommand": "az sql server advanced-threat-protection-setting update --resource-group {rg} --server {serverName} --state Enabled",
+      "businessImpact": "Level 2 - COMMERCIAL FEATURE. Provides vulnerability assessment and advanced threat detection. Cost: $15/server/month. Can be replaced with third-party tools.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-sql/database/azure-defender-for-sql",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_4.2.1]"
+      ],
+      "description": "Level 2 - COMMERCIAL FEATURE. Provides vulnerability assessment and advanced threat detection. Cost: $15/server/month. Can be replaced with third-party tools. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "6.1",
+      "controlName": "No RDP from Internet",
+      "category": "Network",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "Critical",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "securityRules",
+      "expectedValue": "No Allow rule for port 3389 from Internet/*",
+      "checkLogic": "no rule where (access == 'Allow' AND direction == 'Inbound' AND destinationPortRange contains '3389' AND sourceAddressPrefix in ['*', 'Internet', '0.0.0.0/0'])",
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/networkSecurityGroups/{nsgName}/securityRules?api-version=2024-05-01",
+      "cliCommand": "az network nsg rule list --nsg-name {nsgName} --resource-group {rg}",
+      "remediationCommand": "az network nsg rule delete --nsg-name {nsgName} --resource-group {rg} --name {ruleName}",
+      "businessImpact": "Prevents direct RDP access from internet, the #1 attack vector for Windows VMs. Use Azure Bastion or VPN for remote access.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/bastion/bastion-overview",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_6.1]"
+      ],
+      "description": "Prevents direct RDP access from internet, the #1 attack vector for Windows VMs. Use Azure Bastion or VPN for remote access. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "6.2",
+      "controlName": "No SSH from Internet",
+      "category": "Network",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "Critical",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "securityRules",
+      "expectedValue": "No Allow rule for port 22 from Internet/*",
+      "checkLogic": "no rule where (access == 'Allow' AND direction == 'Inbound' AND destinationPortRange contains '22' AND sourceAddressPrefix in ['*', 'Internet', '0.0.0.0/0'])",
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/networkSecurityGroups/{nsgName}/securityRules?api-version=2024-05-01",
+      "cliCommand": "az network nsg rule list --nsg-name {nsgName} --resource-group {rg}",
+      "remediationCommand": "az network nsg rule delete --nsg-name {nsgName} --resource-group {rg} --name {ruleName}",
+      "description": "Disable SSH access on network security groups from the Internet. The potential security problem with using SSH over the Internet is that attackers can use various brute force techniques to gain access to Azure Virtual Machines. Once the attackers gain access, they can use a virtual machine as a launch point for compromising other machines on the Azure Virtual Network or even attack networked devices outside of Azure.",
+      "businessImpact": "Prevents direct SSH access from internet, the #1 attack vector for Linux VMs. Use Azure Bastion or VPN for remote access.",
+      "references": [
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:48bb413be641bc25e6ad2f5689a7dff1",
+        "https://learn.microsoft.com/en-us/azure/bastion/bastion-overview",
+        "https://workbench.cisecurity.org/files/3459"
+      ]
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "No Any-to-Any Allow Rules",
+      "category": "Network",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "securityRules",
+      "expectedValue": "No Allow rule with source * and destination *",
+      "checkLogic": "no rule where (access == 'Allow' AND sourceAddressPrefix == '*' AND destinationAddressPrefix == '*')",
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/networkSecurityGroups/{nsgName}/securityRules?api-version=2024-05-01",
+      "cliCommand": "az network nsg rule list --nsg-name {nsgName} --resource-group {rg}",
+      "remediationCommand": "az network nsg rule delete --nsg-name {nsgName} --resource-group {rg} --name {ruleName}",
+      "businessImpact": "Prevents overly permissive network rules that allow any source to reach any destination. Implements least-privilege network access.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/virtual-network/network-security-groups-overview"
+      ],
+      "description": "Prevents overly permissive network rules that allow any source to reach any destination. Implements least-privilege network access."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "DDoS Protection Standard",
+      "category": "Network",
+      "priority": "P1",
+      "level": "L2",
+      "severity": "Low",
+      "automated": true,
+      "commercial": true,
+      "commercialCost": "$2,944 USD per month (fixed) + $0.025 per GB mitigated",
+      "enabled": false,
+      "propertyPath": "properties.enableDdosProtection",
+      "expectedValue": "true",
+      "checkLogic": "value == true",
+      "valueMapping": {
+        "true": "DDoS Protection Standard enabled",
+        "false": "DDoS Protection Standard disabled (Basic is free but limited)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/virtualNetworks?api-version=2024-05-01",
+      "cliCommand": "az network vnet show --name {name} --resource-group {rg} --query enableDdosProtection",
+      "remediationCommand": "az network vnet update --name {name} --resource-group {rg} --ddos-protection true",
+      "businessImpact": "Level 2 - COMMERCIAL FEATURE. DDoS Protection Standard provides enhanced DDoS mitigation capabilities but costs $2,944/month fixed fee plus per-GB charges. Basic DDoS Protection (free) is enabled by default for all Azure resources. Standard is only needed for high-risk applications or compliance requirements.",
+      "alternatives": [
+        {
+          "name": "DDoS Protection Basic",
+          "tools": "Azure built-in (free)",
+          "description": "Free DDoS protection automatically enabled for all Azure resources. Provides basic mitigation."
+        },
+        {
+          "name": "Third-party DDoS protection",
+          "tools": "Cloudflare, Akamai, Imperva",
+          "description": "External DDoS protection services"
+        }
+      ],
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/ddos-protection/ddos-protection-overview",
+        "https://azure.microsoft.com/en-us/pricing/details/ddos-protection/"
+      ],
+      "description": "Level 2 - COMMERCIAL FEATURE. DDoS Protection Standard provides enhanced DDoS mitigation capabilities but costs $2,944/month fixed fee plus per-GB charges. Basic DDoS Protection (free) is enabled by default for all Azure resources. Standard is only needed for high-risk applications or compliance requirements."
+    },
+    {
+      "controlId": "6.6",
+      "controlName": "Network Watcher Enabled",
+      "category": "Network",
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "properties.provisioningState",
+      "expectedValue": "Succeeded",
+      "checkLogic": "value == 'Succeeded'",
+      "valueMapping": {
+        "Succeeded": "Network Watcher enabled",
+        "null": "Network Watcher not enabled"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/networkWatchers?api-version=2024-05-01",
+      "cliCommand": "az network watcher show --location {region}",
+      "remediationCommand": "az network watcher configure --resource-group NetworkWatcherRG --locations {region}",
+      "businessImpact": "Enables Network Watcher to monitor and diagnose network issues. Network Watcher should be enabled in all regions where virtual networks exist.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/network-watcher/network-watcher-monitoring-overview",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_6.6]"
+      ],
+      "description": "Enables Network Watcher to monitor and diagnose network issues. Network Watcher should be enabled in all regions where virtual networks exist. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "7.2",
+      "controlName": "Managed Disks",
+      "category": "VM",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "storageProfile.osDisk.managedDisk",
+      "expectedValue": "Object exists (not unmanaged VHD)",
+      "checkLogic": "value != null",
+      "valueMapping": {
+        "exists": "Managed disk (Secure)",
+        "null": "Unmanaged VHD (Legacy - not recommended)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01",
+      "cliCommand": "az vm show --name {vmName} --resource-group {rg} --query storageProfile.osDisk.managedDisk",
+      "remediationCommand": "az vm convert --name {vmName} --resource-group {rg}",
+      "businessImpact": "Managed disks provide better security, availability, and management capabilities. Unmanaged disks are legacy and not recommended.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/virtual-machines/managed-disks-overview",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_7.2]"
+      ],
+      "description": "Managed disks provide better security, availability, and management capabilities. Unmanaged disks are legacy and not recommended. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "Azure Monitor Agent (AMA) Installed",
+      "category": "VM",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "extensions",
+      "expectedValue": "AzureMonitorWindowsAgent or AzureMonitorLinuxAgent installed",
+      "checkLogic": "extension exists where name in ['AzureMonitorWindowsAgent', 'AzureMonitorLinuxAgent']",
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Compute/virtualMachines/{vmName}/extensions?api-version=2024-03-01",
+      "cliCommand": "az vm extension list --vm-name {vmName} --resource-group {rg}",
+      "remediationCommand": "az vm extension set --name AzureMonitorWindowsAgent --publisher Microsoft.Azure.Monitor --vm-name {vmName} --resource-group {rg}",
+      "businessImpact": "Azure Monitor Agent is the current monitoring solution. Provides telemetry and monitoring capabilities.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-overview"
+      ],
+      "description": "Azure Monitor Agent is the current monitoring solution. Provides telemetry and monitoring capabilities."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "NO Legacy MMA/OMS Agent (RETIRED)",
+      "category": "VM",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "Critical",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "extensions",
+      "expectedValue": "MicrosoftMonitoringAgent or OmsAgentForLinux NOT present",
+      "checkLogic": "no extension where name in ['MicrosoftMonitoringAgent', 'OmsAgentForLinux']",
+      "valueMapping": {
+        "present": "Legacy agent detected (RETIRED Aug 2024)",
+        "absent": "No legacy agent (Compliant)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Compute/virtualMachines/{vmName}/extensions?api-version=2024-03-01",
+      "cliCommand": "az vm extension list --vm-name {vmName} --resource-group {rg}",
+      "remediationCommand": "az vm extension delete --name MicrosoftMonitoringAgent --vm-name {vmName} --resource-group {rg} && az vm extension set --name AzureMonitorWindowsAgent --publisher Microsoft.Azure.Monitor --vm-name {vmName} --resource-group {rg}",
+      "businessImpact": "Log Analytics Agent (MMA/OMS) was RETIRED August 31, 2024. Must migrate to Azure Monitor Agent immediately.",
+      "eolDate": "2024-08-31",
+      "eolStatus": "PAST",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/log-analytics-agent"
+      ],
+      "description": "Log Analytics Agent (MMA/OMS) was RETIRED August 31, 2024. Must migrate to Azure Monitor Agent immediately."
+    },
+    {
+      "controlId": "2.1.1",
+      "controlName": "Microsoft Defender for Servers",
+      "category": "VM",
+      "priority": "P1",
+      "level": "L2",
+      "severity": "Medium",
+      "automated": false,
+      "commercial": true,
+      "commercialCost": "~$15 USD per server/month",
+      "enabled": false,
+      "propertyPath": "Microsoft.Security/pricings/VirtualMachines",
+      "expectedValue": "Standard tier",
+      "checkLogic": "pricingTier == 'Standard'",
+      "valueMapping": {
+        "Standard": "Defender for Servers enabled",
+        "Free": "Defender for Servers disabled"
+      },
+      "alternatives": [
+        {
+          "name": "Third-party EDR",
+          "tools": "CrowdStrike, SentinelOne, Trend Micro, Carbon Black",
+          "description": "Enterprise endpoint protection solutions"
+        },
+        {
+          "name": "Open-source monitoring",
+          "tools": "Wazuh, OSSEC",
+          "description": "Free security monitoring platforms"
+        }
+      ],
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Security/pricings/VirtualMachines?api-version=2024-01-01",
+      "cliCommand": "az security pricing show --name VirtualMachines",
+      "remediationCommand": "az security pricing create --name VirtualMachines --tier Standard",
+      "businessImpact": "Level 2 - COMMERCIAL FEATURE. Provides advanced threat protection for virtual machines. Cost: ~$15/server/month. Can be replaced with third-party EDR.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/defender-for-cloud/plan-defender-for-servers",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_2.1.1]"
+      ],
+      "description": "Level 2 - COMMERCIAL FEATURE. Provides advanced threat protection for virtual machines. Cost: ~$15/server/month. Can be replaced with third-party EDR. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "9.3",
+      "controlName": "App Service - Minimum TLS 1.2",
+      "category": "AppService",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "Critical",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.siteConfig.minTlsVersion",
+      "expectedValue": "1.2 or 1.3",
+      "checkLogic": "value in ['1.2', '1.3']",
+      "valueMapping": {
+        "1.0": "TLS 1.0 (Insecure)",
+        "1.1": "TLS 1.1 (Insecure)",
+        "1.2": "TLS 1.2 (Secure)",
+        "1.3": "TLS 1.3 (Secure)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Web/sites/{name}/config/web?api-version=2024-04-01",
+      "cliCommand": "az webapp config show --name {name} --resource-group {rg} --query minTlsVersion",
+      "remediationCommand": "az webapp config set --name {name} --resource-group {rg} --min-tls-version 1.2",
+      "businessImpact": "Enforces secure TLS connections for web applications. Prevents use of deprecated protocols.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/app-service/configure-ssl-bindings#enforce-tls-versions",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_9.3]"
+      ],
+      "description": "Enforces secure TLS connections for web applications. Prevents use of deprecated protocols. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "9.2",
+      "controlName": "App Service - HTTPS Only",
+      "category": "AppService",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.httpsOnly",
+      "expectedValue": "true",
+      "checkLogic": "value == true",
+      "valueMapping": {
+        "true": "HTTPS only (Secure)",
+        "false": "HTTP allowed (Insecure)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Web/sites?api-version=2024-04-01",
+      "cliCommand": "az webapp show --name {name} --resource-group {rg} --query httpsOnly",
+      "remediationCommand": "az webapp update --name {name} --resource-group {rg} --set httpsOnly=true",
+      "businessImpact": "Forces all traffic to use secure HTTPS connections. Redirects HTTP to HTTPS automatically.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/app-service/configure-ssl-bindings#enforce-https",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_9.2]"
+      ],
+      "description": "Forces all traffic to use secure HTTPS connections. Redirects HTTP to HTTPS automatically. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "9.10",
+      "controlName": "App Service - FTP Disabled",
+      "category": "AppService",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.siteConfig.ftpsState",
+      "expectedValue": "Disabled or FtpsOnly",
+      "checkLogic": "value in ['Disabled', 'FtpsOnly']",
+      "valueMapping": {
+        "AllAllowed": "FTP and FTPS allowed (Insecure)",
+        "FtpsOnly": "FTPS only (Acceptable)",
+        "Disabled": "FTP disabled (Secure)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Web/sites/{name}/config/web?api-version=2024-04-01",
+      "cliCommand": "az webapp config show --name {name} --resource-group {rg} --query ftpsState",
+      "remediationCommand": "az webapp config set --name {name} --resource-group {rg} --ftps-state Disabled",
+      "businessImpact": "Prevents insecure FTP file transfers. Use FTPS or better alternatives like Azure DevOps, GitHub Actions, or Kudu.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/app-service/deploy-ftp",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_9.10]"
+      ],
+      "description": "Prevents insecure FTP file transfers. Use FTPS or better alternatives like Azure DevOps, GitHub Actions, or Kudu. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "App Service - Remote Debugging Disabled",
+      "category": "AppService",
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "properties.siteConfig.remoteDebuggingEnabled",
+      "expectedValue": "false",
+      "checkLogic": "value == false",
+      "valueMapping": {
+        "true": "Remote debugging enabled (Insecure)",
+        "false": "Remote debugging disabled (Secure)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Web/sites/{name}/config/web?api-version=2024-04-01",
+      "cliCommand": "az webapp config show --name {name} --resource-group {rg} --query remoteDebuggingEnabled",
+      "remediationCommand": "az webapp config set --name {name} --resource-group {rg} --remote-debugging-enabled false",
+      "businessImpact": "Disables remote debugging in production environments to reduce attack surface. Remote debugging should only be enabled in development/test environments.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/app-service/configure-common#configure-general-settings"
+      ],
+      "description": "Disables remote debugging in production environments to reduce attack surface. Remote debugging should only be enabled in development/test environments."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "Azure Firewall Threat Intel",
+      "category": "Network",
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "properties.threatIntelMode",
+      "expectedValue": "Alert or Deny",
+      "checkLogic": "value in ['Alert', 'Deny']",
+      "valueMapping": {
+        "Off": "Threat Intel disabled",
+        "Alert": "Threat Intel enabled (Alert mode)",
+        "Deny": "Threat Intel enabled (Deny mode)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/azureFirewalls/{firewallName}?api-version=2024-05-01",
+      "cliCommand": "az network firewall policy show --name {policyName} --resource-group {rg} --query threatIntelMode",
+      "remediationCommand": "az network firewall policy update --name {policyName} --resource-group {rg} --threat-intel-mode Alert",
+      "businessImpact": "Enables Threat Intelligence mode on Azure Firewall to block or alert on malicious IP addresses and domains from Microsoft threat intelligence feeds.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/firewall/threat-intel"
+      ],
+      "description": "Enables Threat Intelligence mode on Azure Firewall to block or alert on malicious IP addresses and domains from Microsoft threat intelligence feeds."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "Azure AD-Only Authentication",
+      "category": "SQL",
+      "priority": "P1",
+      "level": "L2",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "properties.azureADOnlyAuthentication",
+      "expectedValue": "true",
+      "checkLogic": "value == true",
+      "valueMapping": {
+        "true": "Azure AD-only authentication enabled",
+        "false": "SQL authentication allowed (Less secure)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Sql/servers/{serverName}?api-version=2023-08-01",
+      "cliCommand": "az sql server ad-only-auth show --resource-group {rg} --name {serverName}",
+      "remediationCommand": "az sql server ad-only-auth enable --resource-group {rg} --name {serverName}",
+      "businessImpact": "Level 2 - Enables Azure AD-only authentication, requiring all database access to use Azure AD authentication. Disables SQL authentication for enhanced security.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-sql/database/authentication-azure-ad-only-authentication"
+      ],
+      "description": "Level 2 - Enables Azure AD-only authentication, requiring all database access to use Azure AD authentication. Disables SQL authentication for enhanced security."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "Antimalware Extension",
+      "category": "VM",
+      "priority": "P1",
+      "level": "L2",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "extensions",
+      "expectedValue": "IaaSAntimalware extension installed",
+      "checkLogic": "extension exists where name == 'IaaSAntimalware'",
+      "valueMapping": {
+        "installed": "Antimalware extension installed",
+        "not_installed": "Antimalware extension not installed"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Compute/virtualMachines/{vmName}/extensions?api-version=2024-03-01",
+      "cliCommand": "az vm extension list --vm-name {vmName} --resource-group {rg}",
+      "remediationCommand": "az vm extension set --name IaaSAntimalware --publisher Microsoft.Azure.Security --vm-name {vmName} --resource-group {rg}",
+      "businessImpact": "Level 2 - Installs IaaSAntimalware extension for VM protection against malware. Note: Microsoft Defender for Servers (commercial) provides more comprehensive protection.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/virtual-machines/extensions/iaas-antimalware-windows"
+      ],
+      "description": "Level 2 - Installs IaaSAntimalware extension for VM protection against malware. Note: Microsoft Defender for Servers (commercial) provides more comprehensive protection."
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "ARC Agent Version Current",
+      "category": "ARC",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "properties.agentVersion",
+      "expectedValue": "Version within last 12 months",
+      "checkLogic": "version is current (within last 12 months)",
+      "valueMapping": {
+        "current": "Agent version is current",
+        "outdated": "Agent version is outdated"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.HybridCompute/machines?api-version=2024-07-10",
+      "cliCommand": "az connectedmachine show --name {name} --resource-group {rg} --query properties.agentVersion",
+      "remediationCommand": "az connectedmachine upgrade --name {name} --resource-group {rg}",
+      "description": "Ensure Azure ARC agent is kept up to date. Outdated agents may have security vulnerabilities and compatibility issues. The agent should be updated to a version released within the last 12 months.",
+      "businessImpact": "Update ARC agent to a version released within the last 12 months for security and compatibility.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-arc/servers/manage-agent",
+        "https://workbench.cisecurity.org/files/3459"
+      ]
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "ARC Connection Status",
+      "category": "ARC",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "properties.status",
+      "expectedValue": "Connected",
+      "checkLogic": "value == 'Connected'",
+      "valueMapping": {
+        "Connected": "Machine is connected",
+        "Disconnected": "Machine is disconnected",
+        "Expired": "Machine connection expired"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.HybridCompute/machines?api-version=2024-07-10",
+      "cliCommand": "az connectedmachine show --name {name} --resource-group {rg} --query properties.status",
+      "remediationCommand": "az connectedmachine show --name {name} --resource-group {rg}",
+      "description": "Ensure Azure ARC machines maintain a connected status. Disconnected machines cannot be managed, monitored, or updated, creating security and operational risks.",
+      "businessImpact": "Ensure ARC machine is connected. Check network connectivity and agent status.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-arc/servers/troubleshoot-agent-onboard",
+        "https://workbench.cisecurity.org/files/3459"
+      ]
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "ARC AMA Extension Installed",
+      "category": "ARC",
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "extensions",
+      "expectedValue": "AzureMonitorWindowsAgent or AzureMonitorLinuxAgent installed",
+      "checkLogic": "extension exists where type in ['AzureMonitorWindowsAgent', 'AzureMonitorLinuxAgent']",
+      "valueMapping": {
+        "installed": "AMA extension installed",
+        "not_installed": "AMA extension not installed"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/resourceGroups/{rg}/providers/Microsoft.HybridCompute/machines/{name}/extensions?api-version=2024-07-10",
+      "cliCommand": "az connectedmachine extension list --machine-name {name} --resource-group {rg}",
+      "remediationCommand": "az connectedmachine extension create --name AzureMonitorWindowsAgent --publisher Microsoft.Azure.Monitor --machine-name {name} --resource-group {rg}",
+      "description": "Install Azure Monitor Agent (AMA) extension on ARC machines to enable monitoring and telemetry collection. This provides visibility into machine health, performance, and security events.",
+      "businessImpact": "Install Azure Monitor Agent (AMA) extension on ARC machine for monitoring.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-arc/servers/manage-vm-extensions",
+        "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-overview",
+        "https://workbench.cisecurity.org/files/3459"
+      ]
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "ARC Automatic Upgrade Enabled",
+      "category": "ARC",
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "properties.agentUpgrade.enableAutomaticUpgrade",
+      "expectedValue": "true",
+      "checkLogic": "value == true",
+      "valueMapping": {
+        "true": "Automatic upgrade enabled",
+        "false": "Automatic upgrade disabled"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.HybridCompute/machines?api-version=2024-07-10",
+      "cliCommand": "az connectedmachine show --name {name} --resource-group {rg} --query properties.agentUpgrade.enableAutomaticUpgrade",
+      "remediationCommand": "az connectedmachine upgrade enable --name {name} --resource-group {rg}",
+      "description": "Enable automatic upgrade for ARC agent to ensure it stays current with security updates and new features. Automatic upgrades reduce manual maintenance overhead and ensure timely security patches.",
+      "businessImpact": "Enable automatic upgrade for ARC agent to ensure it stays current with security updates.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-arc/servers/manage-agent#automatic-upgrade",
+        "https://workbench.cisecurity.org/files/3459"
+      ]
+    },
+    {
+      "controlId": "5.4",
+      "controlName": "Diagnostic Settings Enabled",
+      "category": "Monitor",
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "diagnosticSettings",
+      "expectedValue": "Diagnostic settings configured",
+      "checkLogic": "diagnosticSettings exists and is configured",
+      "valueMapping": {
+        "configured": "Diagnostic settings configured",
+        "not_configured": "Diagnostic settings not configured"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Insights/diagnosticSettings?api-version=2021-05-01-preview",
+      "cliCommand": "az monitor diagnostic-settings list --resource {resourceId}",
+      "remediationCommand": "az monitor diagnostic-settings create --resource {resourceId} --name <setting-name> --workspace <log-analytics-workspace-id>",
+      "description": "Enable diagnostic settings for Azure resources to collect logs and metrics for monitoring, troubleshooting, and compliance. Diagnostic settings send resource telemetry to Log Analytics workspaces, storage accounts, or Event Hubs for analysis and retention.",
+      "businessImpact": "Enable diagnostic settings for the resource to collect logs and metrics for monitoring.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings",
+        "https://workbench.cisecurity.org/files/3459",
+        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_5.4]"
+      ]
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "DCR Associations",
+      "category": "Monitor",
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "associations",
+      "expectedValue": "At least one DCR association",
+      "checkLogic": "associations count > 0",
+      "valueMapping": {
+        "has_associations": "DCR has associations",
+        "no_associations": "DCR has no associations"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Insights/dataCollectionRules/{dcrName}/associations?api-version=2022-06-01",
+      "cliCommand": "az monitor data-collection rule association list --rule-id {dcrId}",
+      "remediationCommand": "az monitor data-collection rule association create --rule-id {dcrId} --resource <target-resource-id>",
+      "description": "Associate Data Collection Rules (DCRs) with resources to enable centralized data collection for Azure Monitor. DCRs define what data to collect and where to send it, providing a modern approach to monitoring configuration.",
+      "businessImpact": "Associate Data Collection Rule (DCR) with resources for centralized data collection.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/data-collection-rule-azure-monitor-agent",
+        "https://workbench.cisecurity.org/files/3459"
+      ]
+    },
+    {
+      "controlId": "N/A",
+      "controlName": "No MMA/OMS Agents",
+      "category": "Monitor",
+      "priority": "P0",
+      "level": "L1",
+      "severity": "Critical",
+      "automated": false,
+      "commercial": false,
+      "enabled": true,
+      "propertyPath": "logAnalyticsWorkspace.heartbeat",
+      "expectedValue": "No Direct Agent category in Heartbeat logs",
+      "checkLogic": "no heartbeat records where Category == 'Direct Agent'",
+      "valueMapping": {
+        "no_legacy_agents": "No legacy MMA/OMS agents detected",
+        "legacy_agents_present": "Legacy MMA/OMS agents detected (RETIRED Aug 2024)"
+      },
+      "apiEndpoint": "Query Log Analytics: Heartbeat | where Category == 'Direct Agent'",
+      "cliCommand": "Query Log Analytics: Heartbeat | where Category == 'Direct Agent' | distinct Computer",
+      "remediationCommand": "Migrate to Azure Monitor Agent: Remove MicrosoftMonitoringAgent/OmsAgentForLinux and install AzureMonitorWindowsAgent/AzureMonitorLinuxAgent",
+      "description": "CRITICAL: Log Analytics Agent (Microsoft Monitoring Agent / OMS Agent) was RETIRED on August 31, 2024. No new installations are supported, and existing agents will stop receiving updates. All machines must migrate to Azure Monitor Agent (AMA) immediately. Legacy agents using 'Direct Agent' category in Heartbeat logs must be identified and replaced.",
+      "businessImpact": "CRITICAL: Log Analytics Agent (MMA) was retired on August 31, 2024. Verify no machines are using Direct Agent category. Migrate to Azure Monitor Agent (AMA) immediately.",
+      "eolDate": "2024-08-31",
+      "eolStatus": "PAST",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/log-analytics-agent",
+        "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-migration",
+        "https://workbench.cisecurity.org/files/3459"
+      ]
+    }
+  ]
+}

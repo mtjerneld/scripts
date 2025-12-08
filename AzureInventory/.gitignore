@@ -8,6 +8,9 @@
 # HTML reports
 *.html
 *.json
+# But allow configuration JSON files
+!Config/ControlDefinitions.json
+!Config/DeprecationRules.json
 
 # Output directories
 output/

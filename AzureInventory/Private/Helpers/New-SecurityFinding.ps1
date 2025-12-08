@@ -131,7 +131,9 @@ function New-SecurityFinding {
         [ValidateSet('L1', 'L2', 'N/A')]
         [string]$CisLevel = "L1",
         
-        [string]$Note = ""
+        [string]$Note = "",
+        
+        [string[]]$References = @()
     )
     
     [PSCustomObject]@{
@@ -155,6 +157,7 @@ function New-SecurityFinding {
         EOLDate            = $EOLDate
         CisLevel           = $CisLevel
         Note               = $Note
+        References         = $References
     }
 }
 
