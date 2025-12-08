@@ -778,7 +778,7 @@ $cssContent
             
             $html += @"
         <div class="compliance-scores-section">
-            <h3>CIS Compliance Score</h3>
+            <h3>Security Compliance Score</h3>
             <div class="score-grid">
                 <div class="score-card overall-score $scoreColor">
                     <div class="score-label">Overall Score</div>
@@ -936,6 +936,15 @@ $cssContent
                 </select>
             </div>
             <div class="filter-group">
+                <label for="frameworkFilter">Framework:</label>
+                <select id="frameworkFilter" class="filter-select">
+                    <option value="all">All Frameworks</option>
+                    <option value="cis">CIS</option>
+                    <option value="asb">ASB</option>
+                    <option value="wellarchitected">Well-Architected</option>
+                </select>
+            </div>
+            <div class="filter-group">
                 <label for="subscriptionFilter">Subscription:</label>
                 <select id="subscriptionFilter" class="filter-select">
                     <option value="all">All Subscriptions</option>
@@ -1074,6 +1083,8 @@ $cssContent
                 $controlId = $firstFinding.ControlId
                 $controlName = $firstFinding.ControlName
                 $controlKey = "$category|$controlId"
+                $controlFrameworks = if ($firstFinding.Frameworks) { $firstFinding.Frameworks -join " " } else { "CIS" }
+                $controlFrameworksLower = $controlFrameworks.ToLower()
                 
                 # Get highest severity (already calculated in sort)
                 $highestSeverity = $controlGroup.HighestSeverity
@@ -1089,12 +1100,13 @@ $cssContent
                 $failedCount = @($controlFindings).Count
                 $categoryLower = ($category -replace '\s+', '-').ToLower()
                 $severityLower = $highestSeverity.ToLower()
-                $searchableText = "$category $controlId $controlName $highestSeverity".ToLower()
+                $searchableText = "$category $controlId $controlName $highestSeverity $controlFrameworks".ToLower()
                 
                 $html += @"
                 <tr class="control-row" 
                     data-category="$(Encode-Html $category)" 
                     data-severity="$(Encode-Html $highestSeverity)"
+                    data-frameworks="$controlFrameworksLower"
                     data-category-lower="$categoryLower"
                     data-severity-lower="$severityLower"
                     data-searchable="$searchableText"
@@ -1416,16 +1428,19 @@ $cssContent
                             $note = if ($finding.Note) { Encode-Html $finding.Note } else { "" }
                             $cisLevel = if ($finding.CisLevel) { Encode-Html $finding.CisLevel } else { "N/A" }
                             $controlDetailKey = "$resourceKey|$($finding.ControlId)"
+                            $findingFrameworks = if ($finding.Frameworks) { $finding.Frameworks -join " " } else { "CIS" }
                             
                             $findingSeverityLower = $finding.Severity.ToLower()
                             $findingCategoryLower = $finding.Category.ToLower()
-                            $findingSearchable = "$($finding.ControlId) $($finding.ControlName) $($finding.Severity) $($finding.Category)".ToLower()
+                            $findingFrameworksLower = $findingFrameworks.ToLower()
+                            $findingSearchable = "$($finding.ControlId) $($finding.ControlName) $($finding.Severity) $($finding.Category) $findingFrameworks".ToLower()
                             
                             $html += @"
                                         <tr class="control-detail-row" 
                                             data-control-detail-key="$(Encode-Html $controlDetailKey)" 
                                             data-severity-lower="$findingSeverityLower"
                                             data-category-lower="$findingCategoryLower"
+                                            data-frameworks="$findingFrameworksLower"
                                             data-searchable="$findingSearchable"
                                             style="cursor: pointer;">
                                             <td>$(Encode-Html $finding.ControlId)</td>
@@ -1484,7 +1499,7 @@ $cssContent
                             $html += @"
                                                     <div class="remediation-section">
                                                         <h4>Additional Information</h4>
-                                                        <p><strong>CIS Level:</strong> $cisLevel | <strong>Resource ID:</strong> $(Encode-Html $finding.ResourceId)</p>
+                                                        <p><strong>Frameworks:</strong> $(Encode-Html $findingFrameworks) | <strong>CIS Level:</strong> $cisLevel | <strong>Resource ID:</strong> $(Encode-Html $finding.ResourceId)</p>
                                                     </div>
                                                 </div>
                                             </td>
@@ -1531,6 +1546,7 @@ $cssContent
             function initFilters() {
                 const severityFilter = document.getElementById('severityFilter');
                 const categoryFilter = document.getElementById('categoryFilter');
+                const frameworkFilter = document.getElementById('frameworkFilter');
                 const subscriptionFilter = document.getElementById('subscriptionFilter');
                 const searchFilter = document.getElementById('searchFilter');
                 const clearFiltersBtn = document.getElementById('clearFilters');
@@ -1545,6 +1561,7 @@ $cssContent
                 console.log('Initializing filters...', {
                     severityFilter: !!severityFilter,
                     categoryFilter: !!categoryFilter,
+                    frameworkFilter: !!frameworkFilter,
                     subscriptionFilter: !!subscriptionFilter,
                     searchFilter: !!searchFilter,
                     clearFiltersBtn: !!clearFiltersBtn,
@@ -1555,7 +1572,7 @@ $cssContent
                     resourceRows: resourceRows.length
                 });
                 
-                if (!severityFilter || !categoryFilter || !subscriptionFilter || !searchFilter || !clearFiltersBtn || !resultCount) {
+                if (!severityFilter || !categoryFilter || !frameworkFilter || !subscriptionFilter || !searchFilter || !clearFiltersBtn || !resultCount) {
                     console.error('Filter elements not found');
                     return;
                 }
@@ -1563,6 +1580,7 @@ $cssContent
                 function updateFilters() {
                     const selectedSeverity = severityFilter.value.toLowerCase();
                     const selectedCategory = categoryFilter.value.toLowerCase();
+                    const selectedFramework = frameworkFilter.value.toLowerCase();
                     const selectedSubscription = subscriptionFilter.value.toLowerCase();
                     const searchText = searchFilter.value.toLowerCase().trim();
                     
@@ -1587,9 +1605,10 @@ $cssContent
                             const rowCategory = row.getAttribute('data-category-lower') || '';
                             const rowSearchable = row.getAttribute('data-searchable') || '';
                             
-                            // Check if ANY control inside this resource matches the severity filter
+                            // Check if ANY control inside this resource matches the severity/framework filter
                             let hasMatchingSeverityControl = false;
                             let hasMatchingCategoryControl = false;
+                            let hasMatchingFrameworkControl = false;
                             
                             if (resourceKey) {
                                 const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
@@ -1598,6 +1617,7 @@ $cssContent
                                     controlDetailRows.forEach(controlRow => {
                                         const controlSeverity = controlRow.getAttribute('data-severity-lower') || '';
                                         const controlCategory = controlRow.getAttribute('data-category-lower') || '';
+                                        const controlFrameworks = controlRow.getAttribute('data-frameworks') || '';
                                         
                                         if (selectedSeverity === 'all' || controlSeverity === selectedSeverity) {
                                             hasMatchingSeverityControl = true;
@@ -1605,12 +1625,15 @@ $cssContent
                                         if (selectedCategory === 'all' || controlCategory === selectedCategory) {
                                             hasMatchingCategoryControl = true;
                                         }
+                                        if (selectedFramework === 'all' || controlFrameworks.includes(selectedFramework)) {
+                                            hasMatchingFrameworkControl = true;
+                                        }
                                     });
                                 }
                             }
                             
                             const rowSearchMatch = searchText === '' || rowSearchable.includes(searchText);
-                            const rowShouldShow = hasMatchingSeverityControl && hasMatchingCategoryControl && rowSearchMatch;
+                            const rowShouldShow = hasMatchingSeverityControl && hasMatchingCategoryControl && hasMatchingFrameworkControl && rowSearchMatch;
                             
                             if (rowShouldShow) {
                                 hasMatchingResource = true;
@@ -1627,13 +1650,15 @@ $cssContent
                                         controlDetailRows.forEach(controlRow => {
                                             const controlSeverity = controlRow.getAttribute('data-severity-lower') || '';
                                             const controlCategory = controlRow.getAttribute('data-category-lower') || '';
+                                            const controlFrameworks = controlRow.getAttribute('data-frameworks') || '';
                                             const controlSearchable = controlRow.getAttribute('data-searchable') || '';
                                             
                                             const controlSeverityMatch = selectedSeverity === 'all' || controlSeverity === selectedSeverity;
                                             const controlCategoryMatch = selectedCategory === 'all' || controlCategory === selectedCategory;
+                                            const controlFrameworkMatch = selectedFramework === 'all' || controlFrameworks.includes(selectedFramework);
                                             const controlSearchMatch = searchText === '' || controlSearchable.includes(searchText);
                                             
-                                            if (controlSeverityMatch && controlCategoryMatch && controlSearchMatch) {
+                                            if (controlSeverityMatch && controlCategoryMatch && controlFrameworkMatch && controlSearchMatch) {
                                                 controlRow.classList.remove('hidden');
                                             } else {
                                                 controlRow.classList.add('hidden');
@@ -1686,13 +1711,15 @@ $cssContent
                         controlRowsInBox.forEach(row => {
                             const rowSeverity = row.getAttribute('data-severity-lower') || '';
                             const rowCategory = row.getAttribute('data-category-lower') || '';
+                            const rowFrameworks = row.getAttribute('data-frameworks') || '';
                             const rowSearchable = row.getAttribute('data-searchable') || '';
                             
                             const rowSeverityMatch = selectedSeverity === 'all' || rowSeverity === selectedSeverity;
                             const rowCategoryMatch = selectedCategory === 'all' || rowCategory === selectedCategory;
+                            const rowFrameworkMatch = selectedFramework === 'all' || rowFrameworks.includes(selectedFramework);
                             const rowSearchMatch = searchText === '' || rowSearchable.includes(searchText);
                             
-                            if (rowSeverityMatch && rowCategoryMatch && rowSearchMatch) {
+                            if (rowSeverityMatch && rowCategoryMatch && rowFrameworkMatch && rowSearchMatch) {
                                 hasMatchingControl = true;
                             }
                         });
@@ -1703,13 +1730,15 @@ $cssContent
                             controlRowsInBox.forEach(row => {
                                 const rowSeverity = row.getAttribute('data-severity-lower') || '';
                                 const rowCategory = row.getAttribute('data-category-lower') || '';
+                                const rowFrameworks = row.getAttribute('data-frameworks') || '';
                                 const rowSearchable = row.getAttribute('data-searchable') || '';
                                 
                                 const rowSeverityMatch = selectedSeverity === 'all' || rowSeverity === selectedSeverity;
                                 const rowCategoryMatch = selectedCategory === 'all' || rowCategory === selectedCategory;
+                                const rowFrameworkMatch = selectedFramework === 'all' || rowFrameworks.includes(selectedFramework);
                                 const rowSearchMatch = searchText === '' || rowSearchable.includes(searchText);
                                 
-                                if (rowSeverityMatch && rowCategoryMatch && rowSearchMatch) {
+                                if (rowSeverityMatch && rowCategoryMatch && rowFrameworkMatch && rowSearchMatch) {
                                     row.classList.remove('hidden');
                                     visibleCount++;
                                     // Keep resources row collapsed - only expand on click
@@ -1739,6 +1768,7 @@ $cssContent
                 function clearFilters() {
                     severityFilter.value = 'all';
                     categoryFilter.value = 'all';
+                    frameworkFilter.value = 'all';
                     subscriptionFilter.value = 'all';
                     searchFilter.value = '';
                     updateFilters();
@@ -1747,6 +1777,7 @@ $cssContent
                 // Event listeners
                 severityFilter.addEventListener('change', updateFilters);
                 categoryFilter.addEventListener('change', updateFilters);
+                frameworkFilter.addEventListener('change', updateFilters);
                 subscriptionFilter.addEventListener('change', updateFilters);
                 searchFilter.addEventListener('input', updateFilters);
                 clearFiltersBtn.addEventListener('click', clearFilters);
@@ -1816,12 +1847,12 @@ $cssContent
                 // Control row click handlers (Category & Control table) - expand/collapse resources
                 controlRows.forEach(row => {
                     row.addEventListener('click', function() {
-                        const controlKey = row.getAttribute('data-control-key');
+                        const controlKey = this.getAttribute('data-control-key');
                         if (controlKey) {
                             const resourcesRow = document.querySelector('.control-resources-row[data-control-key="' + controlKey + '"]');
                             if (resourcesRow) {
                                 resourcesRow.classList.toggle('hidden');
-                                row.classList.toggle('expanded');
+                                this.classList.toggle('expanded');
                             }
                         }
                     });

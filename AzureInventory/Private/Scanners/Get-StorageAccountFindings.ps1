@@ -115,6 +115,7 @@ function Get-StorageAccountFindings {
                 -ControlId $tlsControl.controlId `
                 -ControlName $tlsControl.controlName `
                 -Category $tlsControl.category `
+                -Frameworks $tlsControl.frameworks `
                 -Severity $tlsControl.severity `
                 -CisLevel $tlsControl.level `
                 -CurrentValue $minTlsVersion `
@@ -143,6 +144,7 @@ function Get-StorageAccountFindings {
                 -ControlId $httpsControl.controlId `
                 -ControlName $httpsControl.controlName `
                 -Category $httpsControl.category `
+                -Frameworks $httpsControl.frameworks `
                 -Severity $httpsControl.severity `
                 -CisLevel $httpsControl.level `
                 -CurrentValue $httpsOnly.ToString() `
@@ -170,6 +172,7 @@ function Get-StorageAccountFindings {
                 -ControlId $publicAccessControl.controlId `
                 -ControlName $publicAccessControl.controlName `
                 -Category $publicAccessControl.category `
+                -Frameworks $publicAccessControl.frameworks `
                 -Severity $publicAccessControl.severity `
                 -CisLevel $publicAccessControl.level `
                 -CurrentValue $publicAccess.ToString() `
@@ -180,6 +183,46 @@ function Get-StorageAccountFindings {
             $findings.Add($finding)
         }
         
+        # Control: Soft Delete for Blobs
+        $softDeleteControl = $controlLookup["Soft Delete for Blobs"]
+        if ($softDeleteControl) {
+            $softDeleteEnabled = $false
+            try {
+                $blobProps = Invoke-AzureApiWithRetry {
+                    Get-AzStorageBlobServiceProperty -ResourceGroupName $sa.ResourceGroupName -StorageAccountName $sa.StorageAccountName -ErrorAction SilentlyContinue
+                }
+                if ($blobProps -and $blobProps.DeleteRetentionPolicy -and $blobProps.DeleteRetentionPolicy.Enabled) {
+                    $softDeleteEnabled = $true
+                }
+            }
+            catch {
+                Write-Verbose "Could not get blob service properties for $($sa.StorageAccountName): $_"
+            }
+            
+            $softDeleteStatus = if ($softDeleteEnabled) { "PASS" } else { "FAIL" }
+            $remediationCmd = $softDeleteControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
+            
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $sa.ResourceGroupName `
+                -ResourceType "Microsoft.Storage/storageAccounts" `
+                -ResourceName $sa.StorageAccountName `
+                -ResourceId $resourceId `
+                -ControlId $softDeleteControl.controlId `
+                -ControlName $softDeleteControl.controlName `
+                -Category $softDeleteControl.category `
+                -Frameworks $softDeleteControl.frameworks `
+                -Severity $softDeleteControl.severity `
+                -CisLevel $softDeleteControl.level `
+                -CurrentValue $(if ($softDeleteEnabled) { "Enabled" } else { "Disabled" }) `
+                -ExpectedValue $softDeleteControl.expectedValue `
+                -Status $softDeleteStatus `
+                -RemediationSteps $softDeleteControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
+
         # Control: Default Network Access
         $networkControl = $controlLookup["Default Network Access"]
         if ($networkControl) {
@@ -197,6 +240,7 @@ function Get-StorageAccountFindings {
                 -ControlId $networkControl.controlId `
                 -ControlName $networkControl.controlName `
                 -Category $networkControl.category `
+                -Frameworks $networkControl.frameworks `
                 -Severity $networkControl.severity `
                 -CisLevel $networkControl.level `
                 -CurrentValue $defaultAction `
@@ -224,6 +268,7 @@ function Get-StorageAccountFindings {
                 -ControlId $kindControl.controlId `
                 -ControlName $kindControl.controlName `
                 -Category $kindControl.category `
+                -Frameworks $kindControl.frameworks `
                 -Severity $kindControl.severity `
                 -CisLevel $kindControl.level `
                 -CurrentValue $sa.Kind `
@@ -263,6 +308,7 @@ function Get-StorageAccountFindings {
                 -ControlId $infraEncryptionControl.controlId `
                 -ControlName $infraEncryptionControl.controlName `
                 -Category $infraEncryptionControl.category `
+                -Frameworks $infraEncryptionControl.frameworks `
                 -Severity $infraEncryptionControl.severity `
                 -CisLevel $infraEncryptionControl.level `
                 -CurrentValue $infraEncryption.ToString() `
@@ -292,6 +338,7 @@ function Get-StorageAccountFindings {
                 -ControlId $bypassControl.controlId `
                 -ControlName $bypassControl.controlName `
                 -Category $bypassControl.category `
+                -Frameworks $bypassControl.frameworks `
                 -Severity $bypassControl.severity `
                 -CisLevel $bypassControl.level `
                 -CurrentValue $bypass `
@@ -340,6 +387,7 @@ function Get-StorageAccountFindings {
                     -ControlId $cmkControl.controlId `
                     -ControlName $cmkControl.controlName `
                     -Category $cmkControl.category `
+                    -Frameworks $cmkControl.frameworks `
                     -Severity $cmkControl.severity `
                     -CisLevel $cmkControl.level `
                     -CurrentValue $keySource `
@@ -355,5 +403,3 @@ function Get-StorageAccountFindings {
     
     return $findings
 }
-
-

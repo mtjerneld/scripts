@@ -33,6 +33,9 @@
 .PARAMETER Category
     Service category (Storage, AppService, VM, ARC, Monitor, Network, SQL).
 
+.PARAMETER Frameworks
+    Array of frameworks this control belongs to (e.g., CIS, ASB, WellArchitected).
+
 .PARAMETER Severity
     Finding severity: Critical, High, Medium, or Low.
 
@@ -71,6 +74,7 @@
         -ControlId "3.15" `
         -ControlName "Minimum TLS Version 1.2" `
         -Category "Storage" `
+        -Frameworks @("CIS") `
         -Severity "Critical" `
         -CurrentValue "TLS1_0" `
         -ExpectedValue "TLS1_2" `
@@ -108,6 +112,8 @@ function New-SecurityFinding {
         
         [Parameter(Mandatory = $true)]
         [string]$Category,
+
+        [string[]]$Frameworks = @("CIS"),
         
         [Parameter(Mandatory = $true)]
         [ValidateSet('Critical', 'High', 'Medium', 'Low')]
@@ -147,6 +153,7 @@ function New-SecurityFinding {
         ControlId          = $ControlId
         ControlName        = $ControlName
         Category           = $Category
+        Frameworks         = $Frameworks
         Severity           = $Severity
         CurrentValue       = $CurrentValue
         ExpectedValue      = $ExpectedValue
@@ -160,5 +167,3 @@ function New-SecurityFinding {
         References         = $References
     }
 }
-
-

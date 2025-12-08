@@ -106,6 +106,7 @@ function Get-VirtualMachineFindings {
                 -ControlId $managedDiskControl.controlId `
                 -ControlName $managedDiskControl.controlName `
                 -Category $managedDiskControl.category `
+                -Frameworks $managedDiskControl.frameworks `
                 -Severity $managedDiskControl.severity `
                 -CisLevel $managedDiskControl.level `
                 -CurrentValue $(if ($hasManagedDisk) { "Managed disk" } else { "Unmanaged VHD" }) `
@@ -142,6 +143,7 @@ function Get-VirtualMachineFindings {
                 -ControlId $legacyMmaControl.controlId `
                 -ControlName $legacyMmaControl.controlName `
                 -Category $legacyMmaControl.category `
+                -Frameworks $legacyMmaControl.frameworks `
                 -Severity $legacyMmaControl.severity `
                 -CisLevel $legacyMmaControl.level `
                 -CurrentValue $(if ($legacyMmaPresent) { "Legacy MMA agent present" } else { "No legacy agent" }) `
@@ -180,6 +182,7 @@ function Get-VirtualMachineFindings {
                 -ControlId $amaControl.controlId `
                 -ControlName $amaControl.controlName `
                 -Category $amaControl.category `
+                -Frameworks $amaControl.frameworks `
                 -Severity $amaControl.severity `
                 -CisLevel $amaControl.level `
                 -CurrentValue $(if ($amaInstalled) { "Installed" } else { "Not installed" }) `
@@ -214,6 +217,7 @@ function Get-VirtualMachineFindings {
                 -ControlId $antimalwareControl.controlId `
                 -ControlName $antimalwareControl.controlName `
                 -Category $antimalwareControl.category `
+                -Frameworks $antimalwareControl.frameworks `
                 -Severity $antimalwareControl.severity `
                 -CisLevel $antimalwareControl.level `
                 -CurrentValue $(if ($antimalwareInstalled) { "Installed" } else { "Not installed" }) `
@@ -223,17 +227,47 @@ function Get-VirtualMachineFindings {
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
         }
-        
-        # TODO: Disk Encryption (7.4) - Add to ControlDefinitions.json first
-        # This control is currently hardcoded and should be moved to JSON
-        # Commented out until added to ControlDefinitions.json:
-        #
-        # # P1 Control 7.4: Disk Encryption
-        # $encryptionAtHost = if ($vm.SecurityProfile) { $vm.SecurityProfile.EncryptionAtHost } else { $false }
-        # # Also check for ADE extension...
+
+        # Control: VM Backup Enabled (ASB)
+        $backupControl = $controlLookup["VM Backup Enabled"]
+        if ($backupControl) {
+            $backupEnabled = $false
+            if ($extensions) {
+                foreach ($ext in $extensions) {
+                    if ($ext.ExtensionType -like "*VMSnapshot*") {
+                        $backupEnabled = $true
+                        break
+                    }
+                }
+            }
+            
+            # If not found in extensions, logic implies it's not enabled or we can't see it.
+            # Checking extensions is a good proxy for Azure Backup.
+            
+            $backupStatus = if ($backupEnabled) { "PASS" } else { "FAIL" }
+            $remediationCmd = $backupControl.remediationCommand
+            
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $vm.ResourceGroupName `
+                -ResourceType "Microsoft.Compute/virtualMachines" `
+                -ResourceName $vm.Name `
+                -ResourceId $resourceId `
+                -ControlId $backupControl.controlId `
+                -ControlName $backupControl.controlName `
+                -Category $backupControl.category `
+                -Frameworks $backupControl.frameworks `
+                -Severity $backupControl.severity `
+                -CisLevel $backupControl.level `
+                -CurrentValue $(if ($backupEnabled) { "Backup enabled" } else { "Backup not detected (check extension)" }) `
+                -ExpectedValue $backupControl.expectedValue `
+                -Status $backupStatus `
+                -RemediationSteps $backupControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
     }
     
     return $findings
 }
-
-
