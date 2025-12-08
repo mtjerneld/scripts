@@ -1,0 +1,24 @@
+# Environment files with secrets
+.env
+*.env
+
+# PowerShell module cache
+*.psm1.bak
+
+# HTML reports
+*.html
+*.json
+
+# Output directories
+output/
+reports/
+
+# Temporary files
+*.tmp
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+
