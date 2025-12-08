@@ -30,8 +30,8 @@
   --high-50: #FFF4E6;
   --medium: #FFC107;
   --medium-50: #FFF7DA;
-  --low: #28A745;
-  --low-50: #E5F5EC;
+  --low: #4A9EFF;
+  --low-50: #E6F2FF;
   --ok: #156A3A;
   --ok-50: #E5F5EC;
   --warn: #8A6A00;
@@ -93,8 +93,8 @@
     --high-50: #2A1A0E;
     --medium: #FFD875;
     --medium-50: #2A2110;
-    --low: #5EE3A0;
-    --low-50: #0E2A1C;
+    --low: #6BB6FF;
+    --low-50: #0E1A2A;
     --ok: #5EE3A0;
     --ok-50: #0E2A1C;
     --warn: #FFD875;
@@ -204,7 +204,7 @@ body {
 }
 
 .summary-card.low {
-  background: linear-gradient(135deg, var(--low) 0%, #218838 100%);
+  background: var(--low);
   color: white;
   border-color: var(--low);
 }

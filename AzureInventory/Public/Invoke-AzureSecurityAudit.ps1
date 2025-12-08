@@ -66,7 +66,36 @@ function Invoke-AzureSecurityAudit {
     # Get subscriptions
     if (-not $SubscriptionIds -or $SubscriptionIds.Count -eq 0) {
         try {
-            $subscriptions = Get-AzSubscription | Where-Object { $_.State -eq 'Enabled' }
+            # Get current tenant from context to avoid cross-tenant authentication issues
+            $currentContext = Get-AzContext
+            if (-not $currentContext) {
+                Write-Error "No Azure context found. Please run Connect-AuditEnvironment first."
+                return
+            }
+            
+            if ($currentContext.Tenant) {
+                $currentTenantId = $currentContext.Tenant.Id
+                Write-Verbose "Filtering subscriptions to current tenant: $currentTenantId"
+                
+                # Suppress warnings about other tenants during subscription retrieval
+                $originalWarningPreference = $WarningPreference
+                $WarningPreference = 'SilentlyContinue'
+                
+                try {
+                    # Use -TenantId parameter to only query the current tenant (avoids MFA prompts for other tenants)
+                    $allSubscriptions = Get-AzSubscription -TenantId $currentTenantId -ErrorAction Stop
+                    $subscriptions = $allSubscriptions | Where-Object { 
+                        $_.State -eq 'Enabled' -and $_.TenantId -eq $currentTenantId
+                    }
+                }
+                finally {
+                    $WarningPreference = $originalWarningPreference
+                }
+            }
+            else {
+                Write-Warning "No tenant information found in context. Attempting to get all enabled subscriptions..."
+                $subscriptions = Get-AzSubscription | Where-Object { $_.State -eq 'Enabled' }
+            }
         }
         catch {
             Write-Error "Failed to retrieve subscriptions. Ensure you are connected to Azure: $_"
@@ -121,19 +150,47 @@ function Invoke-AzureSecurityAudit {
     $total = $subscriptions.Count
     $current = 0
     
+    # Get current tenant ID once to filter subscriptions
+    $currentContext = Get-AzContext
+    $currentTenantId = if ($currentContext -and $currentContext.Tenant) { $currentContext.Tenant.Id } else { $null }
+    
+    # Suppress warnings about other tenants during scanning
+    $originalWarningPreference = $WarningPreference
+    
     foreach ($sub in $subscriptions) {
         $current++
+        
+        # Skip subscriptions that don't belong to the current tenant
+        if ($currentTenantId -and $sub.TenantId -ne $currentTenantId) {
+            Write-Verbose "Skipping subscription $($sub.Name) ($($sub.Id)) - belongs to different tenant ($($sub.TenantId))"
+            continue
+        }
+        
         Write-Host "`n[$current/$total] Scanning: $($sub.Name) ($($sub.Id))" -ForegroundColor Yellow
         
+        # Suppress warnings during context switching
+        $WarningPreference = 'SilentlyContinue'
         try {
             if (-not (Get-SubscriptionContext -SubscriptionId $sub.Id -ErrorAction SilentlyContinue)) {
                 $errors.Add("Failed to set context for subscription $($sub.Name) ($($sub.Id))")
                 continue
             }
+            
+            # Verify context was set correctly
+            $verifyContext = Get-AzContext
+            if ($verifyContext.Subscription.Id -ne $sub.Id) {
+                Write-Warning "Context verification failed: Expected $($sub.Id), got $($verifyContext.Subscription.Id)"
+                $errors.Add("Context verification failed for subscription $($sub.Name) ($($sub.Id))")
+                continue
+            }
+            Write-Verbose "Context verified: $($verifyContext.Subscription.Name) ($($verifyContext.Subscription.Id))"
         }
         catch {
             $errors.Add("Failed to set context for subscription $($sub.Name) ($($sub.Id)): $_")
             continue
+        }
+        finally {
+            $WarningPreference = $originalWarningPreference
         }
         
         foreach ($category in $categoriesToScan) {
@@ -169,21 +226,53 @@ function Invoke-AzureSecurityAudit {
                         }
                     }
                 }
-                # Filter out null findings and count failures
-                $validFindings = $findings | Where-Object { $null -ne $_ }
-                if ($null -eq $validFindings) { $validFindings = @() }
+                # Filter out null findings
+                $validFindings = @($findings | Where-Object { $null -ne $_ })
                 
-                # Count failures - ensure Status property exists
+                # Debug: show first finding's properties
+                if ($validFindings.Count -gt 0) {
+                    $firstFinding = $validFindings[0]
+                    Write-Verbose "$category - First finding ResourceId: '$($firstFinding.ResourceId)', ResourceName: '$($firstFinding.ResourceName)'"
+                }
+                
+                # Count unique resources using hashtable (reliable method)
+                $uniqueResourceIds = @{}
                 $failCount = 0
+                
                 foreach ($finding in $validFindings) {
+                    # Count unique resources by ResourceId or ResourceName+ResourceGroup
+                    $resourceKey = $null
+                    if ($finding.PSObject.Properties.Name -contains 'ResourceId' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceId)) {
+                        $resourceKey = $finding.ResourceId
+                    }
+                    elseif ($finding.PSObject.Properties.Name -contains 'ResourceName' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceName)) {
+                        $rg = if ($finding.PSObject.Properties.Name -contains 'ResourceGroup') { $finding.ResourceGroup } else { "" }
+                        $resourceKey = "$($finding.ResourceName)|$rg"
+                    }
+                    
+                    if ($resourceKey -and -not $uniqueResourceIds.ContainsKey($resourceKey)) {
+                        $uniqueResourceIds[$resourceKey] = $true
+                    }
+                    
+                    # Count failures
                     if ($finding.PSObject.Properties.Name -contains 'Status' -and $finding.Status -eq 'FAIL') {
                         $failCount++
                     }
                 }
                 
+                $uniqueResources = $uniqueResourceIds.Count
                 $totalChecks = $validFindings.Count
+                
+                # Format output message
                 $color = if ($failCount -gt 0) { 'Red' } else { 'Green' }
-                Write-Host " $totalChecks checks ($failCount failures)" -ForegroundColor $color
+                if ($totalChecks -eq 0) {
+                    Write-Host " 0 resources (0 checks)" -ForegroundColor Gray
+                }
+                else {
+                    $resourceWord = if ($uniqueResources -eq 1) { "resource" } else { "resources" }
+                    $checkWord = if ($totalChecks -eq 1) { "check" } else { "checks" }
+                    Write-Host " $uniqueResources $resourceWord evaluated against $totalChecks $checkWord ($failCount failures)" -ForegroundColor $color
+                }
             }
             catch {
                 Write-Host " ERROR: $_" -ForegroundColor Red
@@ -217,6 +306,136 @@ function Invoke-AzureSecurityAudit {
         $findingsByCategory[$category] = ($failedFindings | Where-Object { $_.Category -eq $category }).Count
     }
     
+    # Calculate CIS Compliance Score
+    function Calculate-CisComplianceScore {
+        param(
+            [array]$Findings,
+            [switch]$IncludeLevel2
+        )
+        
+        # Severity weights (Critical issues are more important)
+        $severityWeights = @{
+            'Critical' = 4
+            'High'     = 3
+            'Medium'   = 2
+            'Low'      = 1
+        }
+        
+        # CIS Level multipliers (L1 is mandatory, L2 is optional)
+        $levelMultipliers = @{
+            'L1'  = 2.0
+            'L2'  = 1.0
+            'N/A' = 1.0
+        }
+        
+        # Filter findings (exclude ERROR and SKIPPED from score calculation)
+        $scoredFindings = $Findings | Where-Object { 
+            $_.Status -in @('PASS', 'FAIL') -and
+            ($IncludeLevel2 -or $_.CisLevel -ne 'L2')
+        }
+        
+        if ($scoredFindings.Count -eq 0) {
+            return @{
+                OverallScore = 100
+                L1Score = 100
+                L2Score = $null
+                ScoresByCategory = @{}
+                TotalChecks = 0
+                PassedChecks = 0
+            }
+        }
+        
+        $totalWeight = 0
+        $passedWeight = 0
+        $l1TotalWeight = 0
+        $l1PassedWeight = 0
+        $l2TotalWeight = 0
+        $l2PassedWeight = 0
+        
+        # Track scores by category
+        $categoryScores = @{}
+        $categories = $scoredFindings | Select-Object -ExpandProperty Category -Unique
+        
+        foreach ($category in $categories) {
+            $categoryFindings = $scoredFindings | Where-Object { $_.Category -eq $category }
+            $catTotalWeight = 0
+            $catPassedWeight = 0
+            
+            foreach ($finding in $categoryFindings) {
+                $severityWeight = $severityWeights[$finding.Severity]
+                $levelMultiplier = $levelMultipliers[$finding.CisLevel]
+                $weight = $severityWeight * $levelMultiplier
+                
+                $catTotalWeight += $weight
+                if ($finding.Status -eq 'PASS') {
+                    $catPassedWeight += $weight
+                }
+            }
+            
+            $categoryScores[$category] = if ($catTotalWeight -gt 0) { 
+                [math]::Round(($catPassedWeight / $catTotalWeight) * 100, 2) 
+            } else { 
+                100 
+            }
+        }
+        
+        foreach ($finding in $scoredFindings) {
+            $severityWeight = $severityWeights[$finding.Severity]
+            $levelMultiplier = $levelMultipliers[$finding.CisLevel]
+            $weight = $severityWeight * $levelMultiplier
+            
+            $totalWeight += $weight
+            if ($finding.Status -eq 'PASS') {
+                $passedWeight += $weight
+            }
+            
+            # Track L1 and L2 separately
+            if ($finding.CisLevel -eq 'L1') {
+                $l1TotalWeight += $weight
+                if ($finding.Status -eq 'PASS') {
+                    $l1PassedWeight += $weight
+                }
+            }
+            elseif ($finding.CisLevel -eq 'L2') {
+                $l2TotalWeight += $weight
+                if ($finding.Status -eq 'PASS') {
+                    $l2PassedWeight += $weight
+                }
+            }
+        }
+        
+        $overallScore = if ($totalWeight -gt 0) { 
+            [math]::Round(($passedWeight / $totalWeight) * 100, 2) 
+        } else { 
+            100 
+        }
+        
+        $l1Score = if ($l1TotalWeight -gt 0) { 
+            [math]::Round(($l1PassedWeight / $l1TotalWeight) * 100, 2) 
+        } else { 
+            100 
+        }
+        
+        $l2Score = if ($l2TotalWeight -gt 0) { 
+            [math]::Round(($l2PassedWeight / $l2TotalWeight) * 100, 2) 
+        } else { 
+            $null 
+        }
+        
+        return @{
+            OverallScore = $overallScore
+            L1Score = $l1Score
+            L2Score = $l2Score
+            ScoresByCategory = $categoryScores
+            TotalChecks = $scoredFindings.Count
+            PassedChecks = ($scoredFindings | Where-Object { $_.Status -eq 'PASS' }).Count
+            FailedChecks = ($scoredFindings | Where-Object { $_.Status -eq 'FAIL' }).Count
+        }
+    }
+    
+    # Calculate compliance scores
+    $complianceScores = Calculate-CisComplianceScore -Findings $allFindings -IncludeLevel2:$IncludeLevel2
+    
     $result = [PSCustomObject]@{
         ScanStartTime       = $scanStart
         ScanEndTime         = Get-Date
@@ -226,6 +445,7 @@ function Invoke-AzureSecurityAudit {
         FindingsBySeverity  = $findingsBySeverity
         FindingsByCategory  = $findingsByCategory
         Findings            = $allFindings
+        ComplianceScores    = $complianceScores
         Errors              = $errors
         ToolVersion         = "1.0.0"
     }

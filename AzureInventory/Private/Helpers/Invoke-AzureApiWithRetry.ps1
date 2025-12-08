@@ -42,11 +42,23 @@ function Invoke-AzureApiWithRetry {
     do {
         $attempt++
         try {
-            # Suppress warnings from Azure PowerShell modules (e.g., unapproved verbs)
+            # Suppress warnings from Azure PowerShell modules (e.g., unapproved verbs, breaking changes)
             # This must be set before the scriptblock executes to catch module import warnings
             $WarningPreference = 'SilentlyContinue'
-            $result = & $ScriptBlock
-            $WarningPreference = $originalWarningPreference
+            # Also set PSDefaultParameterValues to suppress warnings on Azure cmdlets
+            $originalPSDefaultParams = $PSDefaultParameterValues.Clone()
+            $PSDefaultParameterValues['*:WarningAction'] = 'SilentlyContinue'
+            try {
+                $result = & $ScriptBlock
+            }
+            finally {
+                # Restore original parameter values
+                $PSDefaultParameterValues.Clear()
+                foreach ($key in $originalPSDefaultParams.Keys) {
+                    $PSDefaultParameterValues[$key] = $originalPSDefaultParams[$key]
+                }
+                $WarningPreference = $originalWarningPreference
+            }
             return $result
         }
         catch {

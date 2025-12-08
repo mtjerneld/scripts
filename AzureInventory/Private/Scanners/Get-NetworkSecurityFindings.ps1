@@ -78,6 +78,15 @@ function Get-NetworkSecurityFindings {
         foreach ($nsg in $nsgs) {
             Write-Verbose "Scanning NSG: $($nsg.Name)"
             
+            # Track if we found issues for each control per NSG
+            $rdpControl = $controlLookup["No RDP from Internet"]
+            $sshControl = $controlLookup["No SSH from Internet"]
+            $anyToAnyControl = $controlLookup["No Any-to-Any Allow Rules"]
+            
+            $hasRdpIssue = $false
+            $hasSshIssue = $false
+            $hasAnyToAnyIssue = $false
+            
             try {
                 $rules = Invoke-AzureApiWithRetry {
                     Get-AzNetworkSecurityRuleConfig -NetworkSecurityGroup $nsg -ErrorAction SilentlyContinue
@@ -86,39 +95,13 @@ function Get-NetworkSecurityFindings {
                 if ($rules -and $rules.Count -gt 0) {
                     foreach ($rule in $rules) {
                         # Control 6.1: No RDP from Internet
-                        $rdpControl = $controlLookup["No RDP from Internet"]
                         if ($rdpControl) {
-                            $checksPerformed++
-                            $hasRdpFromInternet = $false
                             if ($rule.Direction -eq "Inbound" -and 
                                 $rule.Access -eq "Allow" -and
                                 ($rule.DestinationPortRange -eq "3389" -or $rule.DestinationPortRanges -contains "3389") -and
                                 ($rule.SourceAddressPrefix -eq "*" -or $rule.SourceAddressPrefix -eq "Internet" -or 
                                  $rule.SourceAddressPrefixes -contains "*" -or $rule.SourceAddressPrefixes -contains "Internet")) {
-                                $hasRdpFromInternet = $true
-                            }
-                            
-                            # Only create finding if RDP from Internet is found (FAIL case)
-                            if ($hasRdpFromInternet) {
-                                $remediationCmd = $rdpControl.remediationCommand -replace '\{name\}', $rule.Name -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName
-                                $finding = New-SecurityFinding `
-                                    -SubscriptionId $SubscriptionId `
-                                    -SubscriptionName $SubscriptionName `
-                                    -ResourceGroup $nsg.ResourceGroupName `
-                                    -ResourceType "Microsoft.Network/networkSecurityGroups" `
-                                    -ResourceName $nsg.Name `
-                                    -ResourceId $nsg.Id `
-                                    -ControlId $rdpControl.controlId `
-                                    -ControlName $rdpControl.controlName `
-                                    -Category $rdpControl.category `
-                                    -Severity $rdpControl.severity `
-                                    -CisLevel $rdpControl.level `
-                                    -CurrentValue "RDP (3389) allowed from Internet" `
-                                    -ExpectedValue $rdpControl.expectedValue `
-                                    -Status "FAIL" `
-                                    -RemediationSteps $rdpControl.businessImpact `
-                                    -RemediationCommand $remediationCmd
-                                $findings.Add($finding)
+                                $hasRdpIssue = $true
                             }
                         }
                         else {
@@ -126,39 +109,13 @@ function Get-NetworkSecurityFindings {
                         }
                         
                         # Control 6.2: No SSH from Internet
-                        $sshControl = $controlLookup["No SSH from Internet"]
                         if ($sshControl) {
-                            $checksPerformed++
-                            $hasSshFromInternet = $false
                             if ($rule.Direction -eq "Inbound" -and 
                                 $rule.Access -eq "Allow" -and
                                 ($rule.DestinationPortRange -eq "22" -or $rule.DestinationPortRanges -contains "22") -and
                                 ($rule.SourceAddressPrefix -eq "*" -or $rule.SourceAddressPrefix -eq "Internet" -or 
                                  $rule.SourceAddressPrefixes -contains "*" -or $rule.SourceAddressPrefixes -contains "Internet")) {
-                                $hasSshFromInternet = $true
-                            }
-                            
-                            # Only create finding if SSH from Internet is found (FAIL case)
-                            if ($hasSshFromInternet) {
-                                $remediationCmd = $sshControl.remediationCommand -replace '\{name\}', $rule.Name -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName
-                                $finding = New-SecurityFinding `
-                                    -SubscriptionId $SubscriptionId `
-                                    -SubscriptionName $SubscriptionName `
-                                    -ResourceGroup $nsg.ResourceGroupName `
-                                    -ResourceType "Microsoft.Network/networkSecurityGroups" `
-                                    -ResourceName $nsg.Name `
-                                    -ResourceId $nsg.Id `
-                                    -ControlId $sshControl.controlId `
-                                    -ControlName $sshControl.controlName `
-                                    -Category $sshControl.category `
-                                    -Severity $sshControl.severity `
-                                    -CisLevel $sshControl.level `
-                                    -CurrentValue "SSH (22) allowed from Internet" `
-                                    -ExpectedValue $sshControl.expectedValue `
-                                    -Status "FAIL" `
-                                    -RemediationSteps $sshControl.businessImpact `
-                                    -RemediationCommand $remediationCmd
-                                $findings.Add($finding)
+                                $hasSshIssue = $true
                             }
                         }
                         else {
@@ -166,43 +123,159 @@ function Get-NetworkSecurityFindings {
                         }
                         
                         # Control: No Any-to-Any Rules
-                        $anyToAnyControl = $controlLookup["No Any-to-Any Allow Rules"]
                         if ($anyToAnyControl) {
-                            $checksPerformed++
-                            $hasAnyToAny = $false
                             if ($rule.Direction -eq "Inbound" -and 
                                 $rule.Access -eq "Allow" -and
                                 ($rule.SourceAddressPrefix -eq "*" -or $rule.SourceAddressPrefixes -contains "*") -and
                                 ($rule.DestinationAddressPrefix -eq "*" -or $rule.DestinationAddressPrefixes -contains "*")) {
-                                $hasAnyToAny = $true
-                            }
-                            
-                            # Only create finding if any-to-any rule is found (FAIL case)
-                            if ($hasAnyToAny) {
-                                $remediationCmd = $anyToAnyControl.remediationCommand -replace '\{name\}', $rule.Name -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName -replace '\{ruleName\}', $rule.Name
-                                $finding = New-SecurityFinding `
-                                    -SubscriptionId $SubscriptionId `
-                                    -SubscriptionName $SubscriptionName `
-                                    -ResourceGroup $nsg.ResourceGroupName `
-                                    -ResourceType "Microsoft.Network/networkSecurityGroups" `
-                                    -ResourceName $nsg.Name `
-                                    -ResourceId $nsg.Id `
-                                    -ControlId $anyToAnyControl.controlId `
-                                    -ControlName $anyToAnyControl.controlName `
-                                    -Category $anyToAnyControl.category `
-                                    -Severity $anyToAnyControl.severity `
-                                    -CisLevel $anyToAnyControl.level `
-                                    -CurrentValue "Any-to-any rule present" `
-                                    -ExpectedValue $anyToAnyControl.expectedValue `
-                                    -Status "FAIL" `
-                                    -RemediationSteps $anyToAnyControl.businessImpact `
-                                    -RemediationCommand $remediationCmd
-                                $findings.Add($finding)
+                                $hasAnyToAnyIssue = $true
                             }
                         }
                         else {
                             Write-Verbose "Control 'No Any-to-Any Allow Rules' not found in controlLookup. Available controls: $($controlLookup.Keys -join ', ')"
                         }
+                    }
+                }
+                
+                # Create findings per NSG (not per rule) - one finding per control
+                # Control 6.1: No RDP from Internet
+                if ($rdpControl) {
+                    $checksPerformed++
+                    if ($hasRdpIssue) {
+                        $remediationCmd = $rdpControl.remediationCommand -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName
+                        $finding = New-SecurityFinding `
+                            -SubscriptionId $SubscriptionId `
+                            -SubscriptionName $SubscriptionName `
+                            -ResourceGroup $nsg.ResourceGroupName `
+                            -ResourceType "Microsoft.Network/networkSecurityGroups" `
+                            -ResourceName $nsg.Name `
+                            -ResourceId $nsg.Id `
+                            -ControlId $rdpControl.controlId `
+                            -ControlName $rdpControl.controlName `
+                            -Category $rdpControl.category `
+                            -Severity $rdpControl.severity `
+                            -CisLevel $rdpControl.level `
+                            -CurrentValue "RDP (3389) allowed from Internet" `
+                            -ExpectedValue $rdpControl.expectedValue `
+                            -Status "FAIL" `
+                            -RemediationSteps $rdpControl.businessImpact `
+                            -RemediationCommand $remediationCmd
+                        $findings.Add($finding)
+                    }
+                    else {
+                        # Create PASS finding to show the check was performed
+                        $finding = New-SecurityFinding `
+                            -SubscriptionId $SubscriptionId `
+                            -SubscriptionName $SubscriptionName `
+                            -ResourceGroup $nsg.ResourceGroupName `
+                            -ResourceType "Microsoft.Network/networkSecurityGroups" `
+                            -ResourceName $nsg.Name `
+                            -ResourceId $nsg.Id `
+                            -ControlId $rdpControl.controlId `
+                            -ControlName $rdpControl.controlName `
+                            -Category $rdpControl.category `
+                            -Severity $rdpControl.severity `
+                            -CisLevel $rdpControl.level `
+                            -CurrentValue "No RDP (3389) allowed from Internet" `
+                            -ExpectedValue $rdpControl.expectedValue `
+                            -Status "PASS" `
+                            -RemediationSteps $rdpControl.businessImpact `
+                            -RemediationCommand ""
+                        $findings.Add($finding)
+                    }
+                }
+                
+                # Control 6.2: No SSH from Internet
+                if ($sshControl) {
+                    $checksPerformed++
+                    if ($hasSshIssue) {
+                        $remediationCmd = $sshControl.remediationCommand -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName
+                        $finding = New-SecurityFinding `
+                            -SubscriptionId $SubscriptionId `
+                            -SubscriptionName $SubscriptionName `
+                            -ResourceGroup $nsg.ResourceGroupName `
+                            -ResourceType "Microsoft.Network/networkSecurityGroups" `
+                            -ResourceName $nsg.Name `
+                            -ResourceId $nsg.Id `
+                            -ControlId $sshControl.controlId `
+                            -ControlName $sshControl.controlName `
+                            -Category $sshControl.category `
+                            -Severity $sshControl.severity `
+                            -CisLevel $sshControl.level `
+                            -CurrentValue "SSH (22) allowed from Internet" `
+                            -ExpectedValue $sshControl.expectedValue `
+                            -Status "FAIL" `
+                            -RemediationSteps $sshControl.businessImpact `
+                            -RemediationCommand $remediationCmd
+                        $findings.Add($finding)
+                    }
+                    else {
+                        # Create PASS finding to show the check was performed
+                        $finding = New-SecurityFinding `
+                            -SubscriptionId $SubscriptionId `
+                            -SubscriptionName $SubscriptionName `
+                            -ResourceGroup $nsg.ResourceGroupName `
+                            -ResourceType "Microsoft.Network/networkSecurityGroups" `
+                            -ResourceName $nsg.Name `
+                            -ResourceId $nsg.Id `
+                            -ControlId $sshControl.controlId `
+                            -ControlName $sshControl.controlName `
+                            -Category $sshControl.category `
+                            -Severity $sshControl.severity `
+                            -CisLevel $sshControl.level `
+                            -CurrentValue "No SSH (22) allowed from Internet" `
+                            -ExpectedValue $sshControl.expectedValue `
+                            -Status "PASS" `
+                            -RemediationSteps $sshControl.businessImpact `
+                            -RemediationCommand ""
+                        $findings.Add($finding)
+                    }
+                }
+                
+                # Control: No Any-to-Any Rules
+                if ($anyToAnyControl) {
+                    $checksPerformed++
+                    if ($hasAnyToAnyIssue) {
+                        $remediationCmd = $anyToAnyControl.remediationCommand -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName
+                        $finding = New-SecurityFinding `
+                            -SubscriptionId $SubscriptionId `
+                            -SubscriptionName $SubscriptionName `
+                            -ResourceGroup $nsg.ResourceGroupName `
+                            -ResourceType "Microsoft.Network/networkSecurityGroups" `
+                            -ResourceName $nsg.Name `
+                            -ResourceId $nsg.Id `
+                            -ControlId $anyToAnyControl.controlId `
+                            -ControlName $anyToAnyControl.controlName `
+                            -Category $anyToAnyControl.category `
+                            -Severity $anyToAnyControl.severity `
+                            -CisLevel $anyToAnyControl.level `
+                            -CurrentValue "Any-to-any rule present" `
+                            -ExpectedValue $anyToAnyControl.expectedValue `
+                            -Status "FAIL" `
+                            -RemediationSteps $anyToAnyControl.businessImpact `
+                            -RemediationCommand $remediationCmd
+                        $findings.Add($finding)
+                    }
+                    else {
+                        # Create PASS finding to show the check was performed
+                        $finding = New-SecurityFinding `
+                            -SubscriptionId $SubscriptionId `
+                            -SubscriptionName $SubscriptionName `
+                            -ResourceGroup $nsg.ResourceGroupName `
+                            -ResourceType "Microsoft.Network/networkSecurityGroups" `
+                            -ResourceName $nsg.Name `
+                            -ResourceId $nsg.Id `
+                            -ControlId $anyToAnyControl.controlId `
+                            -ControlName $anyToAnyControl.controlName `
+                            -Category $anyToAnyControl.category `
+                            -Severity $anyToAnyControl.severity `
+                            -CisLevel $anyToAnyControl.level `
+                            -CurrentValue "No any-to-any rules" `
+                            -ExpectedValue $anyToAnyControl.expectedValue `
+                            -Status "PASS" `
+                            -RemediationSteps $anyToAnyControl.businessImpact `
+                            -RemediationCommand ""
+                        $findings.Add($finding)
                     }
                 }
             }

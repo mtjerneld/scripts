@@ -63,13 +63,28 @@ function Get-StorageAccountFindings {
         return $findings
     }
     
-    if (-not $storageAccounts) {
+    # Check if storageAccounts is null or empty array
+    if ($null -eq $storageAccounts -or ($storageAccounts -is [System.Array] -and $storageAccounts.Count -eq 0)) {
         Write-Verbose "No storage accounts found in subscription $SubscriptionName"
         return $findings
     }
     
     foreach ($sa in $storageAccounts) {
+        # Skip if essential properties are missing
+        if ([string]::IsNullOrWhiteSpace($sa.StorageAccountName) -or [string]::IsNullOrWhiteSpace($sa.ResourceGroupName)) {
+            Write-Verbose "Skipping storage account with missing name or resource group"
+            continue
+        }
+        
         Write-Verbose "Scanning storage account: $($sa.StorageAccountName)"
+        
+        # Construct ResourceId if missing
+        $resourceId = $sa.Id
+        if ([string]::IsNullOrWhiteSpace($resourceId)) {
+            # Fallback: construct ResourceId from components
+            $resourceId = "/subscriptions/$SubscriptionId/resourceGroups/$($sa.ResourceGroupName)/providers/Microsoft.Storage/storageAccounts/$($sa.StorageAccountName)"
+            Write-Verbose "Constructed ResourceId for $($sa.StorageAccountName): $resourceId"
+        }
         
         # Get network rules once for reuse
         $networkRules = $null
@@ -96,7 +111,7 @@ function Get-StorageAccountFindings {
                 -ResourceGroup $sa.ResourceGroupName `
                 -ResourceType "Microsoft.Storage/storageAccounts" `
                 -ResourceName $sa.StorageAccountName `
-                -ResourceId $sa.Id `
+                -ResourceId $resourceId `
                 -ControlId $tlsControl.controlId `
                 -ControlName $tlsControl.controlName `
                 -Category $tlsControl.category `
@@ -124,7 +139,7 @@ function Get-StorageAccountFindings {
                 -ResourceGroup $sa.ResourceGroupName `
                 -ResourceType "Microsoft.Storage/storageAccounts" `
                 -ResourceName $sa.StorageAccountName `
-                -ResourceId $sa.Id `
+                -ResourceId $resourceId `
                 -ControlId $httpsControl.controlId `
                 -ControlName $httpsControl.controlName `
                 -Category $httpsControl.category `
@@ -151,7 +166,7 @@ function Get-StorageAccountFindings {
                 -ResourceGroup $sa.ResourceGroupName `
                 -ResourceType "Microsoft.Storage/storageAccounts" `
                 -ResourceName $sa.StorageAccountName `
-                -ResourceId $sa.Id `
+                -ResourceId $resourceId `
                 -ControlId $publicAccessControl.controlId `
                 -ControlName $publicAccessControl.controlName `
                 -Category $publicAccessControl.category `
@@ -178,7 +193,7 @@ function Get-StorageAccountFindings {
                 -ResourceGroup $sa.ResourceGroupName `
                 -ResourceType "Microsoft.Storage/storageAccounts" `
                 -ResourceName $sa.StorageAccountName `
-                -ResourceId $sa.Id `
+                -ResourceId $resourceId `
                 -ControlId $networkControl.controlId `
                 -ControlName $networkControl.controlName `
                 -Category $networkControl.category `
@@ -205,7 +220,7 @@ function Get-StorageAccountFindings {
                 -ResourceGroup $sa.ResourceGroupName `
                 -ResourceType "Microsoft.Storage/storageAccounts" `
                 -ResourceName $sa.StorageAccountName `
-                -ResourceId $sa.Id `
+                -ResourceId $resourceId `
                 -ControlId $kindControl.controlId `
                 -ControlName $kindControl.controlName `
                 -Category $kindControl.category `
@@ -244,7 +259,7 @@ function Get-StorageAccountFindings {
                 -ResourceGroup $sa.ResourceGroupName `
                 -ResourceType "Microsoft.Storage/storageAccounts" `
                 -ResourceName $sa.StorageAccountName `
-                -ResourceId $sa.Id `
+                -ResourceId $resourceId `
                 -ControlId $infraEncryptionControl.controlId `
                 -ControlName $infraEncryptionControl.controlName `
                 -Category $infraEncryptionControl.category `
@@ -273,7 +288,7 @@ function Get-StorageAccountFindings {
                 -ResourceGroup $sa.ResourceGroupName `
                 -ResourceType "Microsoft.Storage/storageAccounts" `
                 -ResourceName $sa.StorageAccountName `
-                -ResourceId $sa.Id `
+                -ResourceId $resourceId `
                 -ControlId $bypassControl.controlId `
                 -ControlName $bypassControl.controlName `
                 -Category $bypassControl.category `
@@ -321,7 +336,7 @@ function Get-StorageAccountFindings {
                     -ResourceGroup $sa.ResourceGroupName `
                     -ResourceType "Microsoft.Storage/storageAccounts" `
                     -ResourceName $sa.StorageAccountName `
-                    -ResourceId $sa.Id `
+                    -ResourceId $resourceId `
                     -ControlId $cmkControl.controlId `
                     -ControlName $cmkControl.controlName `
                     -Category $cmkControl.category `

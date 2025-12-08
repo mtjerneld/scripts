@@ -22,15 +22,38 @@ function Get-SubscriptionContext {
     )
     
     try {
-        $context = Set-AzContext -SubscriptionId $SubscriptionId -ErrorAction Stop
-        if ($context) {
-            Write-Verbose "Successfully switched to subscription: $SubscriptionId ($($context.Subscription.Name))"
-            return $true
+        # Suppress warnings about other tenants during context switching
+        $originalWarningPreference = $WarningPreference
+        $WarningPreference = 'SilentlyContinue'
+        
+        try {
+            # Get current tenant to ensure we only switch to subscriptions in the same tenant
+            $currentContext = Get-AzContext
+            $currentTenantId = if ($currentContext -and $currentContext.Tenant) { $currentContext.Tenant.Id } else { $null }
+            
+            # Get subscription details first to verify tenant match (suppress warnings)
+            if ($currentTenantId) {
+                $subDetails = Get-AzSubscription -SubscriptionId $SubscriptionId -TenantId $currentTenantId -ErrorAction SilentlyContinue
+                if ($subDetails -and $subDetails.TenantId -ne $currentTenantId) {
+                    Write-Verbose "Subscription $SubscriptionId belongs to tenant $($subDetails.TenantId), but current tenant is $currentTenantId. Skipping."
+                    return $false
+                }
+            }
+            
+            # Set context (suppress warnings about other tenants)
+            $context = Set-AzContext -SubscriptionId $SubscriptionId -ErrorAction Stop
+            if ($context) {
+                Write-Verbose "Successfully switched to subscription: $SubscriptionId ($($context.Subscription.Name))"
+                return $true
+            }
+            return $false
         }
-        return $false
+        finally {
+            $WarningPreference = $originalWarningPreference
+        }
     }
     catch {
-        Write-Warning "Failed to switch to subscription $SubscriptionId : $_"
+        Write-Verbose "Failed to switch to subscription $SubscriptionId : $_"
         return $false
     }
 }

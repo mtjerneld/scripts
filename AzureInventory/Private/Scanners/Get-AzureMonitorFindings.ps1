@@ -102,34 +102,45 @@ function Get-AzureMonitorFindings {
             }
             
             try {
-                $diagnosticSettings = Invoke-AzureApiWithRetry {
-                    Get-AzDiagnosticSetting -ResourceId $resource.Id -ErrorAction SilentlyContinue
+                # Suppress breaking change warnings from Get-AzDiagnosticSetting
+                # Use both WarningPreference and WarningAction to ensure warnings are suppressed
+                $originalWarningPreference = $WarningPreference
+                $WarningPreference = 'SilentlyContinue'
+                try {
+                    $diagnosticSettings = Invoke-AzureApiWithRetry {
+                        Get-AzDiagnosticSetting -ResourceId $resource.Id -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+                    }
+                    $diagnosticsEnabled = if ($diagnosticSettings) { $true } else { $false }
                 }
-                $diagnosticsEnabled = if ($diagnosticSettings) { $true } else { $false }
+                finally {
+                    $WarningPreference = $originalWarningPreference
+                }
             }
             catch {
                 $diagnosticsEnabled = $false
             }
             
-            if (-not $diagnosticsEnabled) {
-                $finding = New-SecurityFinding `
-                    -SubscriptionId $SubscriptionId `
-                    -SubscriptionName $SubscriptionName `
-                    -ResourceGroup $resource.ResourceGroupName `
-                    -ResourceType $resource.ResourceType `
-                    -ResourceName $resource.Name `
-                    -ResourceId $resource.Id `
-                    -ControlId "5.4" `
-                    -ControlName "Diagnostic Settings Enabled" `
-                    -Category "Monitor" `
-                    -Severity "Medium" `
-                    -CurrentValue "Not configured" `
-                    -ExpectedValue "Diagnostic settings configured" `
-                    -Status "FAIL" `
-                    -RemediationSteps "Enable diagnostic settings for the resource to collect logs and metrics for monitoring." `
-                    -RemediationCommand "az monitor diagnostic-settings create --resource $($resource.Id) --name <setting-name> --workspace <log-analytics-workspace-id>"
-                $findings.Add($finding)
-            }
+            # Always create finding (PASS or FAIL)
+            $diagStatus = if ($diagnosticsEnabled) { "PASS" } else { "FAIL" }
+            $remediationCmd = if ($diagnosticsEnabled) { "" } else { "az monitor diagnostic-settings create --resource $($resource.Id) --name <setting-name> --workspace <log-analytics-workspace-id>" }
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $resource.ResourceGroupName `
+                -ResourceType $resource.ResourceType `
+                -ResourceName $resource.Name `
+                -ResourceId $resource.Id `
+                -ControlId "5.4" `
+                -ControlName "Diagnostic Settings Enabled" `
+                -Category "Monitor" `
+                -Severity "Medium" `
+                -CisLevel "L1" `
+                -CurrentValue $(if ($diagnosticsEnabled) { "Configured" } else { "Not configured" }) `
+                -ExpectedValue "Diagnostic settings configured" `
+                -Status $diagStatus `
+                -RemediationSteps "Enable diagnostic settings for the resource to collect logs and metrics for monitoring." `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
         }
     }
     catch {
@@ -154,25 +165,27 @@ function Get-AzureMonitorFindings {
                     # Check for associations (simplified - would need proper API call)
                     $hasAssociations = $false  # Placeholder - would check actual associations
                     
-                    if (-not $hasAssociations) {
-                        $finding = New-SecurityFinding `
-                            -SubscriptionId $SubscriptionId `
-                            -SubscriptionName $SubscriptionName `
-                            -ResourceGroup $dcr.ResourceGroupName `
-                            -ResourceType "Microsoft.Insights/dataCollectionRules" `
-                            -ResourceName $dcr.Name `
-                            -ResourceId $dcr.Id `
-                            -ControlId "N/A" `
-                            -ControlName "DCR Associations" `
-                            -Category "Monitor" `
-                            -Severity "Medium" `
-                            -CurrentValue "No associations" `
-                            -ExpectedValue "At least one DCR association" `
-                            -Status "FAIL" `
-                            -RemediationSteps "Associate Data Collection Rule (DCR) with resources for centralized data collection." `
-                            -RemediationCommand "az monitor data-collection rule association create --rule-id $($dcr.Id) --resource <target-resource-id>"
-                        $findings.Add($finding)
-                    }
+                    # Always create finding (PASS or FAIL)
+                    $dcrStatus = if ($hasAssociations) { "PASS" } else { "FAIL" }
+                    $remediationCmd = if ($hasAssociations) { "" } else { "az monitor data-collection rule association create --rule-id $($dcr.Id) --resource <target-resource-id>" }
+                    $finding = New-SecurityFinding `
+                        -SubscriptionId $SubscriptionId `
+                        -SubscriptionName $SubscriptionName `
+                        -ResourceGroup $dcr.ResourceGroupName `
+                        -ResourceType "Microsoft.Insights/dataCollectionRules" `
+                        -ResourceName $dcr.Name `
+                        -ResourceId $dcr.Id `
+                        -ControlId "N/A" `
+                        -ControlName "DCR Associations" `
+                        -Category "Monitor" `
+                        -Severity "Medium" `
+                        -CisLevel "N/A" `
+                        -CurrentValue $(if ($hasAssociations) { "Has associations" } else { "No associations" }) `
+                        -ExpectedValue "At least one DCR association" `
+                        -Status $dcrStatus `
+                        -RemediationSteps "Associate Data Collection Rule (DCR) with resources for centralized data collection." `
+                        -RemediationCommand $remediationCmd
+                    $findings.Add($finding)
                 }
                 catch {
                     Write-Verbose "Could not check DCR associations: $_"
