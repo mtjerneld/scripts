@@ -910,6 +910,18 @@ $cssContent
         </div>
 "@
         
+        # Helper function for severity sort order
+        function Get-SeverityOrder {
+            param([string]$Severity)
+            switch ($Severity) {
+                "Critical" { return 0 }
+                "High" { return 1 }
+                "Medium" { return 2 }
+                "Low" { return 3 }
+                default { return 4 }
+            }
+        }
+        
         # Category & Control Table
         # Group findings by Category + Control ID (only controls with failures)
         $controlGroups = $failedFindings | Group-Object -Property @{Expression={$_.Category + '|' + $_.ControlId}} | Sort-Object Name
@@ -934,11 +946,11 @@ $cssContent
                 }
                 $categoryFailedCount = $allCategoryFindings.Count
                 
-                # Count per severity for this category
-                $catCritical = ($allCategoryFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
-                $catHigh = ($allCategoryFindings | Where-Object { $_.Severity -eq 'High' }).Count
-                $catMedium = ($allCategoryFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
-                $catLow = ($allCategoryFindings | Where-Object { $_.Severity -eq 'Low' }).Count
+                # Count per severity for this category (use @() to ensure array for .Count)
+                $catCritical = @($allCategoryFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
+                $catHigh = @($allCategoryFindings | Where-Object { $_.Severity -eq 'High' }).Count
+                $catMedium = @($allCategoryFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
+                $catLow = @($allCategoryFindings | Where-Object { $_.Severity -eq 'Low' }).Count
                 
                 # Build severity summary string (only show non-zero)
                 $catSeveritySummary = @()
@@ -992,7 +1004,23 @@ $cssContent
                     </thead>
                     <tbody>
 "@
-                foreach ($controlGroup in $categoryControls) {
+                # Sort controls by severity (Critical first)
+                $sortedCategoryControls = $categoryControls | ForEach-Object {
+                    $ctrlFindings = $_.Group
+                    $ctrlSeverities = $ctrlFindings | Select-Object -ExpandProperty Severity
+                    $ctrlHighest = "Low"
+                    if ($ctrlSeverities -contains "Critical") { $ctrlHighest = "Critical" }
+                    elseif ($ctrlSeverities -contains "High") { $ctrlHighest = "High" }
+                    elseif ($ctrlSeverities -contains "Medium") { $ctrlHighest = "Medium" }
+                    [PSCustomObject]@{
+                        Group = $_.Group
+                        Name = $_.Name
+                        HighestSeverity = $ctrlHighest
+                        SeverityOrder = (Get-SeverityOrder $ctrlHighest)
+                    }
+                } | Sort-Object SeverityOrder, Name
+                
+                foreach ($controlGroup in $sortedCategoryControls) {
                 $controlFindings = $controlGroup.Group
                 $firstFinding = $controlFindings[0]
                 $category = $firstFinding.Category
@@ -1000,12 +1028,8 @@ $cssContent
                 $controlName = $firstFinding.ControlName
                 $controlKey = "$category|$controlId"
                 
-                # Get highest severity
-                $severities = $controlFindings | Select-Object -ExpandProperty Severity
-                $highestSeverity = "Low"
-                if ($severities -contains "Critical") { $highestSeverity = "Critical" }
-                elseif ($severities -contains "High") { $highestSeverity = "High" }
-                elseif ($severities -contains "Medium") { $highestSeverity = "Medium" }
+                # Get highest severity (already calculated in sort)
+                $highestSeverity = $controlGroup.HighestSeverity
                 
                 $severityClass = switch ($highestSeverity) {
                     "Critical" { "status-badge critical" }
@@ -1015,7 +1039,7 @@ $cssContent
                     default { "" }
                 }
                 
-                $failedCount = $controlFindings.Count
+                $failedCount = @($controlFindings).Count
                 $categoryLower = ($category -replace '\s+', '-').ToLower()
                 $severityLower = $highestSeverity.ToLower()
                 $searchableText = "$category $controlId $controlName $highestSeverity".ToLower()
@@ -1048,7 +1072,11 @@ $cssContent
                             </thead>
                             <tbody>
 "@
-                foreach ($finding in $controlFindings) {
+                # Sort control findings by severity
+                $severityOrder = @{ "Critical" = 1; "High" = 2; "Medium" = 3; "Low" = 4 }
+                $sortedControlFindings = $controlFindings | Sort-Object { $severityOrder[$_.Severity] }
+                
+                foreach ($finding in $sortedControlFindings) {
                     $findingSeverityClass = switch ($finding.Severity) {
                         "Critical" { "status-badge critical" }
                         "High" { "status-badge high" }
@@ -1132,14 +1160,28 @@ $cssContent
                 }
                 
                 # Group findings by resource (ResourceName + ResourceGroup)
-                # Use only FAIL findings for grouping
-                $resourceGroups = $subFailedFindings | Group-Object -Property @{Expression={$_.ResourceName + '|' + $_.ResourceGroup}} | Sort-Object Name
+                # Use only FAIL findings for grouping, sort by severity
+                $resourceGroupsUnsorted = $subFailedFindings | Group-Object -Property @{Expression={$_.ResourceName + '|' + $_.ResourceGroup}}
+                $resourceGroups = $resourceGroupsUnsorted | ForEach-Object {
+                    $rgFindings = $_.Group
+                    $rgSeverities = $rgFindings | Select-Object -ExpandProperty Severity
+                    $rgHighest = "Low"
+                    if ($rgSeverities -contains "Critical") { $rgHighest = "Critical" }
+                    elseif ($rgSeverities -contains "High") { $rgHighest = "High" }
+                    elseif ($rgSeverities -contains "Medium") { $rgHighest = "Medium" }
+                    [PSCustomObject]@{
+                        Group = $_.Group
+                        Name = $_.Name
+                        HighestSeverity = $rgHighest
+                        SeverityOrder = (Get-SeverityOrder $rgHighest)
+                    }
+                } | Sort-Object SeverityOrder, Name
                 
-                # Count per severity for this subscription
-                $subCritical = ($subFailedFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
-                $subHigh = ($subFailedFindings | Where-Object { $_.Severity -eq 'High' }).Count
-                $subMedium = ($subFailedFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
-                $subLow = ($subFailedFindings | Where-Object { $_.Severity -eq 'Low' }).Count
+                # Count per severity for this subscription (use @() to ensure array for .Count)
+                $subCritical = @($subFailedFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
+                $subHigh = @($subFailedFindings | Where-Object { $_.Severity -eq 'High' }).Count
+                $subMedium = @($subFailedFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
+                $subLow = @($subFailedFindings | Where-Object { $_.Severity -eq 'Low' }).Count
                 
                 # Build severity summary string (only show non-zero)
                 $subSeveritySummary = @()
@@ -1199,8 +1241,8 @@ $cssContent
                         # Get primary category (first category found)
                         $primaryCategory = ($resourceFindings | Select-Object -First 1 -ExpandProperty Category)
                         
-                        # Count only FAIL findings for issues count
-                        $failedResourceFindings = $resourceFindings | Where-Object { $_.Status -eq 'FAIL' }
+                        # Count only FAIL findings for issues count (use @() for reliable count)
+                        $failedResourceFindings = @($resourceFindings | Where-Object { $_.Status -eq 'FAIL' })
                         $issuesCount = $failedResourceFindings.Count
                         
                         # Skip resources with no issues
@@ -1208,12 +1250,8 @@ $cssContent
                             continue
                         }
                         
-                        # Get highest severity from FAIL findings only (Critical > High > Medium > Low)
-                        $severities = $failedResourceFindings | Select-Object -ExpandProperty Severity
-                        $highestSeverity = "Low"
-                        if ($severities -contains "Critical") { $highestSeverity = "Critical" }
-                        elseif ($severities -contains "High") { $highestSeverity = "High" }
-                        elseif ($severities -contains "Medium") { $highestSeverity = "Medium" }
+                        # Use pre-calculated highest severity from sort
+                        $highestSeverity = $resourceGroup.HighestSeverity
                         
                         $severityClass = switch ($highestSeverity) {
                             "Critical" { "status-badge critical" }
