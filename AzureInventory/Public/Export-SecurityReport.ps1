@@ -46,15 +46,31 @@ function Export-SecurityReport {
     $findings = $AuditResult.Findings
     $failedFindings = $findings | Where-Object { $_.Status -eq 'FAIL' }
     # Include all findings with EOLDate, regardless of status (deprecated components should be shown even if currently compliant)
-    $eolFindings = $findings | Where-Object { 
-        $eolDate = $_.EOLDate
-        $eolDate -and -not [string]::IsNullOrWhiteSpace($eolDate) -and $eolDate -ne "N/A"
-    }
+    # Use @() to ensure we get an array, matching the dashboard logic
+    # Filter logic must match Export-DashboardReport.ps1 exactly
+    $eolFindings = @($findings | Where-Object { 
+        if (-not $_.EOLDate) { return $false }
+        $eolDateStr = $_.EOLDate.ToString().Trim()
+        if ([string]::IsNullOrWhiteSpace($eolDateStr)) { return $false }
+        if ($eolDateStr -eq "N/A" -or $eolDateStr -eq "n/a") { return $false }
+        return $true
+    })
     
-    # Debug: Log EOL findings count
+    # Debug: Log EOL findings count and details
     Write-Verbose "EOL Findings count: $($eolFindings.Count)"
+    Write-Verbose "Total findings count: $($findings.Count)"
     if ($eolFindings.Count -gt 0) {
         Write-Verbose "EOL Findings sample: $($eolFindings[0] | ConvertTo-Json -Depth 2)"
+        foreach ($finding in $eolFindings) {
+            Write-Verbose "EOL Finding: Resource=$($finding.ResourceName), EOLDate=$($finding.EOLDate), Status=$($finding.Status)"
+        }
+    } else {
+        # Debug: Check why no EOL findings
+        $findingsWithEolDate = @($findings | Where-Object { $_.EOLDate })
+        Write-Verbose "Findings with EOLDate property (any value): $($findingsWithEolDate.Count)"
+        if ($findingsWithEolDate.Count -gt 0) {
+            Write-Verbose "Sample EOLDate values: $($findingsWithEolDate | Select-Object -First 5 | ForEach-Object { $_.EOLDate })"
+        }
     }
     
     # Create output directory if needed
@@ -1062,26 +1078,32 @@ h2 {
 "@
         }
         
-        # EOL/Deprecated Components Alert
-        if ($eolFindings.Count -gt 0) {
-            $eolCount = $eolFindings.Count
-            $pastDueCount = ($eolFindings | Where-Object { 
+        # EOL/Deprecated Components Alert - Always show heading
+        $eolCount = $eolFindings.Count
+        $pastDueCount = if ($eolCount -gt 0) {
+            ($eolFindings | Where-Object { 
                 try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
             }).Count
-            $upcomingCount = $eolCount - $pastDueCount
-            
-            $html += @"
+        } else { 0 }
+        $upcomingCount = $eolCount - $pastDueCount
+        
+        $html += @"
         <h2>Deprecated Components Requiring Action</h2>
         <div class="subscription-box" id="deprecated-components-box" data-always-visible="true" style="border-color: var(--danger); display: block !important; visibility: visible !important;">
             <div class="subscription-header collapsed" data-subscription-id="deprecated-components" style="cursor: pointer; background-color: rgba(255, 107, 107, 0.1); display: flex !important;">
                 <span class="expand-icon"></span>
-                <h3 style="color: var(--danger); margin: 0;">Deprecated Components Found ($eolCount items)</h3>
-                <span class="header-severity-summary">
-                    <span class="severity-count critical">$pastDueCount Past Due</span>
-                    <span class="severity-count medium">$upcomingCount Upcoming</span>
-                </span>
+                <h3 style="color: var(--danger); margin: 0;">Deprecated Components$(if ($eolCount -gt 0) { " Found ($eolCount items)" } else { "" })</h3>
+                $(if ($eolCount -gt 0) {
+                    "<span class=`"header-severity-summary`">
+                        <span class=`"severity-count critical`">$pastDueCount Past Due</span>
+                        <span class=`"severity-count medium`">$upcomingCount Upcoming</span>
+                    </span>"
+                } else { "" })
             </div>
             <div class="subscription-content" id="deprecated-components" style="display: none;">
+"@
+        if ($eolCount -gt 0) {
+            $html += @"
                 <table class="resource-summary-table">
                     <thead>
                         <tr>
@@ -1097,12 +1119,13 @@ h2 {
                     <tbody>
 "@
             foreach ($finding in $eolFindings) {
-                $eolDate = [DateTime]::Parse($finding.EOLDate)
-                $status = if ($eolDate -lt (Get-Date)) { "PAST DUE" } else { "Upcoming" }
-                $statusClass = if ($status -eq "PAST DUE") { "status-fail" } else { "status-warn" }
-                $subscriptionName = if ($finding.SubscriptionName) { $finding.SubscriptionName } else { $finding.SubscriptionId }
-                $resourceGroup = if ($finding.ResourceGroup) { $finding.ResourceGroup } else { "N/A" }
-                $html += @"
+                try {
+                    $eolDate = [DateTime]::Parse($finding.EOLDate)
+                    $status = if ($eolDate -lt (Get-Date)) { "PAST DUE" } else { "Upcoming" }
+                    $statusClass = if ($status -eq "PAST DUE") { "status-fail" } else { "status-warn" }
+                    $subscriptionName = if ($finding.SubscriptionName) { $finding.SubscriptionName } else { $finding.SubscriptionId }
+                    $resourceGroup = if ($finding.ResourceGroup) { $finding.ResourceGroup } else { "N/A" }
+                    $html += @"
                         <tr>
                             <td>$(Encode-Html $subscriptionName)</td>
                             <td>$(Encode-Html $resourceGroup)</td>
@@ -1113,14 +1136,39 @@ h2 {
                             <td class="$statusClass">$status</td>
                         </tr>
 "@
+                } catch {
+                    Write-Warning "Failed to parse EOLDate for finding: $($finding | ConvertTo-Json -Depth 1)"
+                    # Still include the finding even if date parsing fails
+                    $subscriptionName = if ($finding.SubscriptionName) { $finding.SubscriptionName } else { $finding.SubscriptionId }
+                    $resourceGroup = if ($finding.ResourceGroup) { $finding.ResourceGroup } else { "N/A" }
+                    $html += @"
+                        <tr>
+                            <td>$(Encode-Html $subscriptionName)</td>
+                            <td>$(Encode-Html $resourceGroup)</td>
+                            <td>$(Encode-Html $finding.ResourceName)</td>
+                            <td>$(Encode-Html $finding.Category)</td>
+                            <td>$(Encode-Html $finding.ControlName)</td>
+                            <td>$(Encode-Html $finding.EOLDate)</td>
+                            <td class="status-warn">Invalid Date</td>
+                        </tr>
+"@
+                }
             }
             $html += @"
                     </tbody>
                 </table>
+"@
+        } else {
+            $html += @"
+                <div style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                    <p style="margin: 0; font-size: 1.1em;">No resources with deprecation currently in the inventory.</p>
+                </div>
+"@
+        }
+        $html += @"
             </div>
         </div>
 "@
-        }
         
         # Get unique categories and severities for filter dropdowns
         # Use all findings, not just failed ones, to populate category filter
@@ -1892,14 +1940,19 @@ h2 {
                         // First pass: determine which resource rows match
                         resourceRowsInBox.forEach(row => {
                             const resourceKey = row.getAttribute('data-resource-key');
-                            const rowCategory = row.getAttribute('data-category-lower') || '';
-                            const rowSearchable = row.getAttribute('data-searchable') || '';
                             
                             // Filter control-detail-row elements inside this resource's detail row FIRST
                             let visibleControlCount = 0;
                             if (resourceKey) {
                                 const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
                                 if (detailRow) {
+                                    // Temporarily show detail row to filter controls (if not already visible)
+                                    const wasHidden = detailRow.classList.contains('hidden');
+                                    const wasExpanded = row.classList.contains('expanded');
+                                    if (wasHidden && !wasExpanded) {
+                                        detailRow.classList.remove('hidden');
+                                    }
+                                    
                                     const controlDetailRows = detailRow.querySelectorAll('.control-detail-row');
                                     
                                     controlDetailRows.forEach(controlRow => {
@@ -1918,6 +1971,7 @@ h2 {
                                             visibleControlCount++;
                                         } else {
                                             controlRow.classList.add('hidden');
+                                            controlRow.classList.remove('expanded');
                                             // Hide associated remediation row
                                             const controlDetailKey = controlRow.getAttribute('data-control-detail-key');
                                             if (controlDetailKey) {
@@ -1929,18 +1983,17 @@ h2 {
                                         }
                                     });
                                     
-                                    // Hide detail row if no controls are visible
-                                    if (visibleControlCount === 0) {
+                                    // Always collapse detail row after filtering (unless user has expanded it)
+                                    if (wasHidden && !wasExpanded) {
                                         detailRow.classList.add('hidden');
-                                    } else {
-                                        detailRow.classList.remove('hidden');
+                                        row.classList.remove('expanded');
                                     }
                                 }
                             }
                             
-                            // Only show resource row if it has visible controls AND matches search
-                            const rowSearchMatch = searchText === '' || rowSearchable.includes(searchText);
-                            const rowShouldShow = visibleControlCount > 0 && rowSearchMatch;
+                            // Resource row should show ONLY if it has visible controls after filtering
+                            // The control-detail-row filtering already applies severity, category, framework, and search filters
+                            const rowShouldShow = visibleControlCount > 0;
                             
                             if (rowShouldShow) {
                                 hasMatchingResource = true;
@@ -1950,7 +2003,7 @@ h2 {
                             } else {
                                 row.classList.add('hidden');
                                 row.classList.remove('expanded');
-                                // Hide associated detail row
+                                // Hide associated detail row and ensure it stays collapsed
                                 if (resourceKey) {
                                     const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
                                     if (detailRow) {
@@ -2168,6 +2221,17 @@ h2 {
                             this.classList.toggle('expanded');
                         }
                     });
+                });
+                
+                // Ensure all resource detail rows start collapsed (hidden)
+                const allResourceDetailRows = document.querySelectorAll('.resource-detail-row');
+                allResourceDetailRows.forEach(detailRow => {
+                    detailRow.classList.add('hidden');
+                });
+                
+                // Ensure all resource rows start not expanded
+                resourceRows.forEach(row => {
+                    row.classList.remove('expanded');
                 });
                 
                 // Control row click handlers (Category & Control table) - expand/collapse resources

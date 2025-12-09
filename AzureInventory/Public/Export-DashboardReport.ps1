@@ -75,9 +75,25 @@ function Export-DashboardReport {
     $backupRate = if ($totalVMs -gt 0) { [math]::Round(($protectedVMs / $totalVMs) * 100, 1) } else { 0 }
     $runningVMs = @($VMInventory | Where-Object { $_.PowerState -eq 'running' }).Count
     
-    # Deprecated Components metrics
-    $eolFindings = @($findings | Where-Object { $_.EOLDate -and $_.Status -eq 'FAIL' })
+    # Deprecated Components metrics - include all findings with EOLDate, regardless of status
+    # Filter logic must match Export-SecurityReport.ps1 exactly
+    $eolFindings = @($findings | Where-Object { 
+        if (-not $_.EOLDate) { return $false }
+        $eolDateStr = $_.EOLDate.ToString().Trim()
+        if ([string]::IsNullOrWhiteSpace($eolDateStr)) { return $false }
+        if ($eolDateStr -eq "N/A" -or $eolDateStr -eq "n/a") { return $false }
+        return $true
+    })
     $deprecatedCount = $eolFindings.Count
+    
+    # Debug: Log EOL findings count and details
+    Write-Verbose "Dashboard - EOL Findings count: $deprecatedCount"
+    Write-Verbose "Dashboard - Total findings count: $($findings.Count)"
+    if ($eolFindings.Count -gt 0) {
+        foreach ($finding in $eolFindings) {
+            Write-Verbose "Dashboard - EOL Finding: Resource=$($finding.ResourceName), EOLDate=$($finding.EOLDate), Status=$($finding.Status)"
+        }
+    }
     $pastDueCount = @($eolFindings | Where-Object { 
         try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
     }).Count
