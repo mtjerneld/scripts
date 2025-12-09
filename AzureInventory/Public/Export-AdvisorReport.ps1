@@ -34,7 +34,7 @@ function Get-AzureAdvisorRecommendations {
         [string]$SubscriptionName,
         
         [Parameter(Mandatory = $false)]
-        [switch]$UseRestApi = $true
+        [bool]$UseRestApi = $true
     )
     
     $recommendations = [System.Collections.Generic.List[PSObject]]::new()
@@ -47,7 +47,7 @@ function Get-AzureAdvisorRecommendations {
         # Try REST API first (more complete data)
         if ($UseRestApi) {
             try {
-                $uri = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Advisor/recommendations?api-version=2023-01-01"
+                $uri = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Advisor/recommendations?api-version=2025-01-01"
                 $response = Invoke-AzRestMethod -Method GET -Uri $uri -ErrorAction Stop
                 
                 if ($response.StatusCode -eq 200 -and $response.Content) {
@@ -133,6 +133,119 @@ function Get-DictionaryValue {
     catch { }
     
     return $null
+}
+
+<#
+.SYNOPSIS
+    Formats extended properties into human-readable technical details based on resource type.
+#>
+function Format-ExtendedPropertiesDetails {
+    param(
+        $ExtendedProps,
+        [string]$ImpactedField,
+        [string]$Category
+    )
+    
+    if ($null -eq $ExtendedProps) { return $null }
+    
+    $details = [System.Collections.Generic.List[string]]::new()
+    
+    # VM Rightsizing details
+    if ($ImpactedField -like "*virtualMachines*" -or $ImpactedField -like "*virtualMachineScaleSets*") {
+        $currentSku = Get-DictionaryValue -Dict $ExtendedProps -Key "currentSku"
+        $recommendedSku = Get-DictionaryValue -Dict $ExtendedProps -Key "targetSku"
+        if (-not $recommendedSku) { $recommendedSku = Get-DictionaryValue -Dict $ExtendedProps -Key "recommendedSku" }
+        
+        if ($currentSku) { $details.Add("Current SKU: $currentSku") }
+        if ($recommendedSku) { $details.Add("Recommended SKU: $recommendedSku") }
+        
+        $cpuP95 = Get-DictionaryValue -Dict $ExtendedProps -Key "MaxCpuP95"
+        if (-not $cpuP95) { $cpuP95 = Get-DictionaryValue -Dict $ExtendedProps -Key "percentageCpuP95" }
+        $memP95 = Get-DictionaryValue -Dict $ExtendedProps -Key "MaxMemoryP95"
+        if (-not $memP95) { $memP95 = Get-DictionaryValue -Dict $ExtendedProps -Key "percentageMemoryP95" }
+        
+        if ($cpuP95) { $details.Add("CPU P95: $cpuP95%") }
+        if ($memP95) { $details.Add("Memory P95: $memP95%") }
+        
+        $region = Get-DictionaryValue -Dict $ExtendedProps -Key "region"
+        if ($region) { $details.Add("Region: $region") }
+    }
+    
+    # SQL Database details
+    if ($ImpactedField -like "*sql*databases*" -or $ImpactedField -like "*sql*servers*") {
+        $serverName = Get-DictionaryValue -Dict $ExtendedProps -Key "ServerName"
+        $dbName = Get-DictionaryValue -Dict $ExtendedProps -Key "DatabaseName"
+        $currentSku = Get-DictionaryValue -Dict $ExtendedProps -Key "Current_SKU"
+        $recommendedSku = Get-DictionaryValue -Dict $ExtendedProps -Key "Recommended_SKU"
+        $currentDtu = Get-DictionaryValue -Dict $ExtendedProps -Key "Current_DTU"
+        $recommendedDtu = Get-DictionaryValue -Dict $ExtendedProps -Key "Recommended_DTU"
+        $dbSize = Get-DictionaryValue -Dict $ExtendedProps -Key "DatabaseSize"
+        
+        if ($serverName) { $details.Add("Server: $serverName") }
+        if ($dbName) { $details.Add("Database: $dbName") }
+        if ($currentSku -and $recommendedSku) { $details.Add("SKU: $currentSku → $recommendedSku") }
+        if ($currentDtu -and $recommendedDtu) { $details.Add("DTU: $currentDtu → $recommendedDtu") }
+        if ($dbSize) { $details.Add("Size: $dbSize MB") }
+    }
+    
+    # Storage Account details
+    if ($ImpactedField -like "*storageAccounts*") {
+        $currentTier = Get-DictionaryValue -Dict $ExtendedProps -Key "currentAccessTier"
+        $recommendedTier = Get-DictionaryValue -Dict $ExtendedProps -Key "recommendedAccessTier"
+        $blobCount = Get-DictionaryValue -Dict $ExtendedProps -Key "blobCount"
+        $totalSize = Get-DictionaryValue -Dict $ExtendedProps -Key "totalSizeInGB"
+        
+        if ($currentTier -and $recommendedTier) { $details.Add("Tier: $currentTier → $recommendedTier") }
+        if ($blobCount) { $details.Add("Blobs: $blobCount") }
+        if ($totalSize) { $details.Add("Size: $totalSize GB") }
+    }
+    
+    # Reserved Instances details
+    if ($ImpactedField -like "*reservedInstances*" -or $Category -eq "Cost") {
+        $term = Get-DictionaryValue -Dict $ExtendedProps -Key "term"
+        $scope = Get-DictionaryValue -Dict $ExtendedProps -Key "scope"
+        $lookback = Get-DictionaryValue -Dict $ExtendedProps -Key "lookbackPeriod"
+        $qty = Get-DictionaryValue -Dict $ExtendedProps -Key "recommendedQuantity"
+        $vmSize = Get-DictionaryValue -Dict $ExtendedProps -Key "vmSize"
+        
+        if ($term) { $details.Add("Term: $term") }
+        if ($scope) { $details.Add("Scope: $scope") }
+        if ($vmSize) { $details.Add("VM Size: $vmSize") }
+        if ($qty) { $details.Add("Recommended Quantity: $qty") }
+        if ($lookback) { $details.Add("Lookback: $lookback days") }
+    }
+    
+    # App Service details
+    if ($ImpactedField -like "*sites*" -or $ImpactedField -like "*serverFarms*") {
+        $currentSku = Get-DictionaryValue -Dict $ExtendedProps -Key "currentSku"
+        $recommendedSku = Get-DictionaryValue -Dict $ExtendedProps -Key "recommendedSku"
+        $currentWorkers = Get-DictionaryValue -Dict $ExtendedProps -Key "currentNumberOfWorkers"
+        $recommendedWorkers = Get-DictionaryValue -Dict $ExtendedProps -Key "recommendedNumberOfWorkers"
+        
+        if ($currentSku -and $recommendedSku) { $details.Add("SKU: $currentSku → $recommendedSku") }
+        if ($currentWorkers -and $recommendedWorkers) { $details.Add("Workers: $currentWorkers → $recommendedWorkers") }
+    }
+    
+    # Cosmos DB details
+    if ($ImpactedField -like "*documentdb*" -or $ImpactedField -like "*cosmosdb*") {
+        $currentRu = Get-DictionaryValue -Dict $ExtendedProps -Key "currentProvisionedThroughput"
+        $recommendedRu = Get-DictionaryValue -Dict $ExtendedProps -Key "recommendedProvisionedThroughput"
+        
+        if ($currentRu -and $recommendedRu) { $details.Add("RU/s: $currentRu → $recommendedRu") }
+    }
+    
+    # Observation period (common across many types)
+    $obsStart = Get-DictionaryValue -Dict $ExtendedProps -Key "ObservationPeriodStartDate"
+    $obsEnd = Get-DictionaryValue -Dict $ExtendedProps -Key "ObservationPeriodEndDate"
+    if ($obsStart -and $obsEnd) {
+        $startDate = if ($obsStart -is [datetime]) { $obsStart.ToString("yyyy-MM-dd") } else { $obsStart.Substring(0,10) }
+        $endDate = if ($obsEnd -is [datetime]) { $obsEnd.ToString("yyyy-MM-dd") } else { $obsEnd.Substring(0,10) }
+        $details.Add("Observation: $startDate to $endDate")
+    }
+    
+    if ($details.Count -eq 0) { return $null }
+    
+    return $details -join " | "
 }
 
 <#
@@ -260,20 +373,32 @@ function Convert-AdvisorRecommendation {
         $longDescription = $description
     }
     
-    # Potential benefits
-    $potentialBenefits = Get-DictionaryValue -Dict $extendedProps -Key "potentialBenefits"
+    # Potential benefits - check direct property FIRST (this is where API puts it)
+    $potentialBenefits = Get-RecProperty -RestPath "properties.potentialBenefits" -ModulePath "PotentialBenefit"
+    if (-not $potentialBenefits) {
+        $potentialBenefits = Get-DictionaryValue -Dict $extendedProps -Key "potentialBenefits"
+    }
     if (-not $potentialBenefits) {
         $potentialBenefits = Get-DictionaryValue -Dict $extendedProps -Key "benefits"
     }
-    if (-not $potentialBenefits) {
-        $potentialBenefits = Get-RecProperty -RestPath "properties.potentialBenefits" -ModulePath "PotentialBenefit"
-    }
     
-    # Learn more link
+    # Learn more link - check direct property FIRST
     $learnMoreLink = Get-RecProperty -RestPath "properties.learnMoreLink" -ModulePath "LearnMoreLink"
     if (-not $learnMoreLink) {
         $learnMoreLink = Get-DictionaryValue -Dict $extendedProps -Key "learnMoreLink"
     }
+    
+    # Label (short title for the recommendation)
+    $label = Get-RecProperty -RestPath "properties.label" -ModulePath "Label"
+    
+    # Risk level (Warning, Error, None)
+    $risk = Get-RecProperty -RestPath "properties.risk" -ModulePath "Risk"
+    
+    # Control/SubCategory (ServiceUpgradeAndRetirement, HighAvailability, etc.)
+    $control = Get-RecProperty -RestPath "properties.control" -ModulePath "Control"
+    
+    # Actions array (contains actionable links and steps)
+    $actions = Get-RecProperty -RestPath "properties.actions" -ModulePath "Actions"
     
     # Recommendation type ID - critical for grouping
     $recommendationTypeId = Get-RecProperty -RestPath "properties.recommendationTypeId" -ModulePath "RecommendationTypeId"
@@ -284,8 +409,9 @@ function Convert-AdvisorRecommendation {
         }
     }
     
-    # Cost savings - robust extraction
+    # Cost savings - robust extraction (both monthly and annual)
     $potentialSavings = $null
+    $monthlySavings = $null
     $savingsCurrency = "USD"
     
     if ($category -eq 'Cost') {
@@ -293,14 +419,28 @@ function Convert-AdvisorRecommendation {
         $metadata = Get-RecProperty -RestPath "properties.metadata" -ModulePath "Metadata"
         
         # Method 1: Direct from extendedProperties (most common)
+        # Try annual first, then monthly
         $potentialSavings = Get-DictionaryValue -Dict $extendedProps -Key "annualSavingsAmount"
+        $monthlySavings = Get-DictionaryValue -Dict $extendedProps -Key "savingsAmount"
         $currencyValue = Get-DictionaryValue -Dict $extendedProps -Key "savingsCurrency"
         if ($currencyValue) { $savingsCurrency = $currencyValue }
+        
+        # If we only have monthly, calculate annual
+        if (-not $potentialSavings -and $monthlySavings) {
+            try {
+                $potentialSavings = [decimal]$monthlySavings * 12
+            } catch { }
+        }
         
         # Method 2: From metadata.AdditionalProperties
         if (-not $potentialSavings -and $metadata) {
             if ($metadata.AdditionalProperties) {
-                $potentialSavings = Get-DictionaryValue -Dict $metadata.AdditionalProperties -Key "annualSavingsAmount"
+                if (-not $potentialSavings) {
+                    $potentialSavings = Get-DictionaryValue -Dict $metadata.AdditionalProperties -Key "annualSavingsAmount"
+                }
+                if (-not $monthlySavings) {
+                    $monthlySavings = Get-DictionaryValue -Dict $metadata.AdditionalProperties -Key "savingsAmount"
+                }
                 $currencyValue = Get-DictionaryValue -Dict $metadata.AdditionalProperties -Key "savingsCurrency"
                 if ($currencyValue) { $savingsCurrency = $currencyValue }
             }
@@ -313,6 +453,9 @@ function Convert-AdvisorRecommendation {
                 for ($i = 0; $i -lt $keysArray.Count; $i++) {
                     if ($keysArray[$i] -eq 'annualSavingsAmount' -and $i -lt $valuesArray.Count) {
                         $potentialSavings = $valuesArray[$i]
+                    }
+                    if ($keysArray[$i] -eq 'savingsAmount' -and $i -lt $valuesArray.Count) {
+                        $monthlySavings = $valuesArray[$i]
                     }
                     if ($keysArray[$i] -eq 'savingsCurrency' -and $i -lt $valuesArray.Count) {
                         $savingsCurrency = $valuesArray[$i]
@@ -327,9 +470,19 @@ function Convert-AdvisorRecommendation {
             if ($restExtProps.annualSavingsAmount) {
                 $potentialSavings = $restExtProps.annualSavingsAmount
             }
+            if ($restExtProps.savingsAmount) {
+                $monthlySavings = $restExtProps.savingsAmount
+            }
             if ($restExtProps.savingsCurrency) {
                 $savingsCurrency = $restExtProps.savingsCurrency
             }
+        }
+        
+        # If we only have monthly, calculate annual
+        if (-not $potentialSavings -and $monthlySavings) {
+            try {
+                $potentialSavings = [decimal]$monthlySavings * 12
+            } catch { }
         }
         
         # Convert to decimal if found
@@ -340,6 +493,17 @@ function Convert-AdvisorRecommendation {
             catch {
                 Write-Verbose "Failed to parse savings amount: $potentialSavings"
                 $potentialSavings = $null
+            }
+        }
+        
+        # Convert monthly to decimal if found
+        if ($monthlySavings) {
+            try {
+                $monthlySavings = [decimal]$monthlySavings
+            }
+            catch {
+                Write-Verbose "Failed to parse monthly savings amount: $monthlySavings"
+                $monthlySavings = $null
             }
         }
     }
@@ -360,10 +524,10 @@ function Convert-AdvisorRecommendation {
         }
     }
     
-    # Action
-    $action = Get-RecProperty -RestPath "properties.actions" -ModulePath "Action"
+    # Format technical details from extended properties
+    $technicalDetails = Format-ExtendedPropertiesDetails -ExtendedProps $extendedProps -ImpactedField $impactedField -Category $category
     
-    # Build the recommendation object
+    # Build the recommendation object with all available fields
     return [PSCustomObject]@{
         SubscriptionId       = $SubscriptionId
         SubscriptionName     = $SubscriptionName
@@ -371,6 +535,9 @@ function Convert-AdvisorRecommendation {
         RecommendationTypeId = $recommendationTypeId
         Category             = $category
         Impact               = $impact
+        Risk                 = $risk
+        Control              = $control
+        Label                = $label
         ImpactedField        = $impactedField
         ResourceId           = $resourceId
         ResourceName         = $resourceName
@@ -383,10 +550,12 @@ function Convert-AdvisorRecommendation {
         PotentialBenefits    = $potentialBenefits
         LearnMoreLink        = $learnMoreLink
         PotentialSavings     = $potentialSavings
+        MonthlySavings       = if ($monthlySavings) { [decimal]$monthlySavings } else { $null }
         SavingsCurrency      = $savingsCurrency
         LastUpdated          = $lastUpdated
         Remediation          = $remediationSteps
-        Action               = $action
+        Actions              = $actions
+        TechnicalDetails     = $technicalDetails
         ExtendedProperties   = $extendedProps
     }
 }
@@ -430,14 +599,17 @@ function Group-AdvisorRecommendations {
         $firstRec = $group.Group[0]
         $affectedResources = $group.Group | ForEach-Object {
             [PSCustomObject]@{
-                SubscriptionId   = $_.SubscriptionId
-                SubscriptionName = $_.SubscriptionName
-                ResourceId       = $_.ResourceId
-                ResourceName     = $_.ResourceName
-                ResourceGroup    = $_.ResourceGroup
-                ResourceType     = $_.ResourceType
-                PotentialSavings = $_.PotentialSavings
-                SavingsCurrency  = $_.SavingsCurrency
+                SubscriptionId    = $_.SubscriptionId
+                SubscriptionName  = $_.SubscriptionName
+                ResourceId        = $_.ResourceId
+                ResourceName      = $_.ResourceName
+                ResourceGroup     = $_.ResourceGroup
+                ResourceType      = $_.ResourceType
+                PotentialSavings  = $_.PotentialSavings
+                MonthlySavings    = $_.MonthlySavings
+                SavingsCurrency   = $_.SavingsCurrency
+                TechnicalDetails  = $_.TechnicalDetails
+                Impact            = $_.Impact
             }
         }
         
@@ -462,10 +634,22 @@ function Group-AdvisorRecommendations {
         # Determine highest impact level
         $highestImpact = if ($highCount -gt 0) { 'High' } elseif ($mediumCount -gt 0) { 'Medium' } else { 'Low' }
         
+        # Calculate monthly savings total
+        $totalMonthlySavings = $null
+        if ($firstRec.Category -eq 'Cost') {
+            $monthlyItems = $group.Group | Where-Object { $_.MonthlySavings -and $_.MonthlySavings -gt 0 }
+            if ($monthlyItems) {
+                $totalMonthlySavings = ($monthlyItems | Measure-Object -Property MonthlySavings -Sum).Sum
+            }
+        }
+        
         $groupedRec = [PSCustomObject]@{
             RecommendationTypeId  = $firstRec.RecommendationTypeId
             Category              = $firstRec.Category
             Impact                = $highestImpact
+            Risk                  = $firstRec.Risk
+            Control               = $firstRec.Control
+            Label                 = $firstRec.Label
             ImpactDistribution    = @{
                 High   = $highCount
                 Medium = $mediumCount
@@ -478,9 +662,10 @@ function Group-AdvisorRecommendations {
             PotentialBenefits     = $firstRec.PotentialBenefits
             LearnMoreLink         = $firstRec.LearnMoreLink
             TotalSavings          = $totalSavings
+            TotalMonthlySavings   = $totalMonthlySavings
             SavingsCurrency       = $savingsCurrency
             Remediation           = $firstRec.Remediation
-            Action                = $firstRec.Action
+            Actions               = $firstRec.Actions
             AffectedResourceCount = $group.Group.Count
             AffectedResources     = $affectedResources
             AffectedSubscriptions = @($group.Group | Select-Object -ExpandProperty SubscriptionName -Unique)

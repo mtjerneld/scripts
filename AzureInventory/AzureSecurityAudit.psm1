@@ -15,21 +15,23 @@ Get-ChildItem -Path "$ModuleRoot\Private\Scanners\*.ps1" -ErrorAction SilentlyCo
     . $_.FullName
 }
 
-# Dot-source all collector functions
-$collectorFiles = Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue
-if ($collectorFiles) {
-    Write-Verbose "Loading $($collectorFiles.Count) collector function(s)..."
-    $collectorFiles | ForEach-Object {
-        Write-Verbose "  Loading: $($_.Name)"
-        . $_.FullName
-    }
-} else {
-    Write-Verbose "No collector functions found in $ModuleRoot\Private\Collectors\"
-}
-
 # Dot-source all config functions
 Get-ChildItem -Path "$ModuleRoot\Private\Config\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object {
     . $_.FullName
+}
+
+# Dot-source all collector functions
+Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+        # Load by reading content and creating scriptblock (bypasses execution policy issues)
+        $content = Get-Content $_.FullName -Raw -ErrorAction Stop
+        $scriptBlock = [scriptblock]::Create($content)
+        . $scriptBlock
+    }
+    catch {
+        # Fallback to direct dot-sourcing
+        . $_.FullName -ErrorAction SilentlyContinue
+    }
 }
 
 # Dot-source all public functions

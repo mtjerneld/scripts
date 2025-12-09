@@ -28,6 +28,7 @@ $functionsToRemove = @(
     'Connect-AuditEnvironment',
     'Invoke-AzureSecurityAudit',
     'Export-SecurityReport',
+    'Export-AdvisorReport',
     'Get-SubscriptionContext',
     'Invoke-AzureApiWithRetry',
     'New-SecurityFinding',
@@ -38,7 +39,11 @@ $functionsToRemove = @(
     'Get-AzureArcFindings',
     'Get-AzureMonitorFindings',
     'Get-NetworkSecurityFindings',
-    'Get-SqlDatabaseFindings'
+    'Get-SqlDatabaseFindings',
+    'Get-AzureAdvisorRecommendations',
+    'Convert-AdvisorRecommendation',
+    'Group-AdvisorRecommendations',
+    'Format-ExtendedPropertiesDetails'
 )
 
 foreach ($funcName in $functionsToRemove) {
@@ -72,6 +77,12 @@ Get-ChildItem -Path "$ModuleRoot\Private\Config\*.ps1" -ErrorAction SilentlyCont
     Write-Verbose "Loaded: $($_.Name)"
 }
 
+Write-Host "  Loading Private Collectors..." -ForegroundColor Gray
+Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { 
+    . $_.FullName
+    Write-Verbose "Loaded: $($_.Name)"
+}
+
 Write-Host "  Loading Public Functions..." -ForegroundColor Gray
 Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { 
     . $_.FullName
@@ -81,7 +92,20 @@ Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | F
 Write-Host "`n[OK] All functions loaded! Ready to test." -ForegroundColor Green
 Write-Host "Available functions:" -ForegroundColor Cyan
 $loadedFunctions = @()
+
+# Check Public functions
 Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" | ForEach-Object {
+    $funcName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+    if (Get-Command $funcName -ErrorAction SilentlyContinue) {
+        Write-Host "  - $funcName [OK]" -ForegroundColor Green
+        $loadedFunctions += $funcName
+    } else {
+        Write-Host "  - $funcName [MISSING]" -ForegroundColor Red
+    }
+}
+
+# Check Collector functions (like Export-AdvisorReport)
+Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" | ForEach-Object {
     $funcName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
     if (Get-Command $funcName -ErrorAction SilentlyContinue) {
         Write-Host "  - $funcName [OK]" -ForegroundColor Green

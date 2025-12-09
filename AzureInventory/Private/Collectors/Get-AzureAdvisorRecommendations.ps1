@@ -56,15 +56,12 @@ function Export-AdvisorReport {
     $savingsCurrency = ($costRecs | Where-Object { $_.SavingsCurrency } | Select-Object -First 1).SavingsCurrency
     if (-not $savingsCurrency) { $savingsCurrency = "USD" }
     
-    # Count by impact across all resources
-    $highImpactResources = ($groupedRecs | ForEach-Object { $_.ImpactDistribution.High } | Measure-Object -Sum).Sum
-    $mediumImpactResources = ($groupedRecs | ForEach-Object { $_.ImpactDistribution.Medium } | Measure-Object -Sum).Sum
-    $lowImpactResources = ($groupedRecs | ForEach-Object { $_.ImpactDistribution.Low } | Measure-Object -Sum).Sum
-    
     # Get unique subscriptions for filter
     $allSubscriptions = @($AdvisorRecommendations | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object)
     
     # HTML escape function
+    # Note: Using unapproved verb 'Escape' as this is a local helper function
+    # and 'Escape' is the most appropriate verb for HTML escaping operations
     function Escape-Html {
         param([string]$text)
         if ([string]::IsNullOrEmpty($text)) { return "" }
@@ -729,6 +726,24 @@ function Export-AdvisorReport {
                         </div>
 "@
                 
+                # Technical Details section (if available)
+                if ($rec.AffectedResources -and ($rec.AffectedResources | Where-Object { $_.TechnicalDetails })) {
+                    $html += @"
+                        <div class="detail-section">
+                            <div class="detail-title">Technical Details</div>
+                            <div class="detail-content" style="font-family: 'Consolas', monospace; font-size: 0.9em;">
+"@
+                    foreach ($resource in ($rec.AffectedResources | Where-Object { $_.TechnicalDetails })) {
+                        $escapedDetails = Escape-Html $resource.TechnicalDetails
+                        $escapedResName = Escape-Html $resource.ResourceName
+                        $html += "                                <div><strong>${escapedResName}:</strong> $escapedDetails</div>`n"
+                    }
+                    $html += @"
+                            </div>
+                        </div>
+"@
+                }
+                
                 # Solution section
                 if ($escapedSolution -and $escapedSolution -ne "See Azure Portal for remediation steps") {
                     $html += @"
@@ -787,9 +802,11 @@ function Export-AdvisorReport {
                                             <th>Resource Name</th>
                                             <th>Resource Group</th>
                                             <th>Subscription</th>
+                                            <th>Technical Details</th>
 "@
                 if ($cat.Name -eq "Cost") {
-                    $html += "                                            <th>Savings</th>`n"
+                    $html += "                                            <th>Monthly</th>`n"
+                    $html += "                                            <th>Annual</th>`n"
                 }
                 $html += @"
                                         </tr>
@@ -801,18 +818,24 @@ function Export-AdvisorReport {
                     $escapedResName = Escape-Html $resource.ResourceName
                     $escapedResGroup = Escape-Html $resource.ResourceGroup
                     $escapedSubName = Escape-Html $resource.SubscriptionName
+                    $escapedTechDetails = Escape-Html $resource.TechnicalDetails
                     
                     $html += @"
                                         <tr>
                                             <td class="resource-name">$escapedResName</td>
                                             <td>$escapedResGroup</td>
                                             <td>$escapedSubName</td>
+                                            <td style="font-family: 'Consolas', monospace; font-size: 0.85em;">$escapedTechDetails</td>
 "@
                     if ($cat.Name -eq "Cost") {
-                        $resSavings = if ($resource.PotentialSavings -and $resource.PotentialSavings -gt 0) {
-                            "$($resource.SavingsCurrency) $([math]::Round($resource.PotentialSavings, 0))"
+                        $resMonthlySavings = if ($resource.MonthlySavings -and $resource.MonthlySavings -gt 0) {
+                            "$($resource.SavingsCurrency) $([math]::Round($resource.MonthlySavings, 0))/mo"
                         } else { "-" }
-                        $html += "                                            <td style='color: var(--accent-green);'>$resSavings</td>`n"
+                        $resAnnualSavings = if ($resource.PotentialSavings -and $resource.PotentialSavings -gt 0) {
+                            "$($resource.SavingsCurrency) $([math]::Round($resource.PotentialSavings, 0))/yr"
+                        } else { "-" }
+                        $html += "                                            <td style='color: var(--accent-green);'>$resMonthlySavings</td>`n"
+                        $html += "                                            <td style='color: var(--accent-green);'>$resAnnualSavings</td>`n"
                     }
                     $html += "                                        </tr>`n"
                 }
@@ -905,3 +928,4 @@ function Export-AdvisorReport {
     
     return $OutputPath
 }
+
