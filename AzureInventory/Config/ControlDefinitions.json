@@ -600,7 +600,7 @@
       "controlId": "BR-1",
       "controlName": "VM Backup Enabled",
       "category": "VM",
-      "frameworks": ["ASB", "WellArchitected"],
+      "frameworks": ["ASB"],
       "priority": "P1",
       "level": "N/A",
       "severity": "High",

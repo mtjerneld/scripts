@@ -866,6 +866,10 @@ h2 {
     background-color: var(--bg);
 }
 
+.resource-row.hidden {
+    display: none;
+}
+
 .resource-detail-row {
     background-color: var(--surface);
 }
@@ -1223,7 +1227,6 @@ h2 {
                     <option value="all">All Frameworks</option>
                     <option value="cis">CIS</option>
                     <option value="asb">ASB</option>
-                    <option value="wellarchitected">Well-Architected</option>
                 </select>
             </div>
             <div class="filter-group">
@@ -1940,19 +1943,11 @@ h2 {
                         // First pass: determine which resource rows match
                         resourceRowsInBox.forEach(row => {
                             const resourceKey = row.getAttribute('data-resource-key');
-                            
-                            // Filter control-detail-row elements inside this resource's detail row FIRST
                             let visibleControlCount = 0;
+                            
                             if (resourceKey) {
                                 const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
                                 if (detailRow) {
-                                    // Temporarily show detail row to filter controls (if not already visible)
-                                    const wasHidden = detailRow.classList.contains('hidden');
-                                    const wasExpanded = row.classList.contains('expanded');
-                                    if (wasHidden && !wasExpanded) {
-                                        detailRow.classList.remove('hidden');
-                                    }
-                                    
                                     const controlDetailRows = detailRow.querySelectorAll('.control-detail-row');
                                     
                                     controlDetailRows.forEach(controlRow => {
@@ -1982,17 +1977,10 @@ h2 {
                                             }
                                         }
                                     });
-                                    
-                                    // Always collapse detail row after filtering (unless user has expanded it)
-                                    if (wasHidden && !wasExpanded) {
-                                        detailRow.classList.add('hidden');
-                                        row.classList.remove('expanded');
-                                    }
                                 }
                             }
                             
-                            // Resource row should show ONLY if it has visible controls after filtering
-                            // The control-detail-row filtering already applies severity, category, framework, and search filters
+                            // Show resource row ONLY if it has matching control-detail-rows
                             const rowShouldShow = visibleControlCount > 0;
                             
                             if (rowShouldShow) {
@@ -2003,7 +1991,7 @@ h2 {
                             } else {
                                 row.classList.add('hidden');
                                 row.classList.remove('expanded');
-                                // Hide associated detail row and ensure it stays collapsed
+                                // Ensure detail row stays hidden
                                 if (resourceKey) {
                                     const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
                                     if (detailRow) {
