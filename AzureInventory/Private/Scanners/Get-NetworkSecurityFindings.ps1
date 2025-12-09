@@ -153,6 +153,7 @@ function Get-NetworkSecurityFindings {
                             -ControlId $rdpControl.controlId `
                             -ControlName $rdpControl.controlName `
                             -Category $rdpControl.category `
+                            -Frameworks $rdpControl.frameworks `
                             -Severity $rdpControl.severity `
                             -CisLevel $rdpControl.level `
                             -CurrentValue "RDP (3389) allowed from Internet" `
@@ -174,6 +175,7 @@ function Get-NetworkSecurityFindings {
                             -ControlId $rdpControl.controlId `
                             -ControlName $rdpControl.controlName `
                             -Category $rdpControl.category `
+                            -Frameworks $rdpControl.frameworks `
                             -Severity $rdpControl.severity `
                             -CisLevel $rdpControl.level `
                             -CurrentValue "No RDP (3389) allowed from Internet" `
@@ -204,6 +206,7 @@ function Get-NetworkSecurityFindings {
                             -ControlId $sshControl.controlId `
                             -ControlName $sshControl.controlName `
                             -Category $sshControl.category `
+                            -Frameworks $sshControl.frameworks `
                             -Severity $sshControl.severity `
                             -CisLevel $sshControl.level `
                             -CurrentValue "SSH (22) allowed from Internet" `
@@ -226,6 +229,7 @@ function Get-NetworkSecurityFindings {
                             -ControlId $sshControl.controlId `
                             -ControlName $sshControl.controlName `
                             -Category $sshControl.category `
+                            -Frameworks $sshControl.frameworks `
                             -Severity $sshControl.severity `
                             -CisLevel $sshControl.level `
                             -CurrentValue "No SSH (22) allowed from Internet" `
@@ -253,6 +257,7 @@ function Get-NetworkSecurityFindings {
                             -ControlId $anyToAnyControl.controlId `
                             -ControlName $anyToAnyControl.controlName `
                             -Category $anyToAnyControl.category `
+                            -Frameworks $anyToAnyControl.frameworks `
                             -Severity $anyToAnyControl.severity `
                             -CisLevel $anyToAnyControl.level `
                             -CurrentValue "Any-to-any rule present" `
@@ -274,6 +279,7 @@ function Get-NetworkSecurityFindings {
                             -ControlId $anyToAnyControl.controlId `
                             -ControlName $anyToAnyControl.controlName `
                             -Category $anyToAnyControl.category `
+                            -Frameworks $anyToAnyControl.frameworks `
                             -Severity $anyToAnyControl.severity `
                             -CisLevel $anyToAnyControl.level `
                             -CurrentValue "No any-to-any rules" `
@@ -327,6 +333,7 @@ function Get-NetworkSecurityFindings {
                         -ControlId $watcherControl.controlId `
                         -ControlName $watcherControl.controlName `
                         -Category $watcherControl.category `
+                        -Frameworks $watcherControl.frameworks `
                         -Severity $watcherControl.severity `
                         -CisLevel $watcherControl.level `
                         -CurrentValue $(if ($watcherEnabled) { "Enabled" } else { "Not enabled" }) `
@@ -371,6 +378,7 @@ function Get-NetworkSecurityFindings {
                         -ControlId $ddosControl.controlId `
                         -ControlName $ddosControl.controlName `
                         -Category $ddosControl.category `
+                        -Frameworks $ddosControl.frameworks `
                         -Severity $ddosControl.severity `
                         -CisLevel $ddosControl.level `
                         -Note $note `
@@ -424,6 +432,7 @@ function Get-NetworkSecurityFindings {
                         -ControlId $threatIntelControl.controlId `
                         -ControlName $threatIntelControl.controlName `
                         -Category $threatIntelControl.category `
+                        -Frameworks $threatIntelControl.frameworks `
                         -Severity $threatIntelControl.severity `
                         -CisLevel $threatIntelControl.level `
                         -CurrentValue $threatIntelMode `

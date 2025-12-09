@@ -78,6 +78,7 @@ function Get-SqlDatabaseFindings {
                 -ControlId $tlsControl.controlId `
                 -ControlName $tlsControl.controlName `
                 -Category $tlsControl.category `
+                -Frameworks $tlsControl.frameworks `
                 -Severity $tlsControl.severity `
                 -CisLevel $tlsControl.level `
                 -CurrentValue $minTlsVersion `
@@ -123,6 +124,7 @@ function Get-SqlDatabaseFindings {
                 -ControlId $firewallControl.controlId `
                 -ControlName $firewallControl.controlName `
                 -Category $firewallControl.category `
+                -Frameworks $firewallControl.frameworks `
                 -Severity $firewallControl.severity `
                 -CisLevel $firewallControl.level `
                 -CurrentValue $(if ($allowAllRule) { "Allow-all rule present" } else { "No allow-all rule" }) `
@@ -159,6 +161,7 @@ function Get-SqlDatabaseFindings {
                 -ControlId $auditControl.controlId `
                 -ControlName $auditControl.controlName `
                 -Category $auditControl.category `
+                -Frameworks $auditControl.frameworks `
                 -Severity $auditControl.severity `
                 -CisLevel $auditControl.level `
                 -CurrentValue $(if ($auditingEnabled) { "Enabled" } else { "Disabled" }) `
@@ -201,6 +204,7 @@ function Get-SqlDatabaseFindings {
                             -ControlId $tdeControl.controlId `
                             -ControlName $tdeControl.controlName `
                             -Category $tdeControl.category `
+                            -Frameworks $tdeControl.frameworks `
                             -Severity $tdeControl.severity `
                             -CisLevel $tdeControl.level `
                             -CurrentValue $(if ($tdeEnabled) { "Enabled" } else { "Disabled" }) `
@@ -228,25 +232,32 @@ function Get-SqlDatabaseFindings {
             $adAdminConfigured = $false
         }
         
-        $adAdminStatus = if ($adAdminConfigured) { "PASS" } else { "FAIL" }
-        
-        $finding = New-SecurityFinding `
-            -SubscriptionId $SubscriptionId `
-            -SubscriptionName $SubscriptionName `
-            -ResourceGroup $server.ResourceGroupName `
-            -ResourceType "Microsoft.Sql/servers" `
-            -ResourceName $server.ServerName `
-            -ResourceId $server.ResourceId `
-            -ControlId "4.1.4" `
-            -ControlName "Azure AD Admin Configured" `
-            -Category "SQL" `
-            -Severity "High" `
-            -CurrentValue $(if ($adAdminConfigured) { "Configured" } else { "Not configured" }) `
-            -ExpectedValue "Azure AD admin configured" `
-            -Status $adAdminStatus `
-            -RemediationSteps "Configure an Azure AD administrator for SQL server to enable Azure AD authentication." `
-            -RemediationCommand "az sql server ad-admin create --resource-group $($server.ResourceGroupName) --server $($server.ServerName) --display-name <admin-name> --object-id <object-id>"
-        $findings.Add($finding)
+        # Control: Azure AD Admin Configured
+        $adAdminControl = $controlLookup["Azure AD Admin Configured"]
+        if ($adAdminControl) {
+            $adAdminStatus = if ($adAdminConfigured) { "PASS" } else { "FAIL" }
+            $remediationCmd = $adAdminControl.remediationCommand -replace '\{rg\}', $server.ResourceGroupName -replace '\{serverName\}', $server.ServerName
+            
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $server.ResourceGroupName `
+                -ResourceType "Microsoft.Sql/servers" `
+                -ResourceName $server.ServerName `
+                -ResourceId $server.ResourceId `
+                -ControlId $adAdminControl.controlId `
+                -ControlName $adAdminControl.controlName `
+                -Category $adAdminControl.category `
+                -Frameworks $adAdminControl.frameworks `
+                -Severity $adAdminControl.severity `
+                -CisLevel $adAdminControl.level `
+                -CurrentValue $(if ($adAdminConfigured) { "Configured" } else { "Not configured" }) `
+                -ExpectedValue $adAdminControl.expectedValue `
+                -Status $adAdminStatus `
+                -RemediationSteps $adAdminControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
         
         # P1 Control 4.2.1: Defender for SQL (DISABLED - Commercial Feature)
         # This control is disabled as it requires a commercial subscription ($15/server/month)
@@ -283,36 +294,42 @@ function Get-SqlDatabaseFindings {
         $findings.Add($finding)
         #>
         
-        # P1: Azure AD-Only Authentication
-        try {
-            $adOnlyAuth = Invoke-AzureApiWithRetry {
-                Get-AzSqlServerActiveDirectoryOnlyAuthentication -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction SilentlyContinue
+        # Control: Azure AD-Only Authentication
+        $adOnlyControl = $controlLookup["Azure AD-Only Authentication"]
+        if ($adOnlyControl) {
+            try {
+                $adOnlyAuth = Invoke-AzureApiWithRetry {
+                    Get-AzSqlServerActiveDirectoryOnlyAuthentication -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction SilentlyContinue
+                }
+                $adOnlyEnabled = if ($adOnlyAuth) { $adOnlyAuth.AzureADOnlyAuthentication } else { $false }
             }
-            $adOnlyEnabled = if ($adOnlyAuth) { $adOnlyAuth.AzureADOnlyAuthentication } else { $false }
+            catch {
+                $adOnlyEnabled = $false
+            }
+            
+            $adOnlyStatus = if ($adOnlyEnabled) { "PASS" } else { "FAIL" }
+            $remediationCmd = $adOnlyControl.remediationCommand -replace '\{rg\}', $server.ResourceGroupName -replace '\{serverName\}', $server.ServerName
+            
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $server.ResourceGroupName `
+                -ResourceType "Microsoft.Sql/servers" `
+                -ResourceName $server.ServerName `
+                -ResourceId $server.ResourceId `
+                -ControlId $adOnlyControl.controlId `
+                -ControlName $adOnlyControl.controlName `
+                -Category $adOnlyControl.category `
+                -Frameworks $adOnlyControl.frameworks `
+                -Severity $adOnlyControl.severity `
+                -CisLevel $adOnlyControl.level `
+                -CurrentValue $adOnlyEnabled.ToString() `
+                -ExpectedValue $adOnlyControl.expectedValue `
+                -Status $adOnlyStatus `
+                -RemediationSteps $adOnlyControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
         }
-        catch {
-            $adOnlyEnabled = $false
-        }
-        
-        $adOnlyStatus = if ($adOnlyEnabled) { "PASS" } else { "FAIL" }
-        
-        $finding = New-SecurityFinding `
-            -SubscriptionId $SubscriptionId `
-            -SubscriptionName $SubscriptionName `
-            -ResourceGroup $server.ResourceGroupName `
-            -ResourceType "Microsoft.Sql/servers" `
-            -ResourceName $server.ServerName `
-            -ResourceId $server.ResourceId `
-            -ControlId "N/A" `
-            -ControlName "Azure AD-Only Authentication" `
-            -Category "SQL" `
-            -Severity "Medium" `
-            -CurrentValue $adOnlyEnabled.ToString() `
-            -ExpectedValue "True" `
-            -Status $adOnlyStatus `
-            -RemediationSteps "Enable Azure AD-only authentication to require Azure AD authentication for all database access." `
-            -RemediationCommand "az sql server ad-only-auth enable --resource-group $($server.ResourceGroupName) --name $($server.ServerName)"
-        $findings.Add($finding)
     }
     
     return $findings

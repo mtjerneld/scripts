@@ -45,7 +45,7 @@ function Invoke-AzureSecurityAudit {
     param(
         [string[]]$SubscriptionIds,
         
-        [ValidateSet('All', 'Storage', 'AppService', 'VM', 'ARC', 'Monitor', 'Network', 'SQL')]
+        [ValidateSet('All', 'Storage', 'AppService', 'VM', 'ARC', 'Monitor', 'Network', 'SQL', 'KeyVault')]
         [string[]]$Categories = @('All'),
         
         [string]$OutputPath,
@@ -136,6 +136,7 @@ function Invoke-AzureSecurityAudit {
         'Monitor'    = { param($subId, $subName) Get-AzureMonitorFindings -SubscriptionId $subId -SubscriptionName $subName }
         'Network'    = { param($subId, $subName, $includeL2) Get-NetworkSecurityFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
         'SQL'        = { param($subId, $subName, $includeL2) Get-SqlDatabaseFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'KeyVault'   = { param($subId, $subName, $includeL2) Get-KeyVaultFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
     }
     
     # Determine categories to scan

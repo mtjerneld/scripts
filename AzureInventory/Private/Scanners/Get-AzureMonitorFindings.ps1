@@ -75,6 +75,7 @@ function Get-AzureMonitorFindings {
                             -ControlId $mmaControl.controlId `
                             -ControlName $mmaControl.controlName `
                             -Category $mmaControl.category `
+                            -Frameworks $mmaControl.frameworks `
                             -Severity $mmaControl.severity `
                             -CisLevel $mmaControl.level `
                             -CurrentValue "Manual verification required" `
@@ -155,6 +156,7 @@ function Get-AzureMonitorFindings {
                     -ControlId $diagControl.controlId `
                     -ControlName $diagControl.controlName `
                     -Category $diagControl.category `
+                    -Frameworks $diagControl.frameworks `
                     -Severity $diagControl.severity `
                     -CisLevel $diagControl.level `
                     -CurrentValue $(if ($diagnosticsEnabled) { "Configured" } else { "Not configured" }) `
@@ -206,6 +208,7 @@ function Get-AzureMonitorFindings {
                             -ControlId $dcrControl.controlId `
                             -ControlName $dcrControl.controlName `
                             -Category $dcrControl.category `
+                            -Frameworks $dcrControl.frameworks `
                             -Severity $dcrControl.severity `
                             -CisLevel $dcrControl.level `
                             -CurrentValue $(if ($hasAssociations) { "Has associations" } else { "No associations" }) `

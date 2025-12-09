@@ -87,6 +87,7 @@ function Get-AzureArcFindings {
                 -ControlId $versionControl.controlId `
                 -ControlName $versionControl.controlName `
                 -Category $versionControl.category `
+                -Frameworks $versionControl.frameworks `
                 -Severity $versionControl.severity `
                 -CisLevel $versionControl.level `
                 -CurrentValue $agentVersion `
@@ -117,6 +118,7 @@ function Get-AzureArcFindings {
                 -ControlId $connectionControl.controlId `
                 -ControlName $connectionControl.controlName `
                 -Category $connectionControl.category `
+                -Frameworks $connectionControl.frameworks `
                 -Severity $connectionControl.severity `
                 -CisLevel $connectionControl.level `
                 -CurrentValue $connectionStatus `
@@ -165,6 +167,7 @@ function Get-AzureArcFindings {
                 -ControlId $amaControl.controlId `
                 -ControlName $amaControl.controlName `
                 -Category $amaControl.category `
+                -Frameworks $amaControl.frameworks `
                 -Severity $amaControl.severity `
                 -CisLevel $amaControl.level `
                 -CurrentValue $(if ($amaInstalled) { "Installed" } else { "Not installed" }) `
@@ -202,6 +205,7 @@ function Get-AzureArcFindings {
                 -ControlId $upgradeControl.controlId `
                 -ControlName $upgradeControl.controlName `
                 -Category $upgradeControl.category `
+                -Frameworks $upgradeControl.frameworks `
                 -Severity $upgradeControl.severity `
                 -CisLevel $upgradeControl.level `
                 -CurrentValue $autoUpgrade.ToString() `

@@ -149,7 +149,9 @@ function Get-AppServiceFindings {
             # Use REST API to get web app config
             $restUri = "/subscriptions/$SubscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Web/sites/$($app.Name)/config/web?api-version=2022-03-01"
             $restResult = Invoke-AzureApiWithRetry {
-                Invoke-AzRestMethod -Method Get -Path $restUri -ErrorAction Stop
+                # Suppress informational output from Invoke-AzRestMethod (blue box in PowerShell)
+                $null = $ProgressPreference
+                Invoke-AzRestMethod -Method Get -Path $restUri -ErrorAction Stop 6>$null
             }
             if ($restResult -and $restResult.Content) {
                 $configJson = $restResult.Content | ConvertFrom-Json
@@ -256,6 +258,7 @@ function Get-AppServiceFindings {
                 -ControlId $tlsControl.controlId `
                 -ControlName $tlsControl.controlName `
                 -Category $tlsControl.category `
+                -Frameworks $tlsControl.frameworks `
                 -Severity $tlsControl.severity `
                 -CisLevel $tlsControl.level `
                 -CurrentValue $minTlsVersion `
@@ -283,6 +286,7 @@ function Get-AppServiceFindings {
                 -ControlId $httpsControl.controlId `
                 -ControlName $httpsControl.controlName `
                 -Category $httpsControl.category `
+                -Frameworks $httpsControl.frameworks `
                 -Severity $httpsControl.severity `
                 -CisLevel $httpsControl.level `
                 -CurrentValue $httpsOnly.ToString() `
@@ -322,6 +326,7 @@ function Get-AppServiceFindings {
                 -ControlId $ftpControl.controlId `
                 -ControlName $ftpControl.controlName `
                 -Category $ftpControl.category `
+                -Frameworks $ftpControl.frameworks `
                 -Severity $ftpControl.severity `
                 -CisLevel $ftpControl.level `
                 -CurrentValue $ftpsState `
@@ -353,6 +358,7 @@ function Get-AppServiceFindings {
                 -ControlId $remoteDebugControl.controlId `
                 -ControlName $remoteDebugControl.controlName `
                 -Category $remoteDebugControl.category `
+                -Frameworks $remoteDebugControl.frameworks `
                 -Severity $remoteDebugControl.severity `
                 -CisLevel $remoteDebugControl.level `
                 -CurrentValue $remoteDebugging.ToString() `
@@ -363,28 +369,77 @@ function Get-AppServiceFindings {
             $findings.Add($finding)
         }
         
-        # TODO: Authentication Enabled (9.1) and Managed Identity (9.5) - Add to ControlDefinitions.json first
-        # These controls are currently hardcoded and should be moved to JSON
-        # Commented out until added to ControlDefinitions.json:
-        #
-        # # P1 Control 9.1: Authentication Enabled
-        # try {
-        #     $authSettings = Invoke-AzureApiWithRetry {
-        #         Get-AzWebAppAuthSetting -ResourceGroupName $resourceGroupName -Name $app.Name -ErrorAction SilentlyContinue
-        #     }
-        #     $authEnabled = if ($authSettings) { 
-        #         $authSettings.Enabled 
-        #     } else { 
-        #         $false 
-        #     }
-        # }
-        # catch {
-        #     Write-Verbose "Could not get auth settings for $($app.Name): $_"
-        #     $authEnabled = $false
-        # }
-        #
-        # # P1 Control 9.5: Managed Identity
-        # $hasManagedIdentity = ($app.Identity -and ($app.Identity.Type -eq "SystemAssigned" -or $app.Identity.Type -eq "UserAssigned"))
+        # Control: Authentication Enabled (9.1)
+        $authControl = $controlLookup["App Service - Authentication Enabled"]
+        if ($authControl) {
+            try {
+                $authSettings = Invoke-AzureApiWithRetry {
+                    Get-AzWebAppAuthSetting -ResourceGroupName $resourceGroupName -Name $app.Name -ErrorAction SilentlyContinue
+                }
+                $authEnabled = if ($authSettings) { 
+                    $authSettings.Enabled 
+                } else { 
+                    $false 
+                }
+            }
+            catch {
+                Write-Verbose "Could not get auth settings for $($app.Name): $_"
+                $authEnabled = $false
+            }
+            
+            $authStatus = if ($authEnabled) { "PASS" } else { "FAIL" }
+            
+            $remediationCmd = $authControl.remediationCommand -replace '\{name\}', $app.Name -replace '\{rg\}', $resourceGroupName
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $resourceGroupName `
+                -ResourceType "Microsoft.Web/sites" `
+                -ResourceName $app.Name `
+                -ResourceId $app.Id `
+                -ControlId $authControl.controlId `
+                -ControlName $authControl.controlName `
+                -Category $authControl.category `
+                -Frameworks $authControl.frameworks `
+                -Severity $authControl.severity `
+                -CisLevel $authControl.level `
+                -CurrentValue $authEnabled.ToString() `
+                -ExpectedValue $authControl.expectedValue `
+                -Status $authStatus `
+                -RemediationSteps $authControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
+        
+        # Control: Managed Identity (9.5)
+        $identityControl = $controlLookup["App Service - Managed Identity"]
+        if ($identityControl) {
+            $identityType = if ($app.Identity -and $app.Identity.Type) { $app.Identity.Type } else { "None" }
+            $hasManagedIdentity = ($identityType -ne "None" -and $identityType -ne $null)
+            
+            $identityStatus = if ($hasManagedIdentity) { "PASS" } else { "FAIL" }
+            
+            $remediationCmd = $identityControl.remediationCommand -replace '\{name\}', $app.Name -replace '\{rg\}', $resourceGroupName
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $resourceGroupName `
+                -ResourceType "Microsoft.Web/sites" `
+                -ResourceName $app.Name `
+                -ResourceId $app.Id `
+                -ControlId $identityControl.controlId `
+                -ControlName $identityControl.controlName `
+                -Category $identityControl.category `
+                -Frameworks $identityControl.frameworks `
+                -Severity $identityControl.severity `
+                -CisLevel $identityControl.level `
+                -CurrentValue $identityType `
+                -ExpectedValue $identityControl.expectedValue `
+                -Status $identityStatus `
+                -RemediationSteps $identityControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
     }
     
     if ($skippedCount -gt 0) {

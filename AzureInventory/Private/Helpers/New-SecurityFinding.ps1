@@ -111,6 +111,7 @@ function New-SecurityFinding {
         [string]$ControlName,
         
         [Parameter(Mandatory = $true)]
+        [ValidateSet('Storage', 'AppService', 'VM', 'ARC', 'Monitor', 'Network', 'SQL', 'KeyVault')]
         [string]$Category,
 
         [string[]]$Frameworks = @("CIS"),

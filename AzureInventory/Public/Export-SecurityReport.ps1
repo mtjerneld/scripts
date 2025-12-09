@@ -246,6 +246,10 @@ $cssContent
     display: none;
 }
 
+.resource-detail-control-row.hidden {
+    display: none;
+}
+
 .control-resources-table {
     width: 100%;
     border-collapse: collapse;
@@ -1033,7 +1037,12 @@ $cssContent
                 
                 $categoryLower = ($category -replace '\s+', '-').ToLower()
                 $categorySeverityLower = $categoryHighestSeverity.ToLower()
-                $categorySearchableText = "$category $categoryHighestSeverity".ToLower()
+                
+                # Build searchable text including all resource names, control names, and subscriptions
+                $categoryResourceNames = ($allCategoryFindings | Select-Object -ExpandProperty ResourceName -Unique) -join " "
+                $categoryControlNames = ($allCategoryFindings | Select-Object -ExpandProperty ControlName -Unique) -join " "
+                $categorySubscriptions = ($allCategoryFindings | Select-Object -ExpandProperty SubscriptionName -Unique) -join " "
+                $categorySearchableText = "$category $categoryHighestSeverity $categoryResourceNames $categoryControlNames $categorySubscriptions".ToLower()
                 $categoryId = "cat-$(Encode-Html $category)"
                 
                 $html += @"
@@ -1098,9 +1107,29 @@ $cssContent
                 }
                 
                 $failedCount = @($controlFindings).Count
+                
+                # Count findings by severity for this control
+                $ctrlCritical = @($controlFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
+                $ctrlHigh = @($controlFindings | Where-Object { $_.Severity -eq 'High' }).Count
+                $ctrlMedium = @($controlFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
+                $ctrlLow = @($controlFindings | Where-Object { $_.Severity -eq 'Low' }).Count
+                
+                # Build severity breakdown string (show all non-zero severities)
+                $ctrlSeverityBreakdown = @()
+                if ($ctrlCritical -gt 0) { $ctrlSeverityBreakdown += "<span class='severity-count critical'>$ctrlCritical Critical</span>" }
+                if ($ctrlHigh -gt 0) { $ctrlSeverityBreakdown += "<span class='severity-count high'>$ctrlHigh High</span>" }
+                if ($ctrlMedium -gt 0) { $ctrlSeverityBreakdown += "<span class='severity-count medium'>$ctrlMedium Medium</span>" }
+                if ($ctrlLow -gt 0) { $ctrlSeverityBreakdown += "<span class='severity-count low'>$ctrlLow Low</span>" }
+                $ctrlSeverityDisplay = if ($ctrlSeverityBreakdown.Count -gt 0) { $ctrlSeverityBreakdown -join " " } else { "<span class='$severityClass'>$(Encode-Html $highestSeverity)</span>" }
+                
                 $categoryLower = ($category -replace '\s+', '-').ToLower()
                 $severityLower = $highestSeverity.ToLower()
-                $searchableText = "$category $controlId $controlName $highestSeverity $controlFrameworks".ToLower()
+                
+                # Build searchable text including all resource names, resource groups, and subscriptions
+                $resourceNames = ($controlFindings | Select-Object -ExpandProperty ResourceName -Unique) -join " "
+                $resourceGroups = ($controlFindings | Select-Object -ExpandProperty ResourceGroup -Unique) -join " "
+                $subscriptionNames = ($controlFindings | Select-Object -ExpandProperty SubscriptionName -Unique) -join " "
+                $searchableText = "$category $controlId $controlName $highestSeverity $controlFrameworks $resourceNames $resourceGroups $subscriptionNames".ToLower()
                 
                 $html += @"
                 <tr class="control-row" 
@@ -1114,7 +1143,7 @@ $cssContent
                     style="cursor: pointer;">
                     <td>$(Encode-Html $controlId)</td>
                     <td>$(Encode-Html $controlName)</td>
-                    <td><span class="$severityClass">$(Encode-Html $highestSeverity)</span></td>
+                    <td>$ctrlSeverityDisplay</td>
                     <td>$failedCount</td>
                 </tr>
                 <tr class="control-resources-row hidden" data-control-key="$(Encode-Html $controlKey)">
@@ -1150,8 +1179,20 @@ $cssContent
                     $cisLevel = if ($finding.CisLevel) { Encode-Html $finding.CisLevel } else { "N/A" }
                     $resourceDetailKey = "$($finding.ResourceName)|$($finding.ResourceGroup)|$($finding.ControlId)"
                     
+                    # Build searchable string for this resource row
+                    $resourceRowSearchable = @(
+                        $finding.SubscriptionName,
+                        $finding.ResourceGroup,
+                        $finding.ResourceName,
+                        $finding.CurrentValue,
+                        $finding.ExpectedValue
+                    ) -join ' ' | ForEach-Object { $_.ToLower() }
+                    
                     $html += @"
-                                <tr class="resource-detail-control-row" data-resource-detail-key="$(Encode-Html $resourceDetailKey)" style="cursor: pointer;">
+                                <tr class="resource-detail-control-row" 
+                                    data-resource-detail-key="$(Encode-Html $resourceDetailKey)" 
+                                    data-searchable="$resourceRowSearchable"
+                                    style="cursor: pointer;">
                                     <td>$(Encode-Html $finding.SubscriptionName)</td>
                                     <td>$(Encode-Html $finding.ResourceGroup)</td>
                                     <td>$(Encode-Html $finding.ResourceName)</td>
@@ -1306,7 +1347,11 @@ $cssContent
                 
                 $subSeverityLower = $subHighestSeverity.ToLower()
                 $subscriptionLower = ($subName -replace '\s+', '-').ToLower()
-                $subSearchableText = "$subName $subHighestSeverity".ToLower()
+                
+                # Build searchable text including all resource names and resource groups
+                $subResourceNames = ($subFailedFindings | Select-Object -ExpandProperty ResourceName -Unique) -join " "
+                $subResourceGroups = ($subFailedFindings | Select-Object -ExpandProperty ResourceGroup -Unique) -join " "
+                $subSearchableText = "$subName $subHighestSeverity $subResourceNames $subResourceGroups".ToLower()
                 
                 $html += @"
         <div class="subscription-box"
@@ -1367,14 +1412,15 @@ $cssContent
                             default { "" }
                         }
                         
-                        # Get unique control IDs for this resource
+                        # Get unique control IDs and names for this resource
                         $uniqueControlIds = ($failedResourceFindings | Select-Object -ExpandProperty ControlId -Unique | Sort-Object)
                         $controlIdsDisplay = if ($uniqueControlIds.Count -gt 0) { ($uniqueControlIds -join ', ') } else { "N/A" }
+                        $uniqueControlNames = ($failedResourceFindings | Select-Object -ExpandProperty ControlName -Unique) -join " "
                         
                         $categoryLower = ($primaryCategory -replace '\s+', '-').ToLower()
                         $severityLower = $highestSeverity.ToLower()
                         $subscriptionLower = $subName.ToLower()
-                        $searchableText = "$subName $resourceGroupName $resourceName $primaryCategory $controlIdsDisplay $highestSeverity".ToLower()
+                        $searchableText = "$subName $resourceGroupName $resourceName $primaryCategory $controlIdsDisplay $uniqueControlNames $highestSeverity".ToLower()
                         
                         $html += @"
                         <tr class="resource-row" 
@@ -1433,7 +1479,7 @@ $cssContent
                             $findingSeverityLower = $finding.Severity.ToLower()
                             $findingCategoryLower = $finding.Category.ToLower()
                             $findingFrameworksLower = $findingFrameworks.ToLower()
-                            $findingSearchable = "$($finding.ControlId) $($finding.ControlName) $($finding.Severity) $($finding.Category) $findingFrameworks".ToLower()
+                            $findingSearchable = "$($finding.ControlId) $($finding.ControlName) $($finding.Severity) $($finding.Category) $findingFrameworks $($finding.ResourceName) $($finding.ResourceGroup)".ToLower()
                             
                             $html += @"
                                         <tr class="control-detail-row" 
@@ -1742,6 +1788,40 @@ $cssContent
                                     row.classList.remove('hidden');
                                     visibleCount++;
                                     // Keep resources row collapsed - only expand on click
+                                    // But filter the individual resource rows inside
+                                    const controlKey = row.getAttribute('data-control-key');
+                                    if (controlKey && searchText !== '') {
+                                        const resourcesRow = document.querySelector('.control-resources-row[data-control-key="' + controlKey + '"]');
+                                        if (resourcesRow) {
+                                            const resourceDetailRows = resourcesRow.querySelectorAll('.resource-detail-control-row');
+                                            resourceDetailRows.forEach(resourceRow => {
+                                                const resourceSearchable = resourceRow.getAttribute('data-searchable') || '';
+                                                const resourceSearchMatch = resourceSearchable.includes(searchText);
+                                                if (resourceSearchMatch) {
+                                                    resourceRow.classList.remove('hidden');
+                                                } else {
+                                                    resourceRow.classList.add('hidden');
+                                                    // Hide associated remediation row
+                                                    const resourceDetailKey = resourceRow.getAttribute('data-resource-detail-key');
+                                                    if (resourceDetailKey) {
+                                                        const remediationRow = document.querySelector('.remediation-row[data-parent-resource-detail-key="' + resourceDetailKey + '"]');
+                                                        if (remediationRow) {
+                                                            remediationRow.classList.add('hidden');
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    } else if (controlKey) {
+                                        // No search text - show all resource rows
+                                        const resourcesRow = document.querySelector('.control-resources-row[data-control-key="' + controlKey + '"]');
+                                        if (resourcesRow) {
+                                            const resourceDetailRows = resourcesRow.querySelectorAll('.resource-detail-control-row');
+                                            resourceDetailRows.forEach(resourceRow => {
+                                                resourceRow.classList.remove('hidden');
+                                            });
+                                        }
+                                    }
                                 } else {
                                     row.classList.add('hidden');
                                     // Also hide associated resources row when filtering

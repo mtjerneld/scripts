@@ -228,21 +228,78 @@ function Get-VirtualMachineFindings {
             $findings.Add($finding)
         }
 
-        # Control: VM Backup Enabled (ASB)
-        $backupControl = $controlLookup["VM Backup Enabled"]
-        if ($backupControl) {
-            $backupEnabled = $false
-            if ($extensions) {
-                foreach ($ext in $extensions) {
-                    if ($ext.ExtensionType -like "*VMSnapshot*") {
-                        $backupEnabled = $true
-                        break
+    }
+    
+    # Control: VM Backup Enabled (ASB) - Check after VM loop to batch API calls
+    $backupControl = $controlLookup["VM Backup Enabled"]
+    if ($backupControl -and $vms.Count -gt 0) {
+        # Get all Recovery Services Vaults in the subscription
+        $backupProtectedVMs = @{}
+        try {
+            $vaults = Invoke-AzureApiWithRetry {
+                Get-AzRecoveryServicesVault -ErrorAction SilentlyContinue
+            }
+            
+            if ($vaults) {
+                foreach ($vault in $vaults) {
+                    try {
+                        # Set vault context
+                        Set-AzRecoveryServicesVaultContext -Vault $vault -ErrorAction SilentlyContinue
+                        
+                        # Get all backup items (Azure VMs) in this vault
+                        $backupItems = Invoke-AzureApiWithRetry {
+                            Get-AzRecoveryServicesBackupItem -BackupManagementType AzureVM -WorkloadType AzureVM -ErrorAction SilentlyContinue
+                        }
+                        
+                        if ($backupItems) {
+                            foreach ($item in $backupItems) {
+                                # Extract VM name from the backup item
+                                # SourceResourceId format: /subscriptions/.../resourceGroups/.../providers/Microsoft.Compute/virtualMachines/{vmName}
+                                if ($item.SourceResourceId) {
+                                    $vmIdLower = $item.SourceResourceId.ToLower()
+                                    $backupProtectedVMs[$vmIdLower] = @{
+                                        VaultName = $vault.Name
+                                        ProtectionStatus = $item.ProtectionStatus
+                                        LastBackupStatus = $item.LastBackupStatus
+                                        LastBackupTime = $item.LastBackupTime
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Verbose "Could not query backup items from vault $($vault.Name): $_"
                     }
                 }
             }
+        }
+        catch {
+            Write-Verbose "Could not retrieve Recovery Services Vaults: $_"
+        }
+        
+        Write-Verbose "Found $($backupProtectedVMs.Count) VMs with backup protection"
+        
+        # Now check each VM against the backup protection list
+        foreach ($vm in $vms) {
+            if ([string]::IsNullOrWhiteSpace($vm.Name) -or [string]::IsNullOrWhiteSpace($vm.ResourceGroupName)) {
+                continue
+            }
             
-            # If not found in extensions, logic implies it's not enabled or we can't see it.
-            # Checking extensions is a good proxy for Azure Backup.
+            $resourceId = $vm.Id
+            if ([string]::IsNullOrWhiteSpace($resourceId)) {
+                $resourceId = "/subscriptions/$SubscriptionId/resourceGroups/$($vm.ResourceGroupName)/providers/Microsoft.Compute/virtualMachines/$($vm.Name)"
+            }
+            
+            $resourceIdLower = $resourceId.ToLower()
+            $backupInfo = $backupProtectedVMs[$resourceIdLower]
+            $backupEnabled = $null -ne $backupInfo
+            
+            $currentValue = if ($backupEnabled) {
+                $lastBackup = if ($backupInfo.LastBackupTime) { $backupInfo.LastBackupTime.ToString("yyyy-MM-dd HH:mm") } else { "N/A" }
+                "Protected by $($backupInfo.VaultName) (Last: $lastBackup)"
+            } else {
+                "No backup protection detected"
+            }
             
             $backupStatus = if ($backupEnabled) { "PASS" } else { "FAIL" }
             $remediationCmd = $backupControl.remediationCommand
@@ -260,7 +317,7 @@ function Get-VirtualMachineFindings {
                 -Frameworks $backupControl.frameworks `
                 -Severity $backupControl.severity `
                 -CisLevel $backupControl.level `
-                -CurrentValue $(if ($backupEnabled) { "Backup enabled" } else { "Backup not detected (check extension)" }) `
+                -CurrentValue $currentValue `
                 -ExpectedValue $backupControl.expectedValue `
                 -Status $backupStatus `
                 -RemediationSteps $backupControl.businessImpact `
