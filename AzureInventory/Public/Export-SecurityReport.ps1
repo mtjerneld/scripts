@@ -53,24 +53,8 @@ function Export-SecurityReport {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     }
     
-    # Copy assets if Templates directory exists
-    $assetsDir = Join-Path (Split-Path -Parent $OutputPath) "assets"
-    if (Test-Path "Templates\assets") {
-        if (-not (Test-Path $assetsDir)) {
-            New-Item -ItemType Directory -Path $assetsDir -Force | Out-Null
-        }
-        Copy-Item -Path "Templates\assets\*" -Destination $assetsDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    
-    # Read CSS file content
+    # Note: We no longer use external CSS files - all styles are inline for dark mode consistency
     $cssContent = ""
-    $cssPath = Join-Path $assetsDir "style.css"
-    if (Test-Path $cssPath) {
-        $cssContent = Get-Content $cssPath -Raw -ErrorAction SilentlyContinue
-    }
-    elseif (Test-Path "Templates\assets\style.css") {
-        $cssContent = Get-Content "Templates\assets\style.css" -Raw -ErrorAction SilentlyContinue
-    }
     
     # Generate HTML report
     try {
@@ -116,7 +100,189 @@ function Export-SecurityReport {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Azure Security Audit Report</title>
     <style type="text/css">
-$cssContent
+/* Dark Mode Theme - matching dashboard and VM backup reports */
+:root {
+    --bg-primary: #0f0f1a;
+    --bg-secondary: #1a1a2e;
+    --surface: #252542;
+    --bg: #1f1f35;
+    --bg-hover: #2d2d4a;
+    --text: #e8e8e8;
+    --text-secondary: #b8b8b8;
+    --text-muted: #888;
+    --border: #3d3d5c;
+    --pri-600: #54a0ff;
+    --pri-700: #2e86de;
+    --info: #54a0ff;
+    --success: #00d26a;
+    --warning: #feca57;
+    --danger: #ff6b6b;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --background: #1a1a2e;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: var(--bg-primary);
+    color: var(--text);
+    margin: 0;
+    padding: 0;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1600px;
+    margin: 0 auto;
+    padding: 30px;
+}
+
+/* Page Header */
+.page-header {
+    margin-bottom: 30px;
+}
+
+.page-header h1 {
+    font-size: 2rem;
+    font-weight: 600;
+    margin: 0 0 15px 0;
+    color: var(--text);
+}
+
+.metadata {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.metadata p {
+    margin: 0;
+}
+
+.metadata strong {
+    color: var(--text-secondary);
+}
+
+/* Summary Grid */
+h2 {
+    color: var(--text);
+    font-size: 1.3rem;
+    margin: 30px 0 20px 0;
+    font-weight: 600;
+}
+
+.summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.summary-card {
+    background: var(--surface);
+    border-radius: var(--radius-md);
+    padding: 24px;
+    text-align: center;
+    border: 1px solid var(--border);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.summary-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.summary-card-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+}
+
+.summary-card-value {
+    font-size: 2.5rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.summary-card.critical .summary-card-value { color: var(--danger); }
+.summary-card.high .summary-card-value { color: #ff9f43; }
+.summary-card.medium .summary-card-value { color: var(--warning); }
+.summary-card.low .summary-card-value { color: var(--info); }
+
+/* Status badges */
+.status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.status-badge.critical {
+    background: rgba(255, 107, 107, 0.15);
+    color: var(--danger);
+}
+
+.status-badge.high {
+    background: rgba(255, 159, 67, 0.15);
+    color: #ff9f43;
+}
+
+.status-badge.medium {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--warning);
+}
+
+.status-badge.low {
+    background: rgba(84, 160, 255, 0.15);
+    color: var(--info);
+}
+
+/* Category Box styling */
+.category-box {
+    background: var(--surface);
+    border-radius: var(--radius-md);
+    margin-bottom: 20px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+}
+
+.category-header {
+    background: var(--bg-secondary);
+    padding: 16px 24px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transition: background 0.2s ease;
+}
+
+.category-header:hover {
+    background: var(--bg-hover);
+}
+
+.category-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+    flex: 1;
+}
+
+.category-content {
+    padding: 0;
+}
 
 /* Filter Controls */
 .filter-controls {
@@ -361,7 +527,7 @@ $cssContent
 }
 
 .reference-links a::before {
-    content: "🔗";
+    content: "\2192";
     font-size: 0.9rem;
 }
 
@@ -403,12 +569,17 @@ $cssContent
 
 /* Status classes for PASS/FAIL */
 .status-ok {
-    color: #156A3A;
+    color: var(--success);
     font-weight: 600;
 }
 
 .status-fail {
-    color: #8F1D1D;
+    color: var(--danger);
+    font-weight: 600;
+}
+
+.status-warn {
+    color: var(--warning);
     font-weight: 600;
 }
 
@@ -476,23 +647,23 @@ $cssContent
 }
 
 .score-excellent {
-    border-color: #28A745;
-    color: #28A745;
+    border-color: var(--success);
+    color: var(--success);
 }
 
 .score-good {
-    border-color: #FFC107;
-    color: #FFC107;
+    border-color: var(--warning);
+    color: var(--warning);
 }
 
 .score-fair {
-    border-color: #FD7E14;
-    color: #FD7E14;
+    border-color: #ff9f43;
+    color: #ff9f43;
 }
 
 .score-poor {
-    border-color: #DC3545;
-    color: #DC3545;
+    border-color: var(--danger);
+    color: var(--danger);
 }
 
 .category-scores-grid {
@@ -729,9 +900,54 @@ $cssContent
         padding: 0.5rem;
     }
 }
+        /* Navigation */
+        .report-nav {
+            background: var(--surface);
+            padding: 15px 30px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        .nav-brand {
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: var(--info);
+            margin-right: 30px;
+        }
+        
+        .nav-link {
+            color: var(--text-muted);
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+            font-size: 0.9rem;
+        }
+        
+        .nav-link:hover {
+            background: var(--background);
+            color: var(--text);
+        }
+        
+        .nav-link.active {
+            background: var(--info);
+            color: white;
+        }
     </style>
 </head>
 <body>
+    <nav class="report-nav">
+        <span class="nav-brand">Azure Audit Reports</span>
+        <a href="index.html" class="nav-link">Dashboard</a>
+        <a href="security.html" class="nav-link active">Security Audit</a>
+        <a href="vm-backup.html" class="nav-link">VM Backup</a>
+    </nav>
+    
     <div class="container">
         <div class="page-header">
             <h1>Azure Security Audit Report</h1>
@@ -843,10 +1059,10 @@ $cssContent
             
             $html += @"
         <h2>Deprecated Components Requiring Action</h2>
-        <div class="subscription-box">
-            <div class="subscription-header collapsed" data-subscription-id="deprecated-components" style="cursor: pointer;">
+        <div class="subscription-box" style="border-color: var(--danger);">
+            <div class="subscription-header collapsed" data-subscription-id="deprecated-components" style="cursor: pointer; background-color: rgba(255, 107, 107, 0.1);">
                 <span class="expand-icon"></span>
-                <h3>Deprecated Components Found</h3>
+                <h3 style="color: var(--danger);">Deprecated Components Found ($eolCount items)</h3>
                 <span class="header-severity-summary">
                     <span class="severity-count critical">$pastDueCount Past Due</span>
                     <span class="severity-count medium">$upcomingCount Upcoming</span>

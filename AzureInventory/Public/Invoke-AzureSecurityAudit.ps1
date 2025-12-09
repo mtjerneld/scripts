@@ -4,17 +4,17 @@
 
 .DESCRIPTION
     Scans Azure resources across specified subscriptions for CIS security compliance.
-    Generates HTML and optionally JSON reports with findings.
+    Generates HTML reports including dashboard, security findings, and VM backup status.
 
 .PARAMETER SubscriptionIds
     Array of subscription IDs to scan. If not specified, scans all enabled subscriptions.
 
 .PARAMETER Categories
-    Array of categories to scan: All, Storage, AppService, VM, ARC, Monitor, Network, SQL.
+    Array of categories to scan: All, Storage, AppService, VM, ARC, Monitor, Network, SQL, KeyVault.
     Default: All
 
 .PARAMETER OutputPath
-    Path for HTML report output. Default: timestamped file in current directory.
+    Path for report output folder. Default: output/{tenantId}-{timestamp} in module directory.
 
 .PARAMETER ExportJson
     Also export findings as JSON file.
@@ -61,6 +61,7 @@ function Invoke-AzureSecurityAudit {
     
     $scanStart = Get-Date
     $allFindings = [System.Collections.Generic.List[PSObject]]::new()
+    $vmInventory = [System.Collections.Generic.List[PSObject]]::new()
     $errors = [System.Collections.Generic.List[string]]::new()
     
     # Get subscriptions
@@ -239,9 +240,29 @@ function Invoke-AzureSecurityAudit {
             
             Write-Host "  - $category..." -NoNewline
             try {
+                # Suppress Azure module warnings about unapproved verbs during scanning
+                $scanWarningPref = $WarningPreference
+                $WarningPreference = 'SilentlyContinue'
+                
                 # Pass IncludeLevel2 parameter to scanner functions
                 # Use subscriptionNameToUse which comes from verified context
-                $findings = & $scanners[$category] -subId $sub.Id -subName $subscriptionNameToUse -includeL2:$IncludeLevel2
+                $scanResult = & $scanners[$category] -subId $sub.Id -subName $subscriptionNameToUse -includeL2:$IncludeLevel2
+                
+                $WarningPreference = $scanWarningPref
+                
+                # Handle VM scanner's new return structure (Findings + Inventory)
+                $findings = $null
+                if ($category -eq 'VM' -and $scanResult -is [PSCustomObject] -and $scanResult.PSObject.Properties.Name -contains 'Findings') {
+                    $findings = $scanResult.Findings
+                    # Add VM inventory data
+                    if ($scanResult.Inventory -and $scanResult.Inventory.Count -gt 0) {
+                        foreach ($vmData in $scanResult.Inventory) {
+                            $vmInventory.Add($vmData)
+                        }
+                    }
+                } else {
+                    $findings = $scanResult
+                }
                 
                 # Handle null or empty results
                 if ($null -eq $findings) {
@@ -314,6 +335,9 @@ function Invoke-AzureSecurityAudit {
                 }
             }
             catch {
+                # Restore warning preference on error
+                $WarningPreference = $scanWarningPref
+                
                 Write-Host " ERROR: $_" -ForegroundColor Red
                 $errors.Add("$category scan failed for ${subscriptionNameToUse}: $_")
                 
@@ -491,36 +515,82 @@ function Invoke-AzureSecurityAudit {
         FindingsBySeverity   = $findingsBySeverity
         FindingsByCategory   = $findingsByCategory
         Findings             = $allFindings
+        VMInventory          = $vmInventory
         ComplianceScores     = $complianceScores
         Errors               = $errors
-        ToolVersion          = "1.0.0"
+        ToolVersion          = "2.0.0"
     }
     
-    # Generate reports
+    # Generate reports - create output folder structure
     if (-not $OutputPath) {
-        $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-        $OutputPath = Join-Path (Get-Location).Path "AzureSecurityAudit_$timestamp.html"
+        # Get module root directory (parent of Public folder)
+        $moduleRoot = Split-Path -Parent $PSScriptRoot
+        
+        # Create output folder structure: output/{tenantId}-{datetime}/
+        $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $tenantFolder = if ($tenantId) { $tenantId } else { "unknown-tenant" }
+        $outputFolderName = "$tenantFolder-$timestamp"
+        # Use nested Join-Path for PowerShell 5.1 compatibility (only accepts 2 args)
+        $outputFolder = Join-Path (Join-Path $moduleRoot "output") $outputFolderName
+        
+        # Create the output folder if it doesn't exist
+        if (-not (Test-Path $outputFolder)) {
+            New-Item -ItemType Directory -Path $outputFolder -Force | Out-Null
+            Write-Verbose "Created output folder: $outputFolder"
+        }
     }
     else {
-        # Ensure OutputPath is absolute
-        if (-not [System.IO.Path]::IsPathRooted($OutputPath)) {
-            $OutputPath = Join-Path (Get-Location).Path $OutputPath
+        # Use custom output path
+        $outputFolder = $OutputPath
+        if (-not [System.IO.Path]::IsPathRooted($outputFolder)) {
+            $outputFolder = Join-Path (Get-Location).Path $outputFolder
+        }
+        
+        # Create folder if it doesn't exist
+        if (-not (Test-Path $outputFolder)) {
+            New-Item -ItemType Directory -Path $outputFolder -Force | Out-Null
         }
     }
     
+    Write-Host "`n=== Generating Reports ===" -ForegroundColor Cyan
+    Write-Host "Output folder: $outputFolder" -ForegroundColor Gray
+    
+    # Generate Security Report
+    $securityReportPath = Join-Path $outputFolder "security.html"
     try {
-        $reportPath = Export-SecurityReport -AuditResult $result -OutputPath $OutputPath
-        Write-Host "`nHTML Report: $reportPath" -ForegroundColor Green
+        Export-SecurityReport -AuditResult $result -OutputPath $securityReportPath | Out-Null
+        Write-Host "  Security Report: security.html" -ForegroundColor Green
     }
     catch {
-        Write-Warning "Failed to generate HTML report: $_"
+        Write-Warning "Failed to generate security report: $_"
     }
     
+    # Generate VM Backup Report
+    $vmBackupReportPath = Join-Path $outputFolder "vm-backup.html"
+    try {
+        Export-VMBackupReport -VMInventory $vmInventory -OutputPath $vmBackupReportPath -TenantId $tenantId | Out-Null
+        Write-Host "  VM Backup Report: vm-backup.html" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Failed to generate VM backup report: $_"
+    }
+    
+    # Generate Dashboard
+    $dashboardPath = Join-Path $outputFolder "index.html"
+    try {
+        Export-DashboardReport -AuditResult $result -VMInventory $vmInventory -OutputPath $dashboardPath -TenantId $tenantId | Out-Null
+        Write-Host "  Dashboard: index.html" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Failed to generate dashboard: $_"
+    }
+    
+    # Export JSON if requested
     if ($ExportJson) {
-        $jsonPath = $OutputPath -replace '\.html$', '.json'
+        $jsonPath = Join-Path $outputFolder "audit-data.json"
         try {
             $result | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding UTF8
-            Write-Host "JSON Export: $jsonPath" -ForegroundColor Green
+            Write-Host "  JSON Export: audit-data.json" -ForegroundColor Green
         }
         catch {
             Write-Warning "Failed to export JSON: $_"
@@ -535,16 +605,27 @@ function Invoke-AzureSecurityAudit {
     Write-Host "  Medium:   $($findingsBySeverity.Medium)" -ForegroundColor White
     Write-Host "  Low:      $($findingsBySeverity.Low)" -ForegroundColor White
     
+    # VM Backup summary
+    if ($vmInventory.Count -gt 0) {
+        $protectedVMs = @($vmInventory | Where-Object { $_.BackupEnabled }).Count
+        $unprotectedVMs = $vmInventory.Count - $protectedVMs
+        Write-Host "`nVM Backup Status:" -ForegroundColor Cyan
+        Write-Host "  Total VMs: $($vmInventory.Count)" -ForegroundColor White
+        Write-Host "  Protected: $protectedVMs" -ForegroundColor Green
+        Write-Host "  Unprotected: $unprotectedVMs" -ForegroundColor $(if ($unprotectedVMs -gt 0) { 'Yellow' } else { 'Green' })
+    }
+    
     if ($errors.Count -gt 0) {
         Write-Host "`nErrors encountered: $($errors.Count)" -ForegroundColor Yellow
-        foreach ($error in $errors) {
-            Write-Host "  - $error" -ForegroundColor Red
+        foreach ($err in $errors) {
+            Write-Host "  - $err" -ForegroundColor Red
         }
     }
+    
+    Write-Host "`nOpen dashboard: " -NoNewline
+    Write-Host "$dashboardPath" -ForegroundColor Cyan
     
     if ($PassThru) {
         return $result
     }
 }
-
-
