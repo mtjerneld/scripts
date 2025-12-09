@@ -15,6 +15,18 @@ Get-ChildItem -Path "$ModuleRoot\Private\Scanners\*.ps1" -ErrorAction SilentlyCo
     . $_.FullName
 }
 
+# Dot-source all collector functions
+$collectorFiles = Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue
+if ($collectorFiles) {
+    Write-Verbose "Loading $($collectorFiles.Count) collector function(s)..."
+    $collectorFiles | ForEach-Object {
+        Write-Verbose "  Loading: $($_.Name)"
+        . $_.FullName
+    }
+} else {
+    Write-Verbose "No collector functions found in $ModuleRoot\Private\Collectors\"
+}
+
 # Dot-source all config functions
 Get-ChildItem -Path "$ModuleRoot\Private\Config\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object {
     . $_.FullName

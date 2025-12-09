@@ -423,6 +423,7 @@ function Export-VMBackupReport {
         <a href="index.html" class="nav-link">Dashboard</a>
         <a href="security.html" class="nav-link">Security Audit</a>
         <a href="vm-backup.html" class="nav-link active">VM Backup</a>
+        <a href="advisor.html" class="nav-link">Advisor</a>
     </nav>
     
     <div class="container">

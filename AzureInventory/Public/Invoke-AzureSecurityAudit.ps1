@@ -62,6 +62,7 @@ function Invoke-AzureSecurityAudit {
     $scanStart = Get-Date
     $allFindings = [System.Collections.Generic.List[PSObject]]::new()
     $vmInventory = [System.Collections.Generic.List[PSObject]]::new()
+    $advisorRecommendations = [System.Collections.Generic.List[PSObject]]::new()
     $errors = [System.Collections.Generic.List[string]]::new()
     
     # Get subscriptions
@@ -295,8 +296,9 @@ function Invoke-AzureSecurityAudit {
                     Write-Verbose "$category - First finding ResourceId: '$($firstFinding.ResourceId)', ResourceName: '$($firstFinding.ResourceName)'"
                 }
                 
-                # Count unique resources using hashtable (reliable method)
+                # Count unique resources and unique controls using hashtables
                 $uniqueResourceIds = @{}
+                $uniqueControls = @{}
                 $failCount = 0
                 
                 foreach ($finding in $validFindings) {
@@ -314,6 +316,18 @@ function Invoke-AzureSecurityAudit {
                         $uniqueResourceIds[$resourceKey] = $true
                     }
                     
+                    # Count unique controls by Category + ControlId
+                    $controlKey = $null
+                    if ($finding.PSObject.Properties.Name -contains 'Category' -and $finding.PSObject.Properties.Name -contains 'ControlId') {
+                        $cat = if ($finding.Category) { $finding.Category } else { "Unknown" }
+                        $ctrlId = if ($finding.ControlId) { $finding.ControlId } else { "Unknown" }
+                        $controlKey = "$cat|$ctrlId"
+                    }
+                    
+                    if ($controlKey -and -not $uniqueControls.ContainsKey($controlKey)) {
+                        $uniqueControls[$controlKey] = $true
+                    }
+                    
                     # Count failures
                     if ($finding.PSObject.Properties.Name -contains 'Status' -and $finding.Status -eq 'FAIL') {
                         $failCount++
@@ -321,17 +335,17 @@ function Invoke-AzureSecurityAudit {
                 }
                 
                 $uniqueResources = $uniqueResourceIds.Count
-                $totalChecks = $validFindings.Count
+                $uniqueChecks = $uniqueControls.Count
                 
                 # Format output message
                 $color = if ($failCount -gt 0) { 'Red' } else { 'Green' }
-                if ($totalChecks -eq 0) {
+                if ($uniqueChecks -eq 0) {
                     Write-Host " 0 resources (0 checks)" -ForegroundColor Gray
                 }
                 else {
                     $resourceWord = if ($uniqueResources -eq 1) { "resource" } else { "resources" }
-                    $checkWord = if ($totalChecks -eq 1) { "check" } else { "checks" }
-                    Write-Host " $uniqueResources $resourceWord evaluated against $totalChecks $checkWord ($failCount failures)" -ForegroundColor $color
+                    $checkWord = if ($uniqueChecks -eq 1) { "check" } else { "checks" }
+                    Write-Host " $uniqueResources $resourceWord evaluated against $uniqueChecks $checkWord ($failCount failures)" -ForegroundColor $color
                 }
             }
             catch {
@@ -506,19 +520,20 @@ function Invoke-AzureSecurityAudit {
     $complianceScores = Calculate-CisComplianceScore -Findings $allFindings -IncludeLevel2:$IncludeLevel2
     
     $result = [PSCustomObject]@{
-        ScanStartTime        = $scanStart
-        ScanEndTime          = Get-Date
-        TenantId             = $tenantId
-        SubscriptionsScanned = $subscriptions.Id
-        SubscriptionNames    = $subscriptionNames
-        TotalResources       = $uniqueResources
-        FindingsBySeverity   = $findingsBySeverity
-        FindingsByCategory   = $findingsByCategory
-        Findings             = $allFindings
-        VMInventory          = $vmInventory
-        ComplianceScores     = $complianceScores
-        Errors               = $errors
-        ToolVersion          = "2.0.0"
+        ScanStartTime           = $scanStart
+        ScanEndTime             = Get-Date
+        TenantId                = $tenantId
+        SubscriptionsScanned    = $subscriptions.Id
+        SubscriptionNames       = $subscriptionNames
+        TotalResources          = $uniqueResources
+        FindingsBySeverity      = $findingsBySeverity
+        FindingsByCategory      = $findingsByCategory
+        Findings                = $allFindings
+        VMInventory             = $vmInventory
+        AdvisorRecommendations  = $advisorRecommendations
+        ComplianceScores        = $complianceScores
+        Errors                  = $errors
+        ToolVersion             = "2.0.0"
     }
     
     # Generate reports - create output folder structure
@@ -552,6 +567,115 @@ function Invoke-AzureSecurityAudit {
         }
     }
     
+    # Collect Azure Advisor Recommendations
+    Write-Host "`n=== Collecting Azure Advisor Recommendations ===" -ForegroundColor Cyan
+    
+    # Check if function exists, if not try to load it directly
+    if (-not (Get-Command -Name Get-AzureAdvisorRecommendations -ErrorAction SilentlyContinue)) {
+        Write-Host "  [WARNING] Get-AzureAdvisorRecommendations function not found, attempting to load directly..." -ForegroundColor Yellow
+        
+        # Try to load the function directly from file
+        $moduleRoot = Split-Path -Parent $PSScriptRoot
+        $collectorPath = Join-Path $moduleRoot "Private\Collectors\Get-AzureAdvisorRecommendations.ps1"
+        
+        Write-Host "  [DEBUG] Module root: $moduleRoot" -ForegroundColor Yellow
+        Write-Host "  [DEBUG] Looking for function at: $collectorPath" -ForegroundColor Yellow
+        
+        if (Test-Path $collectorPath) {
+            Write-Host "  [DEBUG] File found! Loading function..." -ForegroundColor Yellow
+            try {
+                . $collectorPath
+                
+                # Verify it loaded
+                if (Get-Command -Name Get-AzureAdvisorRecommendations -ErrorAction SilentlyContinue) {
+                    Write-Host "  [OK] Function loaded and verified successfully" -ForegroundColor Green
+                } else {
+                    Write-Host "  [ERROR] Function file loaded but function not found in session" -ForegroundColor Red
+                }
+            }
+            catch {
+                Write-Host "  [ERROR] Failed to load function: $_" -ForegroundColor Red
+                Write-Host "  [ERROR] Error details: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        } else {
+            Write-Host "  [ERROR] Function file not found at: $collectorPath" -ForegroundColor Red
+            Write-Host "  [DEBUG] Checking if Collectors directory exists..." -ForegroundColor Yellow
+            $collectorsDir = Join-Path $moduleRoot "Private\Collectors"
+            if (Test-Path $collectorsDir) {
+                Write-Host "  [DEBUG] Collectors directory exists. Files:" -ForegroundColor Yellow
+                Get-ChildItem -Path $collectorsDir -ErrorAction SilentlyContinue | ForEach-Object {
+                    Write-Host "    - $($_.Name)" -ForegroundColor Gray
+                }
+            } else {
+                Write-Host "  [ERROR] Collectors directory does not exist: $collectorsDir" -ForegroundColor Red
+            }
+        }
+    } else {
+        Write-Host "  [OK] Get-AzureAdvisorRecommendations function found" -ForegroundColor Green
+    }
+    
+    # Check again after potential load
+    if (-not (Get-Command -Name Get-AzureAdvisorRecommendations -ErrorAction SilentlyContinue)) {
+        Write-Host "  [ERROR] Get-AzureAdvisorRecommendations function still not available!" -ForegroundColor Red
+        Write-Host "  [ERROR] Make sure the module is properly loaded. Try: Import-Module .\AzureSecurityAudit.psm1 -Force" -ForegroundColor Red
+    }
+    
+    # Check if Az.Advisor module is available
+    if (-not (Get-Module -ListAvailable -Name Az.Advisor)) {
+        Write-Host "  [WARNING] Az.Advisor module is not installed!" -ForegroundColor Yellow
+        Write-Host "  [INFO] Install with: Install-Module -Name Az.Advisor" -ForegroundColor Yellow
+    } else {
+        Write-Host "  [OK] Az.Advisor module is available" -ForegroundColor Green
+    }
+    
+    foreach ($sub in $subscriptions) {
+        $subscriptionNameToUse = if ($sub.Name) { $sub.Name } else { "Subscription-$($sub.Id)" }
+        Write-Host "`n  Collecting from: $subscriptionNameToUse..." -ForegroundColor Gray
+        
+        try {
+            $originalWarningPreference = $WarningPreference
+            $WarningPreference = 'SilentlyContinue'
+            
+            Write-Host "    [DEBUG] Setting subscription context..." -ForegroundColor Yellow
+            Set-AzContext -SubscriptionId $sub.Id -TenantId $tenantId -ErrorAction Stop | Out-Null
+            Write-Host "    [DEBUG] Context set successfully" -ForegroundColor Green
+            
+            # Check if function exists (should be loaded from module)
+            if (-not (Get-Command -Name Get-AzureAdvisorRecommendations -ErrorAction SilentlyContinue)) {
+                Write-Host "    [ERROR] Get-AzureAdvisorRecommendations function not found!" -ForegroundColor Red
+                $WarningPreference = $originalWarningPreference
+                continue
+            }
+            
+            # Run function
+            Write-Host "    [DEBUG] Calling Get-AzureAdvisorRecommendations..." -ForegroundColor Yellow
+            $advisorRecs = Get-AzureAdvisorRecommendations -SubscriptionId $sub.Id -SubscriptionName $subscriptionNameToUse
+            
+            Write-Host "    [DEBUG] Function returned: $($advisorRecs.Count) recommendations" -ForegroundColor $(if ($advisorRecs.Count -gt 0) { 'Green' } else { 'Yellow' })
+            
+            if ($advisorRecs -and $advisorRecs.Count -gt 0) {
+                foreach ($rec in $advisorRecs) {
+                    $advisorRecommendations.Add($rec)
+                }
+                Write-Host "    [SUCCESS] Added $($advisorRecs.Count) recommendations to collection" -ForegroundColor Green
+            } else {
+                Write-Host "    [INFO] No recommendations found (this may be normal if Advisor has no recommendations)" -ForegroundColor Gray
+            }
+            
+            $WarningPreference = $originalWarningPreference
+        }
+        catch {
+            Write-Host "    [ERROR] Failed to get Advisor recommendations: $_" -ForegroundColor Red
+            Write-Host "    [ERROR] Error type: $($_.Exception.GetType().FullName)" -ForegroundColor Red
+            Write-Host "    [ERROR] Error message: $($_.Exception.Message)" -ForegroundColor Red
+            if ($_.ScriptStackTrace) {
+                Write-Host "    [ERROR] Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Gray
+            }
+            $WarningPreference = $originalWarningPreference
+        }
+    }
+    Write-Host "`n  [SUMMARY] Total recommendations collected: $($advisorRecommendations.Count)" -ForegroundColor $(if ($advisorRecommendations.Count -gt 0) { 'Green' } else { 'Yellow' })
+    
     Write-Host "`n=== Generating Reports ===" -ForegroundColor Cyan
     Write-Host "Output folder: $outputFolder" -ForegroundColor Gray
     
@@ -575,10 +699,20 @@ function Invoke-AzureSecurityAudit {
         Write-Warning "Failed to generate VM backup report: $_"
     }
     
+    # Generate Advisor Report
+    $advisorReportPath = Join-Path $outputFolder "advisor.html"
+    try {
+        Export-AdvisorReport -AdvisorRecommendations $advisorRecommendations -OutputPath $advisorReportPath -TenantId $tenantId | Out-Null
+        Write-Host "  Advisor Report: advisor.html" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Failed to generate Advisor report: $_"
+    }
+    
     # Generate Dashboard
     $dashboardPath = Join-Path $outputFolder "index.html"
     try {
-        Export-DashboardReport -AuditResult $result -VMInventory $vmInventory -OutputPath $dashboardPath -TenantId $tenantId | Out-Null
+        Export-DashboardReport -AuditResult $result -VMInventory $vmInventory -AdvisorRecommendations $advisorRecommendations -OutputPath $dashboardPath -TenantId $tenantId | Out-Null
         Write-Host "  Dashboard: index.html" -ForegroundColor Green
     }
     catch {
@@ -613,6 +747,19 @@ function Invoke-AzureSecurityAudit {
         Write-Host "  Total VMs: $($vmInventory.Count)" -ForegroundColor White
         Write-Host "  Protected: $protectedVMs" -ForegroundColor Green
         Write-Host "  Unprotected: $unprotectedVMs" -ForegroundColor $(if ($unprotectedVMs -gt 0) { 'Yellow' } else { 'Green' })
+    }
+    
+    # Advisor summary
+    if ($advisorRecommendations.Count -gt 0) {
+        $advisorHighImpact = @($advisorRecommendations | Where-Object { $_.Impact -eq 'High' }).Count
+        $advisorCostRecs = @($advisorRecommendations | Where-Object { $_.Category -eq 'Cost' })
+        $potentialSavings = ($advisorCostRecs | Where-Object { $_.PotentialSavings } | Measure-Object -Property PotentialSavings -Sum).Sum
+        Write-Host "`nAzure Advisor:" -ForegroundColor Cyan
+        Write-Host "  Recommendations: $($advisorRecommendations.Count)" -ForegroundColor White
+        Write-Host "  High Impact: $advisorHighImpact" -ForegroundColor $(if ($advisorHighImpact -gt 0) { 'Yellow' } else { 'Green' })
+        if ($potentialSavings -and $potentialSavings -gt 0) {
+            Write-Host "  Potential Savings: `$$([math]::Round($potentialSavings, 0))/yr" -ForegroundColor Green
+        }
     }
     
     if ($errors.Count -gt 0) {

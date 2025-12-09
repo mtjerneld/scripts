@@ -410,36 +410,6 @@ function Get-AppServiceFindings {
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
         }
-        
-        # Control: Managed Identity (9.5)
-        $identityControl = $controlLookup["App Service - Managed Identity"]
-        if ($identityControl) {
-            $identityType = if ($app.Identity -and $app.Identity.Type) { $app.Identity.Type } else { "None" }
-            $hasManagedIdentity = ($identityType -ne "None" -and $identityType -ne $null)
-            
-            $identityStatus = if ($hasManagedIdentity) { "PASS" } else { "FAIL" }
-            
-            $remediationCmd = $identityControl.remediationCommand -replace '\{name\}', $app.Name -replace '\{rg\}', $resourceGroupName
-            $finding = New-SecurityFinding `
-                -SubscriptionId $SubscriptionId `
-                -SubscriptionName $SubscriptionName `
-                -ResourceGroup $resourceGroupName `
-                -ResourceType "Microsoft.Web/sites" `
-                -ResourceName $app.Name `
-                -ResourceId $app.Id `
-                -ControlId $identityControl.controlId `
-                -ControlName $identityControl.controlName `
-                -Category $identityControl.category `
-                -Frameworks $identityControl.frameworks `
-                -Severity $identityControl.severity `
-                -CisLevel $identityControl.level `
-                -CurrentValue $identityType `
-                -ExpectedValue $identityControl.expectedValue `
-                -Status $identityStatus `
-                -RemediationSteps $identityControl.businessImpact `
-                -RemediationCommand $remediationCmd
-            $findings.Add($finding)
-        }
     }
     
     if ($skippedCount -gt 0) {

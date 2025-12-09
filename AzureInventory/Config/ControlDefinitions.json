@@ -1,13 +1,13 @@
 {
   "metadata": {
-    "version": "2.1",
-    "cisVersion": "CIS Azure Foundations Benchmark v2.0",
-    "lastUpdated": "2024-12-08",
-    "description": "Control definitions for Azure Security Audit Tool with Level 1/2 distinction and commercial service flags. Supports multiple frameworks (CIS, ASB, etc.)"
+    "version": "3.0",
+    "cisVersion": "CIS Microsoft Azure Foundations Benchmark v4.0.0",
+    "lastUpdated": "2025-01-09",
+    "description": "Control definitions for Azure Security Audit Tool aligned with CIS v4.0.0 L1. Supports multiple frameworks (CIS, ASB, etc.)"
   },
   "controls": [
     {
-      "controlId": "3.15",
+      "controlId": "10.3.7",
       "controlName": "Minimum TLS Version 1.2",
       "category": "Storage",
       "frameworks": ["CIS", "ASB"],
@@ -39,7 +39,7 @@
       "description": "Prevents use of insecure TLS 1.0/1.1 protocols. TLS 1.0/1.1 will be deprecated in February 2026. This control is part of the CIS Microsoft Azure Foundations Benchmark."
     },
     {
-      "controlId": "3.1",
+      "controlId": "10.3.4",
       "controlName": "Secure Transfer Required",
       "category": "Storage",
       "frameworks": ["CIS", "ASB"],
@@ -67,7 +67,7 @@
       "description": "Enforces HTTPS-only traffic to prevent unencrypted data transfer. This control is part of the CIS Microsoft Azure Foundations Benchmark."
     },
     {
-      "controlId": "3.6",
+      "controlId": "10.3.6",
       "controlName": "Soft Delete for Blobs",
       "category": "Storage",
       "frameworks": ["CIS", "ASB"],
@@ -94,7 +94,7 @@
       "description": "Ensure that 'Soft Delete' is enabled for Blob Storage. This allows recovery of deleted blobs and snapshots."
     },
     {
-      "controlId": "3.7",
+      "controlId": "10.3.9",
       "controlName": "Public Blob Access",
       "category": "Storage",
       "frameworks": ["CIS", "ASB"],
@@ -142,7 +142,7 @@
       "description": "Prevents unauthorized public access to blob containers. May break Static Website hosting. This control is part of the CIS Microsoft Azure Foundations Benchmark."
     },
     {
-      "controlId": "3.8",
+      "controlId": "10.3.2.3",
       "controlName": "Default Network Access",
       "category": "Storage",
       "frameworks": ["CIS", "ASB"],
@@ -190,92 +190,6 @@
       "description": "Implements zero-trust network security by denying access by default. Requires explicit VNet/IP whitelist configuration. This control is part of the CIS Microsoft Azure Foundations Benchmark."
     },
     {
-      "controlId": "3.2",
-      "controlName": "Infrastructure Encryption",
-      "category": "Storage",
-      "frameworks": ["CIS"],
-      "priority": "P1",
-      "level": "L2",
-      "severity": "Low",
-      "automated": true,
-      "commercial": false,
-      "propertyPath": "properties.encryption.requireInfrastructureEncryption",
-      "expectedValue": "true",
-      "checkLogic": "value == true",
-      "valueMapping": {
-        "true": "Enabled (Double encryption)",
-        "false": "Disabled (Single encryption)",
-        "null": "Not configured (Single encryption)"
-      },
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts/{name}?api-version=2024-01-01",
-      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query encryption.requireInfrastructureEncryption",
-      "remediationCommand": "Cannot be changed after creation. Must recreate storage account with --require-infrastructure-encryption flag.",
-      "businessImpact": "Level 2 - Required only for critical data. Provides double encryption at the storage service level. Cannot be enabled post-creation.",
-      "cannotRemediate": true,
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/storage/common/infrastructure-encryption-enable",
-        "https://workbench.cisecurity.org/files/3459",
-        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.2]"
-      ],
-      "description": "Level 2 - Required only for critical data. Provides double encryption at the storage service level. Cannot be enabled post-creation. This control is part of the CIS Microsoft Azure Foundations Benchmark."
-    },
-    {
-      "controlId": "3.9",
-      "controlName": "Azure Services Bypass",
-      "category": "Storage",
-      "frameworks": ["CIS"],
-      "priority": "P2",
-      "level": "L2",
-      "severity": "Low",
-      "automated": true,
-      "commercial": false,
-      "propertyPath": "properties.networkAcls.bypass",
-      "expectedValue": "AzureServices",
-      "checkLogic": "value contains 'AzureServices'",
-      "valueMapping": {
-        "AzureServices": "Trusted Azure services can bypass",
-        "None": "No services can bypass"
-      },
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts/{name}?api-version=2024-01-01",
-      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query networkRuleSet.bypass",
-      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --bypass AzureServices",
-      "businessImpact": "Level 2 - Allows trusted Azure services (Azure Backup, Log Analytics, etc.) to bypass network rules when needed.",
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security#trusted-access-based-on-a-managed-identity",
-        "https://workbench.cisecurity.org/files/3459",
-        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.9]"
-      ],
-      "description": "Level 2 - Allows trusted Azure services (Azure Backup, Log Analytics, etc.) to bypass network rules when needed. This control is part of the CIS Microsoft Azure Foundations Benchmark."
-    },
-    {
-      "controlId": "3.12",
-      "controlName": "Customer-Managed Keys (CMK)",
-      "category": "Storage",
-      "frameworks": ["CIS", "ASB"],
-      "priority": "P2",
-      "level": "L2",
-      "severity": "Low",
-      "automated": true,
-      "commercial": false,
-      "propertyPath": "properties.encryption.keySource",
-      "expectedValue": "Microsoft.Keyvault",
-      "checkLogic": "value == 'Microsoft.Keyvault'",
-      "valueMapping": {
-        "Microsoft.Storage": "Microsoft-managed keys (Default)",
-        "Microsoft.Keyvault": "Customer-managed keys (Enhanced control)"
-      },
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts/{name}?api-version=2024-01-01",
-      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query encryption.keySource",
-      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --encryption-key-source Microsoft.Keyvault --encryption-key-vault <keyVaultUri> --encryption-key-name <keyName>",
-      "businessImpact": "Level 2 - Required only for critical data. Provides enhanced control over encryption keys using Azure Key Vault. Requires Key Vault setup and additional management overhead.",
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/storage/common/customer-managed-keys-overview",
-        "https://workbench.cisecurity.org/files/3459",
-        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_3.12]"
-      ],
-      "description": "Level 2 - Required only for critical data. Provides enhanced control over encryption keys using Azure Key Vault. Requires Key Vault setup and additional management overhead. This control is part of the CIS Microsoft Azure Foundations Benchmark."
-    },
-    {
       "controlId": "N/A",
       "controlName": "Storage Account Kind (Legacy Detection)",
       "category": "Storage",
@@ -304,6 +218,142 @@
         "https://azure.microsoft.com/en-us/updates/action-required-switch-to-azure-storage-account-standard-general-purpose-v2-by-13-october-2026/"
       ],
       "description": "Legacy storage account types (GPv1, BlobStorage) are being deprecated October 2026. Upgrade to StorageV2 for full feature support."
+    },
+    {
+      "controlId": "10.1.1",
+      "controlName": "Soft Delete for Azure File Shares",
+      "category": "Storage",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.shareDeleteRetentionPolicy.enabled",
+      "expectedValue": "true",
+      "checkLogic": "value == true",
+      "valueMapping": {
+        "true": "Soft delete enabled",
+        "false": "Soft delete disabled"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts/{accountName}/fileServices/default?api-version=2024-01-01",
+      "cliCommand": "az storage share-rm show --storage-account {accountName} --name {shareName} --query shareDeleteRetentionPolicy.enabled",
+      "remediationCommand": "az storage account file-service-properties update --account-name {accountName} --enable-delete-retention true --delete-retention-days 7",
+      "businessImpact": "Enables soft delete for Azure File Shares to protect against accidental or malicious deletion. Files can be recovered within the retention period.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/files/storage-files-enable-soft-delete",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure soft delete is enabled for Azure File Shares to protect against accidental or malicious deletion. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "10.1.2",
+      "controlName": "SMB Protocol Version 3.1.1 or Higher",
+      "category": "Storage",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.protocolSettings.smb.versions",
+      "expectedValue": "SMB 3.1.1 or higher",
+      "checkLogic": "value contains 'SMB3.1.1' or value contains 'SMB3.1.1'",
+      "valueMapping": {
+        "SMB3.1.1": "SMB 3.1.1 (Secure)",
+        "SMB3.0": "SMB 3.0 (Less secure)",
+        "SMB2.1": "SMB 2.1 (Insecure)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts/{accountName}/fileServices/default?api-version=2024-01-01",
+      "cliCommand": "az storage account file-service-properties show --account-name {accountName} --query protocolSettings.smb.versions",
+      "remediationCommand": "az storage account file-service-properties update --account-name {accountName} --versions SMB3.1.1",
+      "businessImpact": "Ensures Azure File Shares use SMB 3.1.1 or higher protocol for enhanced security features including encryption.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure Azure File Shares use SMB protocol version 3.1.1 or higher for enhanced security features. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "10.1.3",
+      "controlName": "SMB Channel Encryption AES-256-GCM",
+      "category": "Storage",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.protocolSettings.smb.authenticationMethods",
+      "expectedValue": "AES-256-GCM encryption enabled",
+      "checkLogic": "value contains 'AES-256-GCM' or encryption is enabled",
+      "valueMapping": {
+        "AES-256-GCM": "AES-256-GCM encryption enabled",
+        "disabled": "Channel encryption disabled"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts/{accountName}/fileServices/default?api-version=2024-01-01",
+      "cliCommand": "az storage account file-service-properties show --account-name {accountName} --query protocolSettings.smb.authenticationMethods",
+      "remediationCommand": "az storage account file-service-properties update --account-name {accountName} --enable-smb-channel-encryption true",
+      "businessImpact": "Enables AES-256-GCM channel encryption for SMB connections to Azure File Shares, providing end-to-end encryption.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure SMB channel encryption using AES-256-GCM is enabled for Azure File Shares. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "10.3.8",
+      "controlName": "Cross Tenant Replication Disabled",
+      "category": "Storage",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.allowCrossTenantReplication",
+      "expectedValue": "false",
+      "checkLogic": "value == false",
+      "valueMapping": {
+        "true": "Cross tenant replication enabled (Risk)",
+        "false": "Cross tenant replication disabled (Secure)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
+      "cliCommand": "az storage account show --name {name} --resource-group {rg} --query allowCrossTenantReplication",
+      "remediationCommand": "az storage account update --name {name} --resource-group {rg} --allow-cross-tenant-replication false",
+      "businessImpact": "Prevents cross-tenant replication to reduce risk of unauthorized data access across Azure AD tenants.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/storage/common/object-replication-overview",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure cross tenant replication is disabled for storage accounts to prevent unauthorized data access across Azure AD tenants. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "10.3.10",
+      "controlName": "Azure Resource Manager Delete Locks",
+      "category": "Storage",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": false,
+      "commercial": false,
+      "propertyPath": "locks",
+      "expectedValue": "Delete lock exists",
+      "checkLogic": "delete lock exists",
+      "valueMapping": {
+        "exists": "Delete lock configured",
+        "not_exists": "Delete lock not configured"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/{name}/providers/Microsoft.Authorization/locks?api-version=2020-05-01",
+      "cliCommand": "az lock list --resource-group {rg} --resource {resourceId} --resource-type Microsoft.Storage/storageAccounts",
+      "remediationCommand": "az lock create --name DeleteLock --lock-type CanNotDelete --resource-group {rg} --resource {resourceId} --resource-type Microsoft.Storage/storageAccounts",
+      "businessImpact": "Prevents accidental deletion of storage accounts by requiring explicit lock removal before deletion.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure Azure Resource Manager delete locks are configured for storage accounts to prevent accidental deletion. This control is part of the CIS Microsoft Azure Foundations Benchmark."
     },
     {
       "controlId": "4.1.2",
@@ -420,54 +470,7 @@
       "description": "Enforces secure TLS connections for SQL Server. Prevents use of deprecated TLS 1.0/1.1."
     },
     {
-      "controlId": "4.2.1",
-      "controlName": "Microsoft Defender for SQL",
-      "category": "SQL",
-      "frameworks": ["CIS"],
-      "priority": "P1",
-      "level": "L2",
-      "severity": "Medium",
-      "automated": true,
-      "commercial": true,
-      "commercialCost": "$15 USD per server/month",
-      "enabled": false,
-      "propertyPath": "advancedThreatProtectionSettings/Default.properties.state",
-      "expectedValue": "Enabled",
-      "checkLogic": "value == 'Enabled'",
-      "valueMapping": {
-        "Enabled": "Defender for SQL enabled",
-        "Disabled": "Defender for SQL disabled"
-      },
-      "alternatives": [
-        {
-          "name": "Third-party vulnerability scanning",
-          "tools": "Qualys, Nessus, Rapid7",
-          "description": "Use database vulnerability assessment tools"
-        },
-        {
-          "name": "SIEM-based threat detection",
-          "tools": "Splunk, ELK, Azure Sentinel",
-          "description": "Monitor SQL audit logs for anomalies"
-        },
-        {
-          "name": "Database Activity Monitoring",
-          "tools": "Imperva, DataSunrise, McAfee DAM",
-          "description": "Third-party DAM solutions"
-        }
-      ],
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Sql/servers/{serverName}/advancedThreatProtectionSettings/Default?api-version=2023-08-01",
-      "cliCommand": "az sql server advanced-threat-protection-setting show --resource-group {rg} --server {serverName}",
-      "remediationCommand": "az sql server advanced-threat-protection-setting update --resource-group {rg} --server {serverName} --state Enabled",
-      "businessImpact": "Level 2 - COMMERCIAL FEATURE. Provides vulnerability assessment and advanced threat detection. Cost: $15/server/month. Can be replaced with third-party tools.",
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/azure-sql/database/azure-defender-for-sql",
-        "https://workbench.cisecurity.org/files/3459",
-        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_4.2.1]"
-      ],
-      "description": "Level 2 - COMMERCIAL FEATURE. Provides vulnerability assessment and advanced threat detection. Cost: $15/server/month. Can be replaced with third-party tools. This control is part of the CIS Microsoft Azure Foundations Benchmark."
-    },
-    {
-      "controlId": "6.1",
+      "controlId": "8.1",
       "controlName": "No RDP from Internet",
       "category": "Network",
       "frameworks": ["CIS", "ASB"],
@@ -491,7 +494,7 @@
       "description": "Prevents direct RDP access from internet, the #1 attack vector for Windows VMs. Use Azure Bastion or VPN for remote access. This control is part of the CIS Microsoft Azure Foundations Benchmark."
     },
     {
-      "controlId": "6.2",
+      "controlId": "8.2",
       "controlName": "No SSH from Internet",
       "category": "Network",
       "frameworks": ["CIS", "ASB"],
@@ -535,47 +538,6 @@
         "https://learn.microsoft.com/en-us/azure/virtual-network/network-security-groups-overview"
       ],
       "description": "Prevents overly permissive network rules that allow any source to reach any destination. Implements least-privilege network access."
-    },
-    {
-      "controlId": "N/A",
-      "controlName": "DDoS Protection Standard",
-      "category": "Network",
-      "frameworks": ["CIS", "ASB"],
-      "priority": "P1",
-      "level": "L2",
-      "severity": "Low",
-      "automated": true,
-      "commercial": true,
-      "commercialCost": "$2,944 USD per month (fixed) + $0.025 per GB mitigated",
-      "enabled": false,
-      "propertyPath": "properties.enableDdosProtection",
-      "expectedValue": "true",
-      "checkLogic": "value == true",
-      "valueMapping": {
-        "true": "DDoS Protection Standard enabled",
-        "false": "DDoS Protection Standard disabled (Basic is free but limited)"
-      },
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/virtualNetworks?api-version=2024-05-01",
-      "cliCommand": "az network vnet show --name {name} --resource-group {rg} --query enableDdosProtection",
-      "remediationCommand": "az network vnet update --name {name} --resource-group {rg} --ddos-protection true",
-      "businessImpact": "Level 2 - COMMERCIAL FEATURE. DDoS Protection Standard provides enhanced DDoS mitigation capabilities but costs $2,944/month fixed fee plus per-GB charges. Basic DDoS Protection (free) is enabled by default for all Azure resources. Standard is only needed for high-risk applications or compliance requirements.",
-      "alternatives": [
-        {
-          "name": "DDoS Protection Basic",
-          "tools": "Azure built-in (free)",
-          "description": "Free DDoS protection automatically enabled for all Azure resources. Provides basic mitigation."
-        },
-        {
-          "name": "Third-party DDoS protection",
-          "tools": "Cloudflare, Akamai, Imperva",
-          "description": "External DDoS protection services"
-        }
-      ],
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/ddos-protection/ddos-protection-overview",
-        "https://azure.microsoft.com/en-us/pricing/details/ddos-protection/"
-      ],
-      "description": "Level 2 - COMMERCIAL FEATURE. DDoS Protection Standard provides enhanced DDoS mitigation capabilities but costs $2,944/month fixed fee plus per-GB charges. Basic DDoS Protection (free) is enabled by default for all Azure resources. Standard is only needed for high-risk applications or compliance requirements."
     },
     {
       "controlId": "6.6",
@@ -708,48 +670,6 @@
       "description": "Log Analytics Agent (MMA/OMS) was RETIRED August 31, 2024. Must migrate to Azure Monitor Agent immediately."
     },
     {
-      "controlId": "2.1.1",
-      "controlName": "Microsoft Defender for Servers",
-      "category": "VM",
-      "frameworks": ["CIS"],
-      "priority": "P1",
-      "level": "L2",
-      "severity": "Medium",
-      "automated": false,
-      "commercial": true,
-      "commercialCost": "~$15 USD per server/month",
-      "enabled": false,
-      "propertyPath": "Microsoft.Security/pricings/VirtualMachines",
-      "expectedValue": "Standard tier",
-      "checkLogic": "pricingTier == 'Standard'",
-      "valueMapping": {
-        "Standard": "Defender for Servers enabled",
-        "Free": "Defender for Servers disabled"
-      },
-      "alternatives": [
-        {
-          "name": "Third-party EDR",
-          "tools": "CrowdStrike, SentinelOne, Trend Micro, Carbon Black",
-          "description": "Enterprise endpoint protection solutions"
-        },
-        {
-          "name": "Open-source monitoring",
-          "tools": "Wazuh, OSSEC",
-          "description": "Free security monitoring platforms"
-        }
-      ],
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Security/pricings/VirtualMachines?api-version=2024-01-01",
-      "cliCommand": "az security pricing show --name VirtualMachines",
-      "remediationCommand": "az security pricing create --name VirtualMachines --tier Standard",
-      "businessImpact": "Level 2 - COMMERCIAL FEATURE. Provides advanced threat protection for virtual machines. Cost: ~$15/server/month. Can be replaced with third-party EDR.",
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/defender-for-cloud/plan-defender-for-servers",
-        "https://workbench.cisecurity.org/files/3459",
-        "https://www.tenable.com/audits/items/CIS_Microsoft_Azure_Foundations_L1_v1.3.1.audit:[UPDATE_WITH_TENABLE_HASH_FOR_2.1.1]"
-      ],
-      "description": "Level 2 - COMMERCIAL FEATURE. Provides advanced threat protection for virtual machines. Cost: ~$15/server/month. Can be replaced with third-party EDR. This control is part of the CIS Microsoft Azure Foundations Benchmark."
-    },
-    {
       "controlId": "9.3",
       "controlName": "App Service - Minimum TLS 1.2",
       "category": "AppService",
@@ -864,62 +784,6 @@
       "description": "Disables remote debugging in production environments to reduce attack surface. Remote debugging should only be enabled in development/test environments."
     },
     {
-      "controlId": "9.1",
-      "controlName": "App Service - Authentication Enabled",
-      "category": "AppService",
-      "frameworks": ["CIS", "ASB"],
-      "priority": "P1",
-      "level": "L2",
-      "severity": "Medium",
-      "automated": true,
-      "commercial": false,
-      "propertyPath": "properties.siteAuthEnabled",
-      "expectedValue": "true",
-      "checkLogic": "value == true",
-      "valueMapping": {
-        "true": "Authentication enabled (Secure)",
-        "false": "Authentication disabled (Public access)"
-      },
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{name}/config/authsettingsV2?api-version=2024-04-01",
-      "cliCommand": "az webapp auth show --name {name} --resource-group {rg}",
-      "remediationCommand": "az webapp auth update --name {name} --resource-group {rg} --enabled true",
-      "businessImpact": "Level 2 - Enables built-in authentication for the web app. Requires users to authenticate before accessing the application. Consider if the app is intended to be public.",
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/app-service/overview-authentication-authorization",
-        "https://workbench.cisecurity.org/files/3459"
-      ],
-      "description": "Level 2 - Ensure App Service Authentication is enabled. This adds a layer of security by requiring users to authenticate before accessing the web application. Note: This may not be appropriate for public-facing websites."
-    },
-    {
-      "controlId": "9.5",
-      "controlName": "App Service - Managed Identity",
-      "category": "AppService",
-      "frameworks": ["CIS", "ASB"],
-      "priority": "P1",
-      "level": "L1",
-      "severity": "Medium",
-      "automated": true,
-      "commercial": false,
-      "propertyPath": "identity.type",
-      "expectedValue": "SystemAssigned or UserAssigned",
-      "checkLogic": "value in ['SystemAssigned', 'UserAssigned', 'SystemAssigned, UserAssigned']",
-      "valueMapping": {
-        "SystemAssigned": "System-assigned managed identity (Secure)",
-        "UserAssigned": "User-assigned managed identity (Secure)",
-        "SystemAssigned, UserAssigned": "Both identity types (Secure)",
-        "None": "No managed identity (Insecure)"
-      },
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Web/sites?api-version=2024-04-01",
-      "cliCommand": "az webapp identity show --name {name} --resource-group {rg}",
-      "remediationCommand": "az webapp identity assign --name {name} --resource-group {rg}",
-      "businessImpact": "Enables managed identity for secure authentication to Azure services without storing credentials in code. Eliminates the need for connection strings with passwords.",
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity",
-        "https://workbench.cisecurity.org/files/3459"
-      ],
-      "description": "Ensure that Managed Identity is enabled for the App Service. This allows secure authentication to Azure services like Key Vault, Storage, and SQL without managing credentials."
-    },
-    {
       "controlId": "N/A",
       "controlName": "Azure Firewall Threat Intel",
       "category": "Network",
@@ -948,6 +812,87 @@
       "description": "Enables Threat Intelligence mode on Azure Firewall to block or alert on malicious IP addresses and domains from Microsoft threat intelligence feeds."
     },
     {
+      "controlId": "8.3",
+      "controlName": "Network Security Groups Configured",
+      "category": "Network",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": false,
+      "commercial": false,
+      "propertyPath": "networkSecurityGroups",
+      "expectedValue": "NSG configured",
+      "checkLogic": "NSG exists and is associated",
+      "valueMapping": {
+        "configured": "NSG configured",
+        "not_configured": "NSG not configured"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/networkSecurityGroups?api-version=2024-05-01",
+      "cliCommand": "az network nsg list --query [].name",
+      "remediationCommand": "az network nsg create --name {nsgName} --resource-group {rg} --location {location}",
+      "businessImpact": "Ensures Network Security Groups are configured to control network traffic flow and enforce security policies.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/virtual-network/network-security-groups-overview",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure Network Security Groups (NSGs) are configured for subnets and network interfaces to control network traffic flow. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "8.4",
+      "controlName": "Network Security Groups Rules Reviewed",
+      "category": "Network",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": false,
+      "commercial": false,
+      "propertyPath": "networkSecurityGroupRules",
+      "expectedValue": "Rules reviewed and compliant",
+      "checkLogic": "rules reviewed and no overly permissive rules",
+      "valueMapping": {
+        "compliant": "Rules reviewed and compliant",
+        "needs_review": "Rules need review"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/networkSecurityGroups/{nsgName}/securityRules?api-version=2024-05-01",
+      "cliCommand": "az network nsg rule list --nsg-name {nsgName} --resource-group {rg}",
+      "remediationCommand": "Review and update NSG rules to follow least-privilege principles",
+      "businessImpact": "Ensures NSG rules are reviewed regularly to prevent overly permissive access rules that could expose resources to unauthorized access.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/virtual-network/network-security-groups-overview",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure Network Security Group rules are reviewed regularly to ensure they follow least-privilege principles and do not expose resources unnecessarily. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "8.7",
+      "controlName": "Network Security Groups Flow Logs Enabled",
+      "category": "Network",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.enabled",
+      "expectedValue": "true",
+      "checkLogic": "value == true",
+      "valueMapping": {
+        "true": "Flow logs enabled",
+        "false": "Flow logs disabled"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/resourceGroups/{rg}/providers/Microsoft.Network/networkSecurityGroups/{nsgName}/flowLogs?api-version=2024-05-01",
+      "cliCommand": "az network watcher flow-log show --nsg {nsgName} --resource-group {rg}",
+      "remediationCommand": "az network watcher flow-log create --resource-group {rg} --nsg {nsgName} --storage-account {storageAccount} --enabled true",
+      "businessImpact": "Enables NSG flow logs to monitor network traffic patterns, troubleshoot connectivity issues, and detect security anomalies.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/network-watcher/network-watcher-nsg-flow-logging-overview",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure Network Security Group flow logs are enabled to monitor network traffic and detect security anomalies. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
       "controlId": "4.1.4",
       "controlName": "Azure AD Admin Configured",
       "category": "SQL",
@@ -973,60 +918,6 @@
         "https://workbench.cisecurity.org/files/3459"
       ],
       "description": "Ensure that an Azure Active Directory administrator is configured for SQL Servers to enable Azure AD authentication."
-    },
-    {
-      "controlId": "N/A",
-      "controlName": "Azure AD-Only Authentication",
-      "category": "SQL",
-      "frameworks": ["CIS", "ASB"],
-      "priority": "P1",
-      "level": "L2",
-      "severity": "Medium",
-      "automated": true,
-      "commercial": false,
-      "enabled": true,
-      "propertyPath": "properties.azureADOnlyAuthentication",
-      "expectedValue": "true",
-      "checkLogic": "value == true",
-      "valueMapping": {
-        "true": "Azure AD-only authentication enabled",
-        "false": "SQL authentication allowed (Less secure)"
-      },
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Sql/servers/{serverName}?api-version=2023-08-01",
-      "cliCommand": "az sql server ad-only-auth show --resource-group {rg} --name {serverName}",
-      "remediationCommand": "az sql server ad-only-auth enable --resource-group {rg} --name {serverName}",
-      "businessImpact": "Level 2 - Enables Azure AD-only authentication, requiring all database access to use Azure AD authentication. Disables SQL authentication for enhanced security.",
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/azure-sql/database/authentication-azure-ad-only-authentication"
-      ],
-      "description": "Level 2 - Enables Azure AD-only authentication, requiring all database access to use Azure AD authentication. Disables SQL authentication for enhanced security."
-    },
-    {
-      "controlId": "N/A",
-      "controlName": "Antimalware Extension",
-      "category": "VM",
-      "frameworks": ["CIS", "ASB"],
-      "priority": "P1",
-      "level": "L2",
-      "severity": "Medium",
-      "automated": true,
-      "commercial": false,
-      "enabled": true,
-      "propertyPath": "extensions",
-      "expectedValue": "IaaSAntimalware extension installed",
-      "checkLogic": "extension exists where name == 'IaaSAntimalware'",
-      "valueMapping": {
-        "installed": "Antimalware extension installed",
-        "not_installed": "Antimalware extension not installed"
-      },
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Compute/virtualMachines/{vmName}/extensions?api-version=2024-03-01",
-      "cliCommand": "az vm extension list --vm-name {vmName} --resource-group {rg}",
-      "remediationCommand": "az vm extension set --name IaaSAntimalware --publisher Microsoft.Azure.Security --vm-name {vmName} --resource-group {rg}",
-      "businessImpact": "Level 2 - Installs IaaSAntimalware extension for VM protection against malware. Note: Microsoft Defender for Servers (commercial) provides more comprehensive protection.",
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/virtual-machines/extensions/iaas-antimalware-windows"
-      ],
-      "description": "Level 2 - Installs IaaSAntimalware extension for VM protection against malware. Note: Microsoft Defender for Servers (commercial) provides more comprehensive protection."
     },
     {
       "controlId": "N/A",
@@ -1231,8 +1122,35 @@
       ]
     },
     {
-      "controlId": "8.5",
-      "controlName": "Key Vault Purge Protection",
+      "controlId": "7.1.4",
+      "controlName": "Log Analytics Workspace Retention Period",
+      "category": "Monitor",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.retentionInDays",
+      "expectedValue": "90 days or more",
+      "checkLogic": "value >= 90",
+      "valueMapping": {
+        "90+": "Retention period 90+ days",
+        "<90": "Retention period less than 90 days"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.OperationalInsights/workspaces?api-version=2022-10-01",
+      "cliCommand": "az monitor log-analytics workspace show --workspace-name {name} --resource-group {rg} --query retentionInDays",
+      "remediationCommand": "az monitor log-analytics workspace update --workspace-name {name} --resource-group {rg} --retention-time 90",
+      "businessImpact": "Ensures Log Analytics workspaces retain logs for at least 90 days to support security investigations and compliance requirements.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-retention-archive",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure Log Analytics workspace retention period is set to at least 90 days to support security investigations and compliance requirements. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "9.3.5",
+      "controlName": "Key Vault is Recoverable",
       "category": "KeyVault",
       "frameworks": ["CIS", "ASB"],
       "priority": "P0",
@@ -1241,49 +1159,22 @@
       "automated": true,
       "commercial": false,
       "propertyPath": "properties.enablePurgeProtection",
-      "expectedValue": "true",
+      "expectedValue": "true (both Soft Delete and Purge Protection enabled)",
       "checkLogic": "value == true",
       "valueMapping": {
-        "true": "Purge Protection Enabled (Secure)",
-        "false": "Purge Protection Disabled (Insecure)",
-        "null": "Purge Protection Disabled (Insecure)"
+        "true": "Recoverable (Soft Delete + Purge Protection Enabled)",
+        "false": "Not Recoverable (Purge Protection Disabled)",
+        "null": "Not Recoverable (Purge Protection Disabled)"
       },
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.KeyVault/vaults?api-version=2023-07-01",
       "cliCommand": "az keyvault show --name {name} --resource-group {rg} --query properties.enablePurgeProtection",
       "remediationCommand": "az keyvault update --name {name} --resource-group {rg} --enable-purge-protection true",
-      "businessImpact": "Prevents permanent deletion of secret data before retention period expires. Essential for ransomware recovery.",
+      "businessImpact": "Prevents permanent deletion of secret data before retention period expires. Enables recovery of deleted Key Vaults and objects. Essential for ransomware recovery. NOTE: Soft Delete will be mandatory from February 2025.",
       "references": [
         "https://learn.microsoft.com/en-us/azure/key-vault/general/soft-delete-overview#purge-protection",
-        "https://workbench.cisecurity.org/files/3459"
+        "https://workbench.cisecurity.org/benchmarks/19304"
       ],
-      "description": "Ensure that 'Purge Protection' is enabled for Key Vaults. This prevents permanent deletion of keys/secrets/certificates until the retention period has passed."
-    },
-    {
-      "controlId": "8.4",
-      "controlName": "Key Vault Soft Delete",
-      "category": "KeyVault",
-      "frameworks": ["CIS", "ASB"],
-      "priority": "P0",
-      "level": "L1",
-      "severity": "Critical",
-      "automated": true,
-      "commercial": false,
-      "propertyPath": "properties.enableSoftDelete",
-      "expectedValue": "true",
-      "checkLogic": "value == true",
-      "valueMapping": {
-        "true": "Soft Delete Enabled (Secure)",
-        "false": "Soft Delete Disabled (Insecure)"
-      },
-      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.KeyVault/vaults?api-version=2023-07-01",
-      "cliCommand": "az keyvault show --name {name} --resource-group {rg} --query properties.enableSoftDelete",
-      "remediationCommand": "az keyvault update --name {name} --resource-group {rg} --enable-soft-delete true",
-      "businessImpact": "Allows recovery of deleted Key Vaults and objects. Required for Purge Protection.",
-      "references": [
-        "https://learn.microsoft.com/en-us/azure/key-vault/general/soft-delete-overview",
-        "https://workbench.cisecurity.org/files/3459"
-      ],
-      "description": "Ensure that 'Soft Delete' is enabled for Key Vaults. This allows recovery of deleted vaults and objects."
+      "description": "Ensure that Key Vault is Recoverable by enabling both Soft Delete and Purge Protection. This prevents permanent deletion of keys/secrets/certificates and allows recovery of deleted vaults and objects. NOTE: Microsoft will enable soft-delete on all key vaults in February 2025, making it mandatory."
     },
     {
       "controlId": "8.3",
@@ -1407,6 +1298,114 @@
         "https://learn.microsoft.com/en-us/azure/key-vault/keys/about-keys",
         "https://learn.microsoft.com/en-us/security/benchmark/azure/mcsb-data-protection#dp-6-use-a-secure-key-management-process"
       ]
+    },
+    {
+      "controlId": "9.3.1",
+      "controlName": "Expiration Date Set for All Keys in RBAC Key Vaults",
+      "category": "KeyVault",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "keys[].attributes.expires",
+      "expectedValue": "All keys have expiration dates",
+      "checkLogic": "all keys have expiration dates set",
+      "valueMapping": {
+        "all_set": "All keys have expiration dates",
+        "some_missing": "Some keys missing expiration dates"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/resourceGroups/{rg}/providers/Microsoft.KeyVault/vaults/{vaultName}/keys?api-version=2023-07-01",
+      "cliCommand": "az keyvault key list --vault-name {vaultName} --query [].attributes.expires",
+      "remediationCommand": "az keyvault key set-attributes --vault-name {vaultName} --name {keyName} --expires {expirationDate}",
+      "businessImpact": "Ensures all cryptographic keys in RBAC-enabled Key Vaults have expiration dates set to enforce key rotation policies.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/key-vault/keys/about-keys",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure all cryptographic keys in RBAC-enabled Key Vaults have expiration dates set. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "9.3.2",
+      "controlName": "Expiration Date Set for All Keys in Non-RBAC Key Vaults",
+      "category": "KeyVault",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "keys[].attributes.expires",
+      "expectedValue": "All keys have expiration dates",
+      "checkLogic": "all keys have expiration dates set",
+      "valueMapping": {
+        "all_set": "All keys have expiration dates",
+        "some_missing": "Some keys missing expiration dates"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/resourceGroups/{rg}/providers/Microsoft.KeyVault/vaults/{vaultName}/keys?api-version=2023-07-01",
+      "cliCommand": "az keyvault key list --vault-name {vaultName} --query [].attributes.expires",
+      "remediationCommand": "az keyvault key set-attributes --vault-name {vaultName} --name {keyName} --expires {expirationDate}",
+      "businessImpact": "Ensures all cryptographic keys in non-RBAC Key Vaults have expiration dates set to enforce key rotation policies.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/key-vault/keys/about-keys",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure all cryptographic keys in non-RBAC Key Vaults have expiration dates set. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "9.3.3",
+      "controlName": "Expiration Date Set for All Secrets in RBAC Key Vaults",
+      "category": "KeyVault",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "secrets[].attributes.expires",
+      "expectedValue": "All secrets have expiration dates",
+      "checkLogic": "all secrets have expiration dates set",
+      "valueMapping": {
+        "all_set": "All secrets have expiration dates",
+        "some_missing": "Some secrets missing expiration dates"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/resourceGroups/{rg}/providers/Microsoft.KeyVault/vaults/{vaultName}/secrets?api-version=2023-07-01",
+      "cliCommand": "az keyvault secret list --vault-name {vaultName} --query [].attributes.expires",
+      "remediationCommand": "az keyvault secret set-attributes --vault-name {vaultName} --name {secretName} --expires {expirationDate}",
+      "businessImpact": "Ensures all secrets in RBAC-enabled Key Vaults have expiration dates set to enforce secret rotation policies.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/key-vault/secrets/about-secrets",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure all secrets in RBAC-enabled Key Vaults have expiration dates set. This control is part of the CIS Microsoft Azure Foundations Benchmark."
+    },
+    {
+      "controlId": "9.3.4",
+      "controlName": "Expiration Date Set for All Secrets in Non-RBAC Key Vaults",
+      "category": "KeyVault",
+      "frameworks": ["CIS"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "Medium",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "secrets[].attributes.expires",
+      "expectedValue": "All secrets have expiration dates",
+      "checkLogic": "all secrets have expiration dates set",
+      "valueMapping": {
+        "all_set": "All secrets have expiration dates",
+        "some_missing": "Some secrets missing expiration dates"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/resourceGroups/{rg}/providers/Microsoft.KeyVault/vaults/{vaultName}/secrets?api-version=2023-07-01",
+      "cliCommand": "az keyvault secret list --vault-name {vaultName} --query [].attributes.expires",
+      "remediationCommand": "az keyvault secret set-attributes --vault-name {vaultName} --name {secretName} --expires {expirationDate}",
+      "businessImpact": "Ensures all secrets in non-RBAC Key Vaults have expiration dates set to enforce secret rotation policies.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/key-vault/secrets/about-secrets",
+        "https://workbench.cisecurity.org/files/3459"
+      ],
+      "description": "Ensure all secrets in non-RBAC Key Vaults have expiration dates set. This control is part of the CIS Microsoft Azure Foundations Benchmark."
     },
     {
       "controlId": "LT-1",

@@ -3,14 +3,17 @@
     Generates an HTML dashboard summarizing all audit reports.
 
 .DESCRIPTION
-    Creates an interactive HTML dashboard with key metrics from security audit
-    and VM backup reports, with navigation to detailed reports.
+    Creates an interactive HTML dashboard with key metrics from security audit,
+    VM backup, and Azure Advisor reports, with navigation to detailed reports.
 
 .PARAMETER AuditResult
     The audit result object from Invoke-AzureSecurityAudit.
 
 .PARAMETER VMInventory
     Array of VM inventory objects from Get-VirtualMachineFindings.
+
+.PARAMETER AdvisorRecommendations
+    Array of Azure Advisor recommendation objects.
 
 .PARAMETER OutputPath
     Path for the HTML report output.
@@ -31,6 +34,10 @@ function Export-DashboardReport {
         [AllowEmptyCollection()]
         [System.Collections.Generic.List[PSObject]]$VMInventory,
         
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[PSObject]]$AdvisorRecommendations = $null,
+        
         [Parameter(Mandatory = $true)]
         [string]$OutputPath,
         
@@ -43,12 +50,23 @@ function Export-DashboardReport {
     $findings = $AuditResult.Findings
     $failedFindings = @($findings | Where-Object { $_.Status -eq 'FAIL' })
     $passedFindings = @($findings | Where-Object { $_.Status -eq 'PASS' })
-    $totalChecks = $findings.Count
+    
+    # Use the same compliance score calculation as Security Report (weighted scoring)
+    if ($AuditResult.ComplianceScores) {
+        $securityScore = [math]::Round($AuditResult.ComplianceScores.OverallScore, 1)
+        $totalChecks = $AuditResult.ComplianceScores.TotalChecks
+        $passedChecks = $AuditResult.ComplianceScores.PassedChecks
+    } else {
+        # Fallback to simple calculation if ComplianceScores not available
+        $totalChecks = $findings.Count
+        $securityScore = if ($totalChecks -gt 0) { [math]::Round(($passedFindings.Count / $totalChecks) * 100, 1) } else { 0 }
+        $passedChecks = $passedFindings.Count
+    }
+    
     $criticalCount = @($failedFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
     $highCount = @($failedFindings | Where-Object { $_.Severity -eq 'High' }).Count
     $mediumCount = @($failedFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
     $lowCount = @($failedFindings | Where-Object { $_.Severity -eq 'Low' }).Count
-    $securityScore = if ($totalChecks -gt 0) { [math]::Round(($passedFindings.Count / $totalChecks) * 100, 1) } else { 0 }
     
     # VM Backup metrics
     $totalVMs = $VMInventory.Count
@@ -63,6 +81,50 @@ function Export-DashboardReport {
     $pastDueCount = @($eolFindings | Where-Object { 
         try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
     }).Count
+    
+    # Advisor metrics
+    $advisorCount = 0
+    $advisorHighCount = 0
+    $advisorSavings = 0
+    $advisorCurrency = "USD"
+    if ($AdvisorRecommendations -and $AdvisorRecommendations.Count -gt 0) {
+        $advisorCount = $AdvisorRecommendations.Count
+        $advisorHighCount = @($AdvisorRecommendations | Where-Object { $_.Impact -eq 'High' }).Count
+        
+        # Group Cost recommendations to avoid double-counting duplicates
+        $costRecsRaw = @($AdvisorRecommendations | Where-Object { $_.Category -eq 'Cost' })
+        if ($costRecsRaw.Count -gt 0) {
+            $groupedCostRecs = $costRecsRaw | Group-Object -Property @{
+                Expression = {
+                    $typeId = if ($_.RecommendationType) { $_.RecommendationType } else { "Unknown" }
+                    $resId = if ($_.ResourceId) { $_.ResourceId } else { "Unknown" }
+                    "$typeId|$resId"
+                }
+            } | ForEach-Object {
+                $group = $_.Group
+                if ($group.Count -gt 1) {
+                    # Sum savings for duplicates
+                    $totalSavings = ($group | Where-Object { $_.PotentialSavings } | Measure-Object -Property PotentialSavings -Sum).Sum
+                    $currency = ($group | Where-Object { $_.SavingsCurrency } | Select-Object -First 1).SavingsCurrency
+                    if (-not $currency) { $currency = "USD" }
+                    
+                    $firstRec = $group[0]
+                    $firstRec.PotentialSavings = $totalSavings
+                    $firstRec.SavingsCurrency = $currency
+                    $firstRec
+                } else {
+                    $group[0]
+                }
+            }
+            
+            $costRecs = @($groupedCostRecs | Where-Object { $_.PotentialSavings })
+            if ($costRecs.Count -gt 0) {
+                $advisorSavings = ($costRecs | Measure-Object -Property PotentialSavings -Sum).Sum
+                $advisorCurrency = ($costRecs | Where-Object { $_.SavingsCurrency } | Select-Object -First 1).SavingsCurrency
+                if (-not $advisorCurrency) { $advisorCurrency = "USD" }
+            }
+        }
+    }
     
     # Subscription count
     $subscriptionCount = ($AuditResult.SubscriptionsScanned | Measure-Object).Count
@@ -428,6 +490,7 @@ function Export-DashboardReport {
         <a href="index.html" class="nav-link active">Dashboard</a>
         <a href="security.html" class="nav-link">Security Audit</a>
         <a href="vm-backup.html" class="nav-link">VM Backup</a>
+        <a href="advisor.html" class="nav-link">Advisor</a>
     </nav>
     
     <div class="container">
@@ -450,12 +513,12 @@ function Export-DashboardReport {
                 <div class="label">Deprecated Components</div>
             </div>
             <div class="quick-stat">
-                <div class="value">$totalChecks</div>
-                <div class="label">Security Checks</div>
-            </div>
-            <div class="quick-stat">
                 <div class="value">$($failedFindings.Count)</div>
-                <div class="label">Issues Found</div>
+                <div class="label">Security Issues</div>
+            </div>
+            <div class="quick-stat" style="$(if ($advisorHighCount -gt 0) { 'border-color: var(--accent-yellow);' })">
+                <div class="value" style="$(if ($advisorHighCount -gt 0) { 'color: var(--accent-yellow);' })">$advisorCount</div>
+                <div class="label">Advisor Recommendations</div>
             </div>
         </div>
         
@@ -490,7 +553,7 @@ function Export-DashboardReport {
                     </div>
                     <div class="metric-row">
                         <span class="metric-label">Passed Checks</span>
-                        <span class="metric-value green">$($passedFindings.Count)</span>
+                        <span class="metric-value green">$passedChecks</span>
                     </div>
                 </div>
             </div>
@@ -525,6 +588,29 @@ function Export-DashboardReport {
                     </div>
                 </div>
             </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Azure Advisor</span>
+                    <a href="advisor.html" class="card-link">View Details &rarr;</a>
+                </div>
+                <div class="card-body">
+                    <div class="score-display">
+                        <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, var(--bg-surface), var(--bg-hover));">
+                            <span class="score-value" style="color: var(--accent-yellow); font-size: 2rem;">$advisorCount</span>
+                            <span class="score-label">Recommendations</span>
+                        </div>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">High Impact</span>
+                        <span class="metric-value red">$advisorHighCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Potential Savings</span>
+                        <span class="metric-value green">$($advisorCurrency)$([math]::Round($advisorSavings, 0))/yr</span>
+                    </div>
+                </div>
+            </div>
         </div>
         
         <h2 style="margin-bottom: 20px; font-size: 1.3rem;">Detailed Reports</h2>
@@ -541,6 +627,13 @@ function Export-DashboardReport {
                 <div class="report-info">
                     <h3>VM Backup Overview</h3>
                     <p>$totalVMs VMs | $protectedVMs protected | $unprotectedVMs unprotected</p>
+                </div>
+            </a>
+            <a href="advisor.html" class="report-link">
+                <div class="report-icon advisor" style="background: rgba(254, 202, 87, 0.15); color: var(--accent-yellow);">&loz;</div>
+                <div class="report-info">
+                    <h3>Azure Advisor</h3>
+                    <p>$advisorCount recommendations | $advisorHighCount high impact</p>
                 </div>
             </a>
         </div>

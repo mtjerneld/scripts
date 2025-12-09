@@ -45,7 +45,17 @@ function Export-SecurityReport {
     # Prepare data
     $findings = $AuditResult.Findings
     $failedFindings = $findings | Where-Object { $_.Status -eq 'FAIL' }
-    $eolFindings = $findings | Where-Object { $_.EOLDate -and $_.Status -eq 'FAIL' }
+    # Include all findings with EOLDate, regardless of status (deprecated components should be shown even if currently compliant)
+    $eolFindings = $findings | Where-Object { 
+        $eolDate = $_.EOLDate
+        $eolDate -and -not [string]::IsNullOrWhiteSpace($eolDate) -and $eolDate -ne "N/A"
+    }
+    
+    # Debug: Log EOL findings count
+    Write-Verbose "EOL Findings count: $($eolFindings.Count)"
+    if ($eolFindings.Count -gt 0) {
+        Write-Verbose "EOL Findings sample: $($eolFindings[0] | ConvertTo-Json -Depth 2)"
+    }
     
     # Create output directory if needed
     $outputDir = Split-Path -Parent $OutputPath
@@ -946,6 +956,7 @@ h2 {
         <a href="index.html" class="nav-link">Dashboard</a>
         <a href="security.html" class="nav-link active">Security Audit</a>
         <a href="vm-backup.html" class="nav-link">VM Backup</a>
+        <a href="advisor.html" class="nav-link">Advisor</a>
     </nav>
     
     <div class="container">
@@ -1008,7 +1019,7 @@ h2 {
                 <div class="score-card l1-score">
                     <div class="score-label">Level 1 (L1)</div>
                     <div class="score-value">$l1Score%</div>
-                    <div class="score-details">Mandatory controls</div>
+                    <div class="score-details">CIS v4.0.0 Mandatory controls</div>
                 </div>
 "@
             if ($null -ne $l2Score) {
@@ -1054,15 +1065,17 @@ h2 {
         # EOL/Deprecated Components Alert
         if ($eolFindings.Count -gt 0) {
             $eolCount = $eolFindings.Count
-            $pastDueCount = ($eolFindings | Where-Object { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) }).Count
+            $pastDueCount = ($eolFindings | Where-Object { 
+                try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
+            }).Count
             $upcomingCount = $eolCount - $pastDueCount
             
             $html += @"
         <h2>Deprecated Components Requiring Action</h2>
-        <div class="subscription-box" style="border-color: var(--danger);">
-            <div class="subscription-header collapsed" data-subscription-id="deprecated-components" style="cursor: pointer; background-color: rgba(255, 107, 107, 0.1);">
+        <div class="subscription-box" id="deprecated-components-box" data-always-visible="true" style="border-color: var(--danger); display: block !important; visibility: visible !important;">
+            <div class="subscription-header collapsed" data-subscription-id="deprecated-components" style="cursor: pointer; background-color: rgba(255, 107, 107, 0.1); display: flex !important;">
                 <span class="expand-icon"></span>
-                <h3 style="color: var(--danger);">Deprecated Components Found ($eolCount items)</h3>
+                <h3 style="color: var(--danger); margin: 0;">Deprecated Components Found ($eolCount items)</h3>
                 <span class="header-severity-summary">
                     <span class="severity-count critical">$pastDueCount Past Due</span>
                     <span class="severity-count medium">$upcomingCount Upcoming</span>
@@ -1121,7 +1134,8 @@ h2 {
         
         # Calculate total items for result count (resources + controls)
         $totalResources = ($failedFindings | Group-Object -Property @{Expression={$_.ResourceName + '|' + $_.ResourceGroup}}).Count
-        $totalControls = ($failedFindings | Group-Object -Property @{Expression={$_.Category + '|' + $_.ControlId}}).Count
+        # Include ControlName to differentiate controls with same ControlId (e.g., "N/A")
+        $totalControls = ($failedFindings | Group-Object -Property @{Expression={$_.Category + '|' + $_.ControlId + '|' + $_.ControlName}}).Count
         $totalItems = $totalResources + $totalControls
         
         # Filters Section
@@ -1199,8 +1213,9 @@ h2 {
         }
         
         # Category & Control Table
-        # Group findings by Category + Control ID (only controls with failures)
-        $controlGroups = $failedFindings | Group-Object -Property @{Expression={$_.Category + '|' + $_.ControlId}} | Sort-Object Name
+        # Group findings by Category + Control ID + Control Name (only controls with failures)
+        # Use ControlName to differentiate controls with same ControlId (e.g., "N/A")
+        $controlGroups = $failedFindings | Group-Object -Property @{Expression={$_.Category + '|' + $_.ControlId + '|' + $_.ControlName}} | Sort-Object Name
         
         if ($controlGroups.Count -gt 0) {
             $html += @"
@@ -1307,7 +1322,8 @@ h2 {
                 $category = $firstFinding.Category
                 $controlId = $firstFinding.ControlId
                 $controlName = $firstFinding.ControlName
-                $controlKey = "$category|$controlId"
+                # Include ControlName in controlKey to differentiate controls with same ControlId
+                $controlKey = "$category|$controlId|$controlName"
                 $controlFrameworks = if ($firstFinding.Frameworks) { $firstFinding.Frameworks -join " " } else { "CIS" }
                 $controlFrameworksLower = $controlFrameworks.ToLower()
                 
@@ -1850,6 +1866,18 @@ h2 {
                     
                     // Filter subscription boxes (Failed Controls by Subscription)
                     subscriptionBoxes.forEach(box => {
+                        // Always show deprecated-components box (special section) - check multiple ways
+                        const deprecatedHeader = box.querySelector('[data-subscription-id="deprecated-components"]');
+                        const isDeprecatedBox = deprecatedHeader !== null || 
+                                               box.hasAttribute('data-always-visible') ||
+                                               box.id === 'deprecated-components';
+                        if (isDeprecatedBox) {
+                            box.style.display = 'block';
+                            box.style.visibility = 'visible';
+                            box.style.opacity = '1';
+                            return;
+                        }
+                        
                         const boxSubscription = box.getAttribute('data-subscription-lower') || '';
                         const searchableText = box.getAttribute('data-searchable') || '';
                         
@@ -1867,75 +1895,58 @@ h2 {
                             const rowCategory = row.getAttribute('data-category-lower') || '';
                             const rowSearchable = row.getAttribute('data-searchable') || '';
                             
-                            // Check if ANY control inside this resource matches the severity/framework filter
-                            let hasMatchingSeverityControl = false;
-                            let hasMatchingCategoryControl = false;
-                            let hasMatchingFrameworkControl = false;
-                            
+                            // Filter control-detail-row elements inside this resource's detail row FIRST
+                            let visibleControlCount = 0;
                             if (resourceKey) {
                                 const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
                                 if (detailRow) {
                                     const controlDetailRows = detailRow.querySelectorAll('.control-detail-row');
+                                    
                                     controlDetailRows.forEach(controlRow => {
                                         const controlSeverity = controlRow.getAttribute('data-severity-lower') || '';
                                         const controlCategory = controlRow.getAttribute('data-category-lower') || '';
                                         const controlFrameworks = controlRow.getAttribute('data-frameworks') || '';
+                                        const controlSearchable = controlRow.getAttribute('data-searchable') || '';
                                         
-                                        if (selectedSeverity === 'all' || controlSeverity === selectedSeverity) {
-                                            hasMatchingSeverityControl = true;
-                                        }
-                                        if (selectedCategory === 'all' || controlCategory === selectedCategory) {
-                                            hasMatchingCategoryControl = true;
-                                        }
-                                        if (selectedFramework === 'all' || controlFrameworks.includes(selectedFramework)) {
-                                            hasMatchingFrameworkControl = true;
+                                        const controlSeverityMatch = selectedSeverity === 'all' || controlSeverity === selectedSeverity;
+                                        const controlCategoryMatch = selectedCategory === 'all' || controlCategory === selectedCategory;
+                                        const controlFrameworkMatch = selectedFramework === 'all' || controlFrameworks.includes(selectedFramework);
+                                        const controlSearchMatch = searchText === '' || controlSearchable.includes(searchText);
+                                        
+                                        if (controlSeverityMatch && controlCategoryMatch && controlFrameworkMatch && controlSearchMatch) {
+                                            controlRow.classList.remove('hidden');
+                                            visibleControlCount++;
+                                        } else {
+                                            controlRow.classList.add('hidden');
+                                            // Hide associated remediation row
+                                            const controlDetailKey = controlRow.getAttribute('data-control-detail-key');
+                                            if (controlDetailKey) {
+                                                const remediationRow = document.querySelector('.remediation-row[data-parent-control-detail-key="' + controlDetailKey + '"]');
+                                                if (remediationRow) {
+                                                    remediationRow.classList.add('hidden');
+                                                }
+                                            }
                                         }
                                     });
+                                    
+                                    // Hide detail row if no controls are visible
+                                    if (visibleControlCount === 0) {
+                                        detailRow.classList.add('hidden');
+                                    } else {
+                                        detailRow.classList.remove('hidden');
+                                    }
                                 }
                             }
                             
+                            // Only show resource row if it has visible controls AND matches search
                             const rowSearchMatch = searchText === '' || rowSearchable.includes(searchText);
-                            const rowShouldShow = hasMatchingSeverityControl && hasMatchingCategoryControl && hasMatchingFrameworkControl && rowSearchMatch;
+                            const rowShouldShow = visibleControlCount > 0 && rowSearchMatch;
                             
                             if (rowShouldShow) {
                                 hasMatchingResource = true;
                                 row.classList.remove('hidden');
                                 visibleResourceCount++;
                                 visibleCount++;
-                                
-                                // Filter control-detail-row elements inside this resource's detail row
-                                if (resourceKey) {
-                                    const detailRow = document.querySelector('.resource-detail-row[data-resource-key="' + resourceKey + '"]');
-                                    if (detailRow) {
-                                        const controlDetailRows = detailRow.querySelectorAll('.control-detail-row');
-                                        
-                                        controlDetailRows.forEach(controlRow => {
-                                            const controlSeverity = controlRow.getAttribute('data-severity-lower') || '';
-                                            const controlCategory = controlRow.getAttribute('data-category-lower') || '';
-                                            const controlFrameworks = controlRow.getAttribute('data-frameworks') || '';
-                                            const controlSearchable = controlRow.getAttribute('data-searchable') || '';
-                                            
-                                            const controlSeverityMatch = selectedSeverity === 'all' || controlSeverity === selectedSeverity;
-                                            const controlCategoryMatch = selectedCategory === 'all' || controlCategory === selectedCategory;
-                                            const controlFrameworkMatch = selectedFramework === 'all' || controlFrameworks.includes(selectedFramework);
-                                            const controlSearchMatch = searchText === '' || controlSearchable.includes(searchText);
-                                            
-                                            if (controlSeverityMatch && controlCategoryMatch && controlFrameworkMatch && controlSearchMatch) {
-                                                controlRow.classList.remove('hidden');
-                                            } else {
-                                                controlRow.classList.add('hidden');
-                                                // Hide associated remediation row
-                                                const controlDetailKey = controlRow.getAttribute('data-control-detail-key');
-                                                if (controlDetailKey) {
-                                                    const remediationRow = document.querySelector('.remediation-row[data-parent-control-detail-key="' + controlDetailKey + '"]');
-                                                    if (remediationRow) {
-                                                        remediationRow.classList.add('hidden');
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    }
-                                }
                             } else {
                                 row.classList.add('hidden');
                                 row.classList.remove('expanded');
@@ -2107,12 +2118,31 @@ h2 {
                         const subscriptionId = this.getAttribute('data-subscription-id');
                         const content = document.getElementById(subscriptionId);
                         if (content) {
-                            const isHidden = content.style.display === 'none';
+                            const isHidden = content.style.display === 'none' || content.style.display === '';
                             content.style.display = isHidden ? 'block' : 'none';
                             this.classList.toggle('collapsed', !isHidden);
                         }
                     });
                 });
+                
+                // Ensure deprecated-components header is always clickable and visible
+                const deprecatedHeader = document.querySelector('[data-subscription-id="deprecated-components"]');
+                if (deprecatedHeader) {
+                    deprecatedHeader.style.display = 'flex';
+                    deprecatedHeader.style.cursor = 'pointer';
+                    const deprecatedBox = deprecatedHeader.closest('.subscription-box');
+                    if (deprecatedBox) {
+                        deprecatedBox.style.display = 'block';
+                        deprecatedBox.style.visibility = 'visible';
+                        deprecatedBox.style.opacity = '1';
+                    }
+                }
+                
+                // Also ensure deprecated-components box is excluded from filter hiding
+                const deprecatedBoxElement = document.querySelector('.subscription-box [data-subscription-id="deprecated-components"]')?.closest('.subscription-box');
+                if (deprecatedBoxElement) {
+                    deprecatedBoxElement.setAttribute('data-always-visible', 'true');
+                }
                 
                 // Category expand/collapse handlers
                 const categoryHeaders = document.querySelectorAll('.category-header');

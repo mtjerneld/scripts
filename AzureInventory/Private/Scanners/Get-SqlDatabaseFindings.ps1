@@ -90,30 +90,65 @@ function Get-SqlDatabaseFindings {
         }
         
         # Control 4.1.2: SQL Firewall - No Allow All
+        # This control checks for:
+        # 1. Allow-all internet rule (0.0.0.0-255.255.255.255) - Critical risk
+        # 2. Allow Azure Services rule (0.0.0.0-0.0.0.0) - Medium risk (still a security concern)
         $firewallControl = $controlLookup["SQL Firewall - No Allow All"]
         if ($firewallControl) {
             try {
                 $firewallRules = Invoke-AzureApiWithRetry {
                     Get-AzSqlServerFirewallRule -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction SilentlyContinue
                 }
-                $allowAllRule = $false
+                $allowAllInternet = $false
+                $allowAzureServices = $false
+                $problematicRuleName = $null
+                
                 if ($firewallRules) {
                     foreach ($rule in $firewallRules) {
-                        if (($rule.StartIpAddress -eq "0.0.0.0" -and $rule.EndIpAddress -eq "0.0.0.0") -or
-                            ($rule.StartIpAddress -eq "0.0.0.0" -and $rule.EndIpAddress -eq "255.255.255.255")) {
-                            $allowAllRule = $true
+                        # Check for Allow-all internet (0.0.0.0-255.255.255.255)
+                        if ($rule.StartIpAddress -eq "0.0.0.0" -and $rule.EndIpAddress -eq "255.255.255.255") {
+                            $allowAllInternet = $true
+                            $problematicRuleName = $rule.FirewallRuleName
                             break
                         }
+                        # Check for Allow Azure Services (0.0.0.0-0.0.0.0)
+                        # This is also a security risk as it allows all Azure services to access the server
+                        elseif ($rule.StartIpAddress -eq "0.0.0.0" -and $rule.EndIpAddress -eq "0.0.0.0") {
+                            $allowAzureServices = $true
+                            if (-not $problematicRuleName) {
+                                $problematicRuleName = $rule.FirewallRuleName
+                            }
+                        }
                     }
+                }
+                
+                $allowAllRule = $allowAllInternet -or $allowAzureServices
+                
+                # Build descriptive current value
+                $currentValue = if ($allowAllInternet) {
+                    "Allow-all internet rule present (0.0.0.0-255.255.255.255) - Critical risk"
+                } elseif ($allowAzureServices) {
+                    "Allow Azure Services rule present (0.0.0.0-0.0.0.0) - Security risk"
+                } else {
+                    "No allow-all rules found"
                 }
             }
             catch {
                 $allowAllRule = $false
+                $currentValue = "Unable to check firewall rules"
+                $problematicRuleName = $null
             }
             
             $firewallStatus = if (-not $allowAllRule) { "PASS" } else { "FAIL" }
             
-            $remediationCmd = $firewallControl.remediationCommand -replace '\{serverName\}', $server.ServerName -replace '\{rg\}', $server.ResourceGroupName -replace '\{ruleName\}', '<rule-name>'
+            # Update remediation command with actual rule name if found
+            $remediationCmd = $firewallControl.remediationCommand -replace '\{serverName\}', $server.ServerName -replace '\{rg\}', $server.ResourceGroupName
+            if ($problematicRuleName) {
+                $remediationCmd = $remediationCmd -replace '\{ruleName\}', $problematicRuleName
+            } else {
+                $remediationCmd = $remediationCmd -replace '\{ruleName\}', '<rule-name>'
+            }
+            
             $finding = New-SecurityFinding `
                 -SubscriptionId $SubscriptionId `
                 -SubscriptionName $SubscriptionName `
@@ -127,7 +162,7 @@ function Get-SqlDatabaseFindings {
                 -Frameworks $firewallControl.frameworks `
                 -Severity $firewallControl.severity `
                 -CisLevel $firewallControl.level `
-                -CurrentValue $(if ($allowAllRule) { "Allow-all rule present" } else { "No allow-all rule" }) `
+                -CurrentValue $currentValue `
                 -ExpectedValue $firewallControl.expectedValue `
                 -Status $firewallStatus `
                 -RemediationSteps $firewallControl.businessImpact `

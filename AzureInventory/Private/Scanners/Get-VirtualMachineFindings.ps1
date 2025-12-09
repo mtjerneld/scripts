@@ -169,6 +169,58 @@ function Get-VirtualMachineFindings {
         
         Write-Verbose "VM $($vm.Name): PowerState=$powerState (raw: $($vm.PowerState))"
         
+        # Detect OS type with multiple fallback methods (important for deallocated VMs)
+        $osType = "Unknown"
+        
+        # Method 1: Check OSProfile (works when VM is running)
+        if ($vm.OSProfile) {
+            if ($vm.OSProfile.WindowsConfiguration) {
+                $osType = "Windows"
+            }
+            elseif ($vm.OSProfile.LinuxConfiguration) {
+                $osType = "Linux"
+            }
+        }
+        
+        # Method 2: Check StorageProfile.OsDisk.OsType (available even when deallocated)
+        if ($osType -eq "Unknown" -and $vm.StorageProfile -and $vm.StorageProfile.OsDisk -and $vm.StorageProfile.OsDisk.OsType) {
+            $osType = $vm.StorageProfile.OsDisk.OsType
+        }
+        
+        # Method 3: Check ImageReference (can indicate OS type from image publisher/offer)
+        if ($osType -eq "Unknown" -and $vm.StorageProfile -and $vm.StorageProfile.ImageReference) {
+            $imageRef = $vm.StorageProfile.ImageReference
+            $publisher = if ($imageRef.Publisher) { $imageRef.Publisher.ToLower() } else { "" }
+            $offer = if ($imageRef.Offer) { $imageRef.Offer.ToLower() } else { "" }
+            
+            # Common Windows publishers/offers
+            if ($publisher -match 'microsoft' -and ($offer -match 'windows' -or $offer -match 'sql' -or $offer -match 'visual-studio')) {
+                $osType = "Windows"
+            }
+            # Common Linux publishers/offers
+            elseif ($publisher -match 'canonical' -or $publisher -match 'redhat' -or $publisher -match 'suse' -or 
+                    $publisher -match 'debian' -or $publisher -match 'oracle' -or $publisher -match 'openlogic' -or
+                    $offer -match 'ubuntu' -or $offer -match 'rhel' -or $offer -match 'sles' -or $offer -match 'debian' -or $offer -match 'centos') {
+                $osType = "Linux"
+            }
+        }
+        
+        # Method 4: Check OsDisk.Image (if VM was created from image)
+        if ($osType -eq "Unknown" -and $vm.StorageProfile -and $vm.StorageProfile.OsDisk -and $vm.StorageProfile.OsDisk.Image) {
+            $imageUri = $vm.StorageProfile.OsDisk.Image.Uri
+            if ($imageUri) {
+                # Check if image URI contains Windows or Linux indicators
+                if ($imageUri -match 'windows|win|microsoft') {
+                    $osType = "Windows"
+                }
+                elseif ($imageUri -match 'linux|ubuntu|rhel|sles|debian|centos') {
+                    $osType = "Linux"
+                }
+            }
+        }
+        
+        Write-Verbose "VM $($vm.Name): OsType=$osType (PowerState=$powerState)"
+        
         # Get backup info for this VM
         $resourceIdLower = $resourceId.ToLower()
         $backupInfo = $backupProtectedVMs[$resourceIdLower]
@@ -183,7 +235,7 @@ function Get-VirtualMachineFindings {
             ResourceId         = $resourceId
             Location           = $vm.Location
             VMSize             = $vm.HardwareProfile.VmSize
-            OsType             = $vm.StorageProfile.OsDisk.OsType
+            OsType             = $osType
             PowerState         = $powerState
             ProvisioningState  = $provisioningState
             BackupEnabled      = $backupEnabled
@@ -250,6 +302,9 @@ function Get-VirtualMachineFindings {
             
             $legacyStatus = if ($legacyMmaPresent) { "FAIL" } else { "PASS" }
             $remediationCmd = if ($legacyMmaPresent) { $legacyMmaControl.remediationCommand -replace '\{vmName\}', $vm.Name -replace '\{rg\}', $vm.ResourceGroupName } else { "" }
+            # Only set EOLDate if legacy agent is actually present (FAIL status)
+            # This ensures deprecated-components table only shows VMs that actually have the deprecated agent
+            $eolDate = if ($legacyMmaPresent) { $legacyMmaControl.eolDate } else { $null }
             $finding = New-SecurityFinding `
                 -SubscriptionId $SubscriptionId `
                 -SubscriptionName $SubscriptionName `
@@ -268,7 +323,7 @@ function Get-VirtualMachineFindings {
                 -Status $legacyStatus `
                 -RemediationSteps $legacyMmaControl.businessImpact `
                 -RemediationCommand $remediationCmd `
-                -EOLDate $legacyMmaControl.eolDate
+                -EOLDate $eolDate
             $findings.Add($finding)
         }
         
