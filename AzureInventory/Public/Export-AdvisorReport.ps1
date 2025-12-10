@@ -170,13 +170,19 @@ function Format-ExtendedPropertiesDetails {
         $term = Get-DictionaryValue -Dict $ExtendedProps -Key "term"
         $scope = Get-DictionaryValue -Dict $ExtendedProps -Key "scope"
         $lookback = Get-DictionaryValue -Dict $ExtendedProps -Key "lookbackPeriod"
-        $qty = Get-DictionaryValue -Dict $ExtendedProps -Key "recommendedQuantity"
+        $qty = Get-DictionaryValue -Dict $ExtendedProps -Key "targetResourceCount"
+        if (-not $qty) { $qty = Get-DictionaryValue -Dict $ExtendedProps -Key "recommendedQuantity" }
         $vmSize = Get-DictionaryValue -Dict $ExtendedProps -Key "vmSize"
         
-        if ($term) { $details.Add("Term: $term") }
+        if ($term) { 
+            $termDisplay = if ($term -eq 'P1Y') { 'P1Y' } 
+                           elseif ($term -eq 'P3Y') { 'P3Y' } 
+                           else { $term }
+            $details.Add("Term: $termDisplay") 
+        }
         if ($scope) { $details.Add("Scope: $scope") }
         if ($vmSize) { $details.Add("VM Size: $vmSize") }
-        if ($qty) { $details.Add("Recommended Quantity: $qty") }
+        if ($qty) { $details.Add("Quantity: $qty") }
         if ($lookback) { $details.Add("Lookback: $lookback days") }
     }
     
@@ -321,6 +327,19 @@ function Convert-AdvisorRecommendation {
     $extendedProps = Get-RecProperty -RestPath "properties.extendedProperties" -ModulePath "ExtendedProperty"
     if (-not $extendedProps) {
         $extendedProps = $RawRec.ExtendedProperties
+    }
+    
+    # CRITICAL FIX: Parse ExtendedProperty if it's a JSON string
+    # Az.Advisor cmdlet returns ExtendedProperty as JSON, not as object
+    if ($extendedProps -and $extendedProps -is [string]) {
+        try {
+            $extendedProps = $extendedProps | ConvertFrom-Json
+            Write-Verbose "Successfully parsed ExtendedProperty JSON"
+        }
+        catch {
+            Write-Verbose "Failed to parse ExtendedProperty as JSON: $_"
+            $extendedProps = $null
+        }
     }
     
     if ($extendedProps) {
@@ -552,6 +571,94 @@ function Group-AdvisorRecommendations {
     }
     
     $grouped = [System.Collections.Generic.List[PSObject]]::new()
+    
+    # DEDUPLICATION FIX: Filter Reserved Instance recommendations to avoid duplicates
+    # Each VM size should appear once (60-day lookback, best term)
+    $riRecs = $Recommendations | Where-Object { 
+        $_.Problem -like "*reserved instance*" -or 
+        $_.Solution -like "*reserved instance*"
+    }
+    
+    if ($riRecs.Count -gt 0) {
+        Write-Verbose "Processing $($riRecs.Count) Reserved Instance recommendations"
+        
+        # Extract metadata from TechnicalDetails for filtering
+        foreach ($rec in $riRecs) {
+            if ($rec.TechnicalDetails -match 'Lookback:\s*(\d+)') {
+                $rec | Add-Member -NotePropertyName '_Lookback' -NotePropertyValue $Matches[1] -Force
+            }
+            if ($rec.TechnicalDetails -match 'Term:\s*(\w+)') {
+                $rec | Add-Member -NotePropertyName '_Term' -NotePropertyValue $Matches[1] -Force
+            }
+            if ($rec.TechnicalDetails -match 'VM Size:\s*([^\|]+)') {
+                $rec | Add-Member -NotePropertyName '_VMSize' -NotePropertyValue $Matches[1].Trim() -Force
+            }
+            
+            # Also try to extract from ExtendedProperties if TechnicalDetails doesn't have it
+            if (-not $rec._VMSize -and $rec.ExtendedProperties) {
+                $extProps = $rec.ExtendedProperties
+                if ($extProps -is [string]) {
+                    try {
+                        $extProps = $extProps | ConvertFrom-Json
+                    } catch {
+                        Write-Verbose "Could not parse ExtendedProperties JSON for lookback/term extraction"
+                    }
+                }
+                if ($extProps) {
+                    if ($extProps.vmSize -and -not $rec._VMSize) {
+                        $rec | Add-Member -NotePropertyName '_VMSize' -NotePropertyValue $extProps.vmSize -Force
+                    }
+                    if ($extProps.lookbackPeriod -and -not $rec._Lookback) {
+                        $rec | Add-Member -NotePropertyName '_Lookback' -NotePropertyValue $extProps.lookbackPeriod -Force
+                    }
+                    if ($extProps.term -and -not $rec._Term) {
+                        $rec | Add-Member -NotePropertyName '_Term' -NotePropertyValue $extProps.term -Force
+                    }
+                }
+            }
+        }
+        
+        # Filter to 60-day lookback (most reliable)
+        $riFiltered = $riRecs | Where-Object { $_._Lookback -eq '60' }
+        
+        if ($riFiltered.Count -eq 0) {
+            Write-Verbose "No 60-day lookback found, using all lookback periods"
+            $riFiltered = $riRecs
+        }
+        
+        # Group by (Subscription + VMSize) and keep best term per group
+        $riGroups = $riFiltered | Group-Object -Property { 
+            "$($_.SubscriptionName)|$($_._VMSize)" 
+        }
+        
+        $optimizedRi = foreach ($group in $riGroups) {
+            # Prefer P3Y (better savings) if available, otherwise P1Y
+            $p3y = $group.Group | Where-Object { $_._Term -eq 'P3Y' } | Select-Object -First 1
+            $p1y = $group.Group | Where-Object { $_._Term -eq 'P1Y' } | Select-Object -First 1
+            
+            if ($p3y) { 
+                Write-Verbose "Using P3Y for $($group.Name)"
+                $p3y 
+            } elseif ($p1y) { 
+                Write-Verbose "Using P1Y for $($group.Name)"
+                $p1y 
+            } else {
+                # Fallback: use first item if no term match
+                Write-Verbose "Using first item for $($group.Name) (no P1Y/P3Y match)"
+                $group.Group | Select-Object -First 1
+            }
+        }
+        
+        # Replace RI recommendations with deduplicated versions
+        $nonRiRecs = $Recommendations | Where-Object { 
+            $_.Problem -notlike "*reserved instance*" -and 
+            $_.Solution -notlike "*reserved instance*"
+        }
+        
+        $Recommendations = @($nonRiRecs) + @($optimizedRi)
+        
+        Write-Verbose "RI recommendations: $($riRecs.Count) → $($optimizedRi.Count) (deduplicated to 60-day lookback)"
+    }
     
     # Group by RecommendationTypeId and Category
     $groups = $Recommendations | Group-Object -Property { 
