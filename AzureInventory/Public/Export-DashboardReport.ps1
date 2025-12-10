@@ -55,7 +55,7 @@ function Export-DashboardReport {
     
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     
-    # Security metrics - use pre-calculated data from Security Report if available
+    # Security metrics - MUST come from Security Report (no inventory/calculation of counts)
     if ($SecurityReportData) {
         $securityScore = $SecurityReportData.SecurityScore
         $totalChecks = $SecurityReportData.TotalChecks
@@ -66,32 +66,20 @@ function Export-DashboardReport {
         $lowCount = $SecurityReportData.LowCount
         $deprecatedCount = $SecurityReportData.DeprecatedCount
         $pastDueCount = $SecurityReportData.PastDueCount
+        # Simple sum calculation (allowed - not inventoring, just summing provided values)
+        $totalFailedFindings = $criticalCount + $highCount + $mediumCount + $lowCount
     } else {
-        # Fallback: Calculate from AuditResult
-        $findings = if ($AuditResult.Findings) { @($AuditResult.Findings) } else { @() }
-        $failedFindings = @($findings | Where-Object { $_.Status -eq 'FAIL' })
-        
-        if ($AuditResult.ComplianceScores) {
-            $securityScore = [math]::Round($AuditResult.ComplianceScores.OverallScore, 1)
-            $totalChecks = $AuditResult.ComplianceScores.TotalChecks
-            $passedChecks = $AuditResult.ComplianceScores.PassedChecks
-        } else {
-            $totalChecks = $findings.Count
-            $passedChecks = @($findings | Where-Object { $_.Status -eq 'PASS' }).Count
-            $securityScore = if ($totalChecks -gt 0) { [math]::Round(($passedChecks / $totalChecks) * 100, 1) } else { 0 }
-        }
-        
-        $severityCounts = Get-FindingsBySeverity -Findings $failedFindings -StatusFilter "FAIL"
-        $criticalCount = $severityCounts.Critical
-        $highCount = $severityCounts.High
-        $mediumCount = $severityCounts.Medium
-        $lowCount = $severityCounts.Low
-        
-        $eolFindings = Get-EOLFindings -Findings $findings
-        $deprecatedCount = $eolFindings.Count
-        $pastDueCount = @($eolFindings | Where-Object { 
-            try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
-        }).Count
+        # Fallback: Set defaults if Security Report data not available
+        $securityScore = 0
+        $totalChecks = 0
+        $passedChecks = 0
+        $criticalCount = 0
+        $highCount = 0
+        $mediumCount = 0
+        $lowCount = 0
+        $totalFailedFindings = 0
+        $deprecatedCount = 0
+        $pastDueCount = 0
     }
     
     # VM Backup metrics - use pre-calculated data from VM Backup Report if available
@@ -187,7 +175,7 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="label">Deprecated Components</div>
             </div>
             <div class="quick-stat">
-                <div class="value">$($failedFindings.Count)</div>
+                <div class="value">$totalFailedFindings</div>
                 <div class="label">Security Issues</div>
             </div>
             <div class="quick-stat" style="$(if ($advisorHighCount -gt 0) { 'border-color: var(--accent-yellow);' })">

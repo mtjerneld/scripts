@@ -1008,6 +1008,7 @@ $(Get-ReportScript -ScriptType "SecurityReport")
         [System.IO.File]::WriteAllText($OutputPath, $html, [System.Text.Encoding]::UTF8)
         
         # Return metadata for Dashboard consumption
+        # Note: Dashboard will calculate TotalFailedFindings by summing severity counts
         return @{
             OutputPath = $OutputPath
             SecurityScore = $securityScore
