@@ -100,9 +100,10 @@ function Get-StorageAccountFindings {
         # Control: Minimum TLS Version 1.2
         $tlsControl = $controlLookup["Minimum TLS Version 1.2"]
         if ($tlsControl) {
-            $minTlsVersion = if ($sa.MinimumTlsVersion) { $sa.MinimumTlsVersion } else { "TLS1_0" }
-            $tlsStatus = if ($minTlsVersion -eq "TLS1_2" -or $minTlsVersion -eq "TLS1_3") { "PASS" } else { "FAIL" }
-            $eolDate = if ($minTlsVersion -in @("TLS1_0", "TLS1_1")) { $tlsControl.eolDate } else { $null }
+            $tlsVersions = Get-TlsVersions
+            $minTlsVersion = if ($sa.MinimumTlsVersion) { $sa.MinimumTlsVersion } else { $tlsVersions.TLS_1_0 }
+            $tlsStatus = if ($minTlsVersion -in @($tlsVersions.TLS_1_2, $tlsVersions.TLS_1_3)) { "PASS" } else { "FAIL" }
+            $eolDate = if ($minTlsVersion -in @($tlsVersions.TLS_1_0, $tlsVersions.TLS_1_1)) { $tlsControl.eolDate } else { $null }
             
             $remediationCmd = $tlsControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
             $finding = New-SecurityFinding `

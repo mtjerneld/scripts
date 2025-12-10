@@ -22,11 +22,7 @@ function Get-SubscriptionContext {
     )
     
     try {
-        # Suppress warnings about other tenants during context switching
-        $originalWarningPreference = $WarningPreference
-        $WarningPreference = 'SilentlyContinue'
-        
-        try {
+        return Invoke-WithSuppressedWarnings {
             # Get current tenant to ensure we only switch to subscriptions in the same tenant
             $currentContext = Get-AzContext
             $currentTenantId = if ($currentContext -and $currentContext.Tenant) { $currentContext.Tenant.Id } else { $null }
@@ -47,9 +43,6 @@ function Get-SubscriptionContext {
                 return $true
             }
             return $false
-        }
-        finally {
-            $WarningPreference = $originalWarningPreference
         }
     }
     catch {

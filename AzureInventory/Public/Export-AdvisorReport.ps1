@@ -98,42 +98,7 @@ function Get-AzureAdvisorRecommendations {
     return $recommendations
 }
 
-<#
-.SYNOPSIS
-    Safely extracts a value from a dictionary/hashtable/object.
-#>
-function Get-DictionaryValue {
-    param(
-        $Dict,
-        [string]$Key
-    )
-    
-    if ($null -eq $Dict) { return $null }
-    
-    # Try hashtable/dictionary access
-    if ($Dict -is [System.Collections.IDictionary]) {
-        if ($Dict.ContainsKey($Key)) {
-            return $Dict[$Key]
-        }
-        return $null
-    }
-    
-    # Try as PSObject with properties
-    if ($Dict.PSObject.Properties[$Key]) {
-        return $Dict.PSObject.Properties[$Key].Value
-    }
-    
-    # Try direct property access
-    try {
-        $value = $Dict.$Key
-        if ($null -ne $value) {
-            return $value
-        }
-    }
-    catch { }
-    
-    return $null
-}
+# Get-DictionaryValue is now imported from Private/Helpers/Get-DictionaryValue.ps1
 
 <#
 .SYNOPSIS
@@ -627,9 +592,14 @@ function Group-AdvisorRecommendations {
         }
         
         # Calculate impact distribution
-        $highCount = @($group.Group | Where-Object { $_.Impact -eq 'High' }).Count
-        $mediumCount = @($group.Group | Where-Object { $_.Impact -eq 'Medium' }).Count
-        $lowCount = @($group.Group | Where-Object { $_.Impact -eq 'Low' }).Count
+        $highCount = 0
+        $mediumCount = 0
+        $lowCount = 0
+        foreach ($rec in $group.Group) {
+            if ($rec.Impact -eq 'High') { $highCount++ }
+            elseif ($rec.Impact -eq 'Medium') { $mediumCount++ }
+            elseif ($rec.Impact -eq 'Low') { $lowCount++ }
+        }
         
         # Determine highest impact level
         $highestImpact = if ($highCount -gt 0) { 'High' } elseif ($mediumCount -gt 0) { 'Medium' } else { 'Low' }
@@ -668,7 +638,7 @@ function Group-AdvisorRecommendations {
             Actions               = $firstRec.Actions
             AffectedResourceCount = $group.Group.Count
             AffectedResources     = $affectedResources
-            AffectedSubscriptions = @($group.Group | Select-Object -ExpandProperty SubscriptionName -Unique)
+            AffectedSubscriptions = @()
         }
         
         $grouped.Add($groupedRec)

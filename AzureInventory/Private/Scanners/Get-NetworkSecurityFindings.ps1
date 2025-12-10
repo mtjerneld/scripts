@@ -29,10 +29,6 @@ function Get-NetworkSecurityFindings {
     )
     
     # Suppress Azure PowerShell module warnings about unapproved verbs
-    # This must be set before any Azure cmdlets are called
-    $originalWarningPreference = $WarningPreference
-    $WarningPreference = 'SilentlyContinue'
-    
     $findings = [System.Collections.Generic.List[PSObject]]::new()
     $resourcesChecked = 0
     $checksPerformed = 0
@@ -461,9 +457,6 @@ function Get-NetworkSecurityFindings {
     if ($resourcesChecked -eq 0 -and $controls.Count -gt 0) {
         Write-Verbose "No Network resources (NSGs, VNets, Firewalls) found in subscription $SubscriptionName, but $($controls.Count) control(s) are enabled"
     }
-    
-    # Restore original warning preference
-    $WarningPreference = $originalWarningPreference
     
     return $findings
 }

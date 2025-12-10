@@ -136,3 +136,4 @@ Dessa kontroller kan vara:
    - Ändra `cisVersion` till "CIS Azure Foundations Benchmark v4.0.0"
 
 
+

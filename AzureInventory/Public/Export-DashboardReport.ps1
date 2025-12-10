@@ -47,7 +47,7 @@ function Export-DashboardReport {
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     
     # Security metrics
-    $findings = $AuditResult.Findings
+    $findings = if ($AuditResult.Findings) { @($AuditResult.Findings) } else { @() }
     $failedFindings = @($findings | Where-Object { $_.Status -eq 'FAIL' })
     $passedFindings = @($findings | Where-Object { $_.Status -eq 'PASS' })
     
@@ -63,10 +63,12 @@ function Export-DashboardReport {
         $passedChecks = $passedFindings.Count
     }
     
-    $criticalCount = @($failedFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
-    $highCount = @($failedFindings | Where-Object { $_.Severity -eq 'High' }).Count
-    $mediumCount = @($failedFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
-    $lowCount = @($failedFindings | Where-Object { $_.Severity -eq 'Low' }).Count
+    # Count by severity using helper function
+    $severityCounts = Get-FindingsBySeverity -Findings $failedFindings -StatusFilter "FAIL"
+    $criticalCount = $severityCounts.Critical
+    $highCount = $severityCounts.High
+    $mediumCount = $severityCounts.Medium
+    $lowCount = $severityCounts.Low
     
     # VM Backup metrics
     $totalVMs = $VMInventory.Count
@@ -76,14 +78,7 @@ function Export-DashboardReport {
     $runningVMs = @($VMInventory | Where-Object { $_.PowerState -eq 'running' }).Count
     
     # Deprecated Components metrics - include all findings with EOLDate, regardless of status
-    # Filter logic must match Export-SecurityReport.ps1 exactly
-    $eolFindings = @($findings | Where-Object { 
-        if (-not $_.EOLDate) { return $false }
-        $eolDateStr = $_.EOLDate.ToString().Trim()
-        if ([string]::IsNullOrWhiteSpace($eolDateStr)) { return $false }
-        if ($eolDateStr -eq "N/A" -or $eolDateStr -eq "n/a") { return $false }
-        return $true
-    })
+    $eolFindings = Get-EOLFindings -Findings $findings
     $deprecatedCount = $eolFindings.Count
     
     # Debug: Log EOL findings count and details
@@ -107,39 +102,10 @@ function Export-DashboardReport {
         $advisorCount = $AdvisorRecommendations.Count
         $advisorHighCount = @($AdvisorRecommendations | Where-Object { $_.Impact -eq 'High' }).Count
         
-        # Group Cost recommendations to avoid double-counting duplicates
-        $costRecsRaw = @($AdvisorRecommendations | Where-Object { $_.Category -eq 'Cost' })
-        if ($costRecsRaw.Count -gt 0) {
-            $groupedCostRecs = $costRecsRaw | Group-Object -Property @{
-                Expression = {
-                    $typeId = if ($_.RecommendationType) { $_.RecommendationType } else { "Unknown" }
-                    $resId = if ($_.ResourceId) { $_.ResourceId } else { "Unknown" }
-                    "$typeId|$resId"
-                }
-            } | ForEach-Object {
-                $group = $_.Group
-                if ($group.Count -gt 1) {
-                    # Sum savings for duplicates
-                    $totalSavings = ($group | Where-Object { $_.PotentialSavings } | Measure-Object -Property PotentialSavings -Sum).Sum
-                    $currency = ($group | Where-Object { $_.SavingsCurrency } | Select-Object -First 1).SavingsCurrency
-                    if (-not $currency) { $currency = "USD" }
-                    
-                    $firstRec = $group[0]
-                    $firstRec.PotentialSavings = $totalSavings
-                    $firstRec.SavingsCurrency = $currency
-                    $firstRec
-                } else {
-                    $group[0]
-                }
-            }
-            
-            $costRecs = @($groupedCostRecs | Where-Object { $_.PotentialSavings })
-            if ($costRecs.Count -gt 0) {
-                $advisorSavings = ($costRecs | Measure-Object -Property PotentialSavings -Sum).Sum
-                $advisorCurrency = ($costRecs | Where-Object { $_.SavingsCurrency } | Select-Object -First 1).SavingsCurrency
-                if (-not $advisorCurrency) { $advisorCurrency = "USD" }
-            }
-        }
+        # Calculate cost savings using helper function
+        $savingsData = Get-CostSavingsFromRecommendations -Recommendations $AdvisorRecommendations
+        $advisorSavings = $savingsData.TotalSavings
+        $advisorCurrency = $savingsData.Currency
     }
     
     # Subscription count

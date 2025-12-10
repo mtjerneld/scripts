@@ -25,14 +25,36 @@ Write-Host "Reloading all functions for local testing..." -ForegroundColor Cyan
 # Ta bort alla befintliga funktioner från modulen först
 Write-Host "  Removing existing functions..." -ForegroundColor Gray
 $functionsToRemove = @(
+    # Public functions
     'Connect-AuditEnvironment',
     'Invoke-AzureSecurityAudit',
     'Export-SecurityReport',
+    'Export-DashboardReport',
+    'Export-VMBackupReport',
     'Export-AdvisorReport',
+    # Helper functions
     'Get-SubscriptionContext',
     'Invoke-AzureApiWithRetry',
+    'Invoke-WithSuppressedWarnings',
+    'Invoke-WithErrorHandling',
     'New-SecurityFinding',
+    'Get-SubscriptionDisplayName',
+    'Get-EOLFindings',
+    'Get-FindingsBySeverity',
+    'Parse-ResourceId',
+    'Encode-Html',
+    'Get-CostSavingsFromRecommendations',
+    'Get-DictionaryValue',
+    'Get-ReportStylesheet',
+    'Get-ReportNavigation',
+    'Get-ReportScript',
+    'Get-SubscriptionsToScan',
+    'Invoke-ScannerForSubscription',
+    'Collect-AdvisorRecommendations',
+    'Generate-AuditReports',
+    # Config functions
     'Get-ControlDefinitions',
+    # Scanner functions
     'Get-StorageAccountFindings',
     'Get-AppServiceFindings',
     'Get-VirtualMachineFindings',
@@ -40,6 +62,8 @@ $functionsToRemove = @(
     'Get-AzureMonitorFindings',
     'Get-NetworkSecurityFindings',
     'Get-SqlDatabaseFindings',
+    'Get-KeyVaultFindings',
+    # Collector functions
     'Get-AzureAdvisorRecommendations',
     'Convert-AdvisorRecommendation',
     'Group-AdvisorRecommendations',
@@ -59,34 +83,74 @@ Get-Module AzureSecurityAudit | Remove-Module -Force -ErrorAction SilentlyContin
 Write-Host "  Loading functions..." -ForegroundColor Gray
 
 # Ladda alla dependencies i rätt ordning
-Write-Host "  Loading Private Helpers..." -ForegroundColor Gray
-Get-ChildItem -Path "$ModuleRoot\Private\Helpers\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { 
-    . $_.FullName
-    Write-Verbose "Loaded: $($_.Name)"
-}
-
-Write-Host "  Loading Private Scanners..." -ForegroundColor Gray
-Get-ChildItem -Path "$ModuleRoot\Private\Scanners\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { 
-    . $_.FullName
-    Write-Verbose "Loaded: $($_.Name)"
-}
-
+# 1. Config först (konstanter och definitioner som används av andra)
 Write-Host "  Loading Private Config..." -ForegroundColor Gray
-Get-ChildItem -Path "$ModuleRoot\Private\Config\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { 
-    . $_.FullName
-    Write-Verbose "Loaded: $($_.Name)"
+Get-ChildItem -Path "$ModuleRoot\Private\Config\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    try {
+        . $_.FullName
+        Write-Verbose "Loaded: $($_.Name)"
+    }
+    catch {
+        Write-Warning "Failed to load $($_.Name): $_"
+    }
 }
 
+# 2. Helpers (grundläggande helper-funktioner)
+Write-Host "  Loading Private Helpers..." -ForegroundColor Gray
+Get-ChildItem -Path "$ModuleRoot\Private\Helpers\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    try {
+        . $_.FullName
+        Write-Verbose "Loaded: $($_.Name)"
+    }
+    catch {
+        Write-Warning "Failed to load $($_.Name): $_"
+    }
+}
+
+# 3. Scanners (använder helpers)
+Write-Host "  Loading Private Scanners..." -ForegroundColor Gray
+Get-ChildItem -Path "$ModuleRoot\Private\Scanners\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    try {
+        . $_.FullName
+        Write-Verbose "Loaded: $($_.Name)"
+    }
+    catch {
+        Write-Warning "Failed to load $($_.Name): $_"
+    }
+}
+
+# 4. Collectors (använder helpers)
 Write-Host "  Loading Private Collectors..." -ForegroundColor Gray
-Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { 
-    . $_.FullName
-    Write-Verbose "Loaded: $($_.Name)"
+Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    try {
+        # Load by reading content and creating scriptblock (bypasses execution policy issues)
+        $content = Get-Content $_.FullName -Raw -ErrorAction Stop
+        $scriptBlock = [scriptblock]::Create($content)
+        . $scriptBlock
+        Write-Verbose "Loaded: $($_.Name)"
+    }
+    catch {
+        # Fallback to direct dot-sourcing
+        try {
+            . $_.FullName -ErrorAction Stop
+            Write-Verbose "Loaded: $($_.Name)"
+        }
+        catch {
+            Write-Warning "Failed to load $($_.Name): $_"
+        }
+    }
 }
 
+# 5. Public Functions (använder allt ovanstående)
 Write-Host "  Loading Public Functions..." -ForegroundColor Gray
-Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { 
-    . $_.FullName
-    Write-Verbose "Loaded: $($_.Name)"
+Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    try {
+        . $_.FullName
+        Write-Verbose "Loaded: $($_.Name)"
+    }
+    catch {
+        Write-Warning "Failed to load $($_.Name): $_"
+    }
 }
 
 Write-Host "`n[OK] All functions loaded! Ready to test." -ForegroundColor Green

@@ -35,6 +35,15 @@ function Export-AdvisorReport {
     
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     
+    # Ensure AdvisorRecommendations is an array (handle null/empty cases)
+    if ($null -eq $AdvisorRecommendations) {
+        $AdvisorRecommendations = @()
+    } else {
+        $AdvisorRecommendations = @($AdvisorRecommendations)
+    }
+    
+    Write-Verbose "Export-AdvisorReport: Processing $($AdvisorRecommendations.Count) recommendations"
+    
     # Group recommendations by type
     $groupedRecs = Group-AdvisorRecommendations -Recommendations $AdvisorRecommendations
     
@@ -59,14 +68,7 @@ function Export-AdvisorReport {
     # Get unique subscriptions for filter
     $allSubscriptions = @($AdvisorRecommendations | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object)
     
-    # HTML escape function
-    # Note: Using unapproved verb 'Escape' as this is a local helper function
-    # and 'Escape' is the most appropriate verb for HTML escaping operations
-    function Escape-Html {
-        param([string]$text)
-        if ([string]::IsNullOrEmpty($text)) { return "" }
-        return $text -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;' -replace "'", '&#39;'
-    }
+    # Encode-Html is now imported from Private/Helpers/Encode-Html.ps1
     
     # Start building HTML
     $html = @"
@@ -655,12 +657,12 @@ function Export-AdvisorReport {
             
             foreach ($rec in $cat.Recs) {
                 $impactClass = $rec.Impact.ToLower()
-                $escapedProblem = Escape-Html $rec.Problem
-                $escapedSolution = Escape-Html $rec.Solution
-                $escapedDescription = Escape-Html $rec.Description
-                $escapedLongDescription = Escape-Html $rec.LongDescription
-                $escapedBenefits = Escape-Html $rec.PotentialBenefits
-                $escapedRemediation = Escape-Html $rec.Remediation
+                $escapedProblem = Encode-Html $rec.Problem
+                $escapedSolution = Encode-Html $rec.Solution
+                $escapedDescription = Encode-Html $rec.Description
+                $escapedLongDescription = Encode-Html $rec.LongDescription
+                $escapedBenefits = Encode-Html $rec.PotentialBenefits
+                $escapedRemediation = Encode-Html $rec.Remediation
                 
                 # Subscriptions as data attribute for filtering
                 $subsLower = ($rec.AffectedSubscriptions | ForEach-Object { $_.ToLower() }) -join ','
@@ -734,8 +736,8 @@ function Export-AdvisorReport {
                             <div class="detail-content" style="font-family: 'Consolas', monospace; font-size: 0.9em;">
 "@
                     foreach ($resource in ($rec.AffectedResources | Where-Object { $_.TechnicalDetails })) {
-                        $escapedDetails = Escape-Html $resource.TechnicalDetails
-                        $escapedResName = Escape-Html $resource.ResourceName
+                    $escapedDetails = Encode-Html $resource.TechnicalDetails
+                    $escapedResName = Encode-Html $resource.ResourceName
                         $html += "                                <div><strong>${escapedResName}:</strong> $escapedDetails</div>`n"
                     }
                     $html += @"
@@ -776,7 +778,7 @@ function Export-AdvisorReport {
                 
                 # Learn more link
                 if ($rec.LearnMoreLink) {
-                    $escapedLink = Escape-Html $rec.LearnMoreLink
+                    $escapedLink = Encode-Html $rec.LearnMoreLink
                     $html += @"
                         <div class="detail-section">
                             <div class="detail-content">
@@ -815,10 +817,10 @@ function Export-AdvisorReport {
 "@
                 
                 foreach ($resource in ($rec.AffectedResources | Sort-Object SubscriptionName, ResourceGroup, ResourceName)) {
-                    $escapedResName = Escape-Html $resource.ResourceName
-                    $escapedResGroup = Escape-Html $resource.ResourceGroup
-                    $escapedSubName = Escape-Html $resource.SubscriptionName
-                    $escapedTechDetails = Escape-Html $resource.TechnicalDetails
+                    $escapedResName = Encode-Html $resource.ResourceName
+                    $escapedResGroup = Encode-Html $resource.ResourceGroup
+                    $escapedSubName = Encode-Html $resource.SubscriptionName
+                    $escapedTechDetails = Encode-Html $resource.TechnicalDetails
                     
                     $html += @"
                                         <tr>

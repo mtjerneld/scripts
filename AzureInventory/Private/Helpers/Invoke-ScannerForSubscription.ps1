@@ -1,0 +1,248 @@
+<#
+.SYNOPSIS
+    Executes all scanners for a single subscription.
+
+.DESCRIPTION
+    Sets subscription context and runs all specified category scanners, collecting findings
+    and VM inventory data.
+
+.PARAMETER Subscription
+    Subscription object to scan.
+
+.PARAMETER CategoriesToScan
+    Array of category names to scan.
+
+.PARAMETER Scanners
+    Hashtable mapping category names to scanner script blocks.
+
+.PARAMETER IncludeLevel2
+    Whether to include Level 2 CIS controls.
+
+.PARAMETER AllFindings
+    List to append findings to.
+
+.PARAMETER VMInventory
+    List to append VM inventory data to.
+
+.PARAMETER Errors
+    List to append errors to.
+
+.OUTPUTS
+    Updated collections (AllFindings, VMInventory, Errors).
+#>
+function Invoke-ScannerForSubscription {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Subscription,
+        
+        [Parameter(Mandatory = $true)]
+        [string[]]$CategoriesToScan,
+        
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Scanners,
+        
+        [switch]$IncludeLevel2,
+        
+        [Parameter(Mandatory = $false)]
+        [System.Collections.Generic.List[PSObject]]$AllFindings,
+        
+        [Parameter(Mandatory = $false)]
+        [System.Collections.Generic.List[PSObject]]$VMInventory,
+        
+        [Parameter(Mandatory = $false)]
+        [System.Collections.Generic.List[string]]$Errors
+    )
+    
+    # Initialize collections if not provided (but don't create new ones if they're already passed in, even if empty)
+    # Use $null check instead of truthy check to preserve the reference to the original list
+    if ($null -eq $AllFindings) {
+        $AllFindings = [System.Collections.Generic.List[PSObject]]::new()
+    }
+    if ($null -eq $VMInventory) {
+        $VMInventory = [System.Collections.Generic.List[PSObject]]::new()
+    }
+    if ($null -eq $Errors) {
+        $Errors = [System.Collections.Generic.List[string]]::new()
+    }
+    
+    $subDisplayName = Get-SubscriptionDisplayName -Subscription $Subscription
+    
+    # Set subscription context
+    $subscriptionNameToUse = $null
+    $contextSet = Invoke-WithSuppressedWarnings {
+        Get-SubscriptionContext -SubscriptionId $Subscription.Id -ErrorAction SilentlyContinue
+    }
+    
+    try {
+        if (-not $contextSet) {
+            Write-Warning "Failed to set context for subscription $subDisplayName ($($Subscription.Id)) - skipping"
+            $Errors.Add("Failed to set context for subscription $subDisplayName ($($Subscription.Id))")
+            return
+        }
+        
+        # Verify context was set correctly and get subscription name from context
+        $verifyContext = Get-AzContext
+        if ($verifyContext.Subscription.Id -ne $Subscription.Id) {
+            Write-Warning "Context verification failed: Expected $($Subscription.Id), got $($verifyContext.Subscription.Id) - skipping"
+            $Errors.Add("Context verification failed for subscription $subDisplayName ($($Subscription.Id))")
+            return
+        }
+        
+        # Use subscription name from verified context (more reliable than $Subscription.Name)
+        $subscriptionNameToUse = Get-SubscriptionDisplayName -Subscription $verifyContext.Subscription
+        if ([string]::IsNullOrWhiteSpace($subscriptionNameToUse) -or $subscriptionNameToUse -eq "Unknown Subscription") {
+            $subscriptionNameToUse = Get-SubscriptionDisplayName -Subscription $Subscription
+        }
+        
+        Write-Verbose "Context verified: $subscriptionNameToUse ($($verifyContext.Subscription.Id))"
+        
+        # Verify we can actually read resources in this subscription
+        try {
+            $testResource = Get-AzResource -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -eq $testResource) {
+                Write-Verbose "No resources found or unable to read resources in subscription $subscriptionNameToUse"
+            }
+        }
+        catch {
+            Write-Verbose "Warning: May have limited permissions in subscription ${subscriptionNameToUse}: $_"
+        }
+    }
+    catch {
+        Write-Warning "Failed to set context for subscription $subDisplayName ($($Subscription.Id)): $_ - skipping"
+        $Errors.Add("Failed to set context for subscription $subDisplayName ($($Subscription.Id)): $_")
+        return
+    }
+    
+    # Run scanners for each category
+    foreach ($category in $CategoriesToScan) {
+        if (-not $Scanners.ContainsKey($category)) {
+            Write-Warning "Unknown category: $category"
+            continue
+        }
+        
+        Write-Host "  - $category..." -NoNewline
+        try {
+            # Suppress Azure module warnings about unapproved verbs during scanning
+            $scanResult = Invoke-WithSuppressedWarnings -SuppressPSDefaultParams {
+                & $Scanners[$category] -subId $Subscription.Id -subName $subscriptionNameToUse -includeL2:$IncludeLevel2
+            }
+            
+            # Handle VM scanner's new return structure (Findings + Inventory)
+            $findings = $null
+            if ($category -eq 'VM' -and $scanResult -is [PSCustomObject] -and $scanResult.PSObject.Properties.Name -contains 'Findings') {
+                $findings = $scanResult.Findings
+                # Add VM inventory data
+                if ($scanResult.Inventory -and $scanResult.Inventory.Count -gt 0) {
+                    foreach ($vmData in $scanResult.Inventory) {
+                        $VMInventory.Add($vmData)
+                    }
+                }
+            } else {
+                $findings = $scanResult
+            }
+            
+            # Handle null or empty results
+            if ($null -eq $findings) {
+                $findings = @()
+            }
+            
+            # Add findings to collection
+            $findingsAdded = 0
+            if ($findings -is [System.Array]) {
+                foreach ($finding in $findings) {
+                    if ($null -ne $finding) {
+                        $AllFindings.Add($finding)
+                        $findingsAdded++
+                    }
+                }
+            } elseif ($findings -is [System.Collections.Generic.List[PSObject]]) {
+                $findingsAdded = $findings.Count
+                $AllFindings.AddRange($findings)
+            } else {
+                # Fallback: try to enumerate
+                foreach ($finding in $findings) {
+                    if ($null -ne $finding) {
+                        $AllFindings.Add($finding)
+                        $findingsAdded++
+                    }
+                }
+            }
+            
+            Write-Verbose "Added $findingsAdded findings from $category scan. Total findings in collection: $($AllFindings.Count)"
+            
+            # Filter out null findings
+            $validFindings = @($findings | Where-Object { $null -ne $_ })
+            
+            # Count unique resources and unique controls using hashtables
+            $uniqueResourceIds = @{}
+            $uniqueControls = @{}
+            $failCount = 0
+            
+            foreach ($finding in $validFindings) {
+                # Count unique resources by ResourceId or ResourceName+ResourceGroup
+                $resourceKey = $null
+                if ($finding.PSObject.Properties.Name -contains 'ResourceId' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceId)) {
+                    $resourceKey = $finding.ResourceId
+                }
+                elseif ($finding.PSObject.Properties.Name -contains 'ResourceName' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceName)) {
+                    $rg = if ($finding.PSObject.Properties.Name -contains 'ResourceGroup') { $finding.ResourceGroup } else { "" }
+                    $resourceKey = "$($finding.ResourceName)|$rg"
+                }
+                
+                if ($resourceKey -and -not $uniqueResourceIds.ContainsKey($resourceKey)) {
+                    $uniqueResourceIds[$resourceKey] = $true
+                }
+                
+                # Count unique controls by Category + ControlId
+                $controlKey = $null
+                if ($finding.PSObject.Properties.Name -contains 'Category' -and $finding.PSObject.Properties.Name -contains 'ControlId') {
+                    $cat = if ($finding.Category) { $finding.Category } else { "Unknown" }
+                    $ctrlId = if ($finding.ControlId) { $finding.ControlId } else { "Unknown" }
+                    $controlKey = "$cat|$ctrlId"
+                }
+                
+                if ($controlKey -and -not $uniqueControls.ContainsKey($controlKey)) {
+                    $uniqueControls[$controlKey] = $true
+                }
+                
+                # Count failures
+                if ($finding.PSObject.Properties.Name -contains 'Status' -and $finding.Status -eq 'FAIL') {
+                    $failCount++
+                }
+            }
+            
+            $uniqueResources = $uniqueResourceIds.Count
+            $uniqueChecks = $uniqueControls.Count
+            
+            # Format output message
+            $color = if ($failCount -gt 0) { 'Red' } else { 'Green' }
+            if ($uniqueChecks -eq 0) {
+                Write-Host " 0 resources (0 checks)" -ForegroundColor Gray
+            }
+            else {
+                $resourceWord = if ($uniqueResources -eq 1) { "resource" } else { "resources" }
+                $checkWord = if ($uniqueChecks -eq 1) { "check" } else { "checks" }
+                Write-Host " $uniqueResources $resourceWord evaluated against $uniqueChecks $checkWord ($failCount failures)" -ForegroundColor $color
+            }
+        }
+        catch {
+            Write-Host " ERROR: $_" -ForegroundColor Red
+            $Errors.Add("$category scan failed for ${subscriptionNameToUse}: $_")
+            
+                # Check if it's a permissions error
+                $permissionPatterns = Get-PermissionErrorPatterns
+                $isPermissionError = $false
+                foreach ($pattern in $permissionPatterns) {
+                    if ($_.Exception.Message -match $pattern) {
+                        $isPermissionError = $true
+                        break
+                    }
+                }
+                if ($isPermissionError) {
+                    Write-Host "    [WARNING] This may be a permissions issue. Ensure you have Reader role on subscription ${subscriptionNameToUse}" -ForegroundColor Yellow
+                }
+        }
+    }
+}
+

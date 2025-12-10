@@ -125,17 +125,10 @@ function Get-AzureMonitorFindings {
                 
                 try {
                     # Suppress breaking change warnings from Get-AzDiagnosticSetting
-                    $originalWarningPreference = $WarningPreference
-                    $WarningPreference = 'SilentlyContinue'
-                    try {
-                        $diagnosticSettings = Invoke-AzureApiWithRetry {
-                            Get-AzDiagnosticSetting -ResourceId $resource.Id -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
-                        }
-                        $diagnosticsEnabled = if ($diagnosticSettings) { $true } else { $false }
+                    $diagnosticSettings = Invoke-AzureApiWithRetry {
+                        Get-AzDiagnosticSetting -ResourceId $resource.Id -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
                     }
-                    finally {
-                        $WarningPreference = $originalWarningPreference
-                    }
+                    $diagnosticsEnabled = if ($diagnosticSettings) { $true } else { $false }
                 }
                 catch {
                     $diagnosticsEnabled = $false

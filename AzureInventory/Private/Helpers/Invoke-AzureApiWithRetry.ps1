@@ -28,68 +28,53 @@ function Invoke-AzureApiWithRetry {
         [Parameter(Mandatory = $true)]
         [scriptblock]$ScriptBlock,
         
-        [int]$MaxRetries = 3,
+        [int]$MaxRetries = (Get-RetryConfig).MAX_RETRIES,
         
-        [int]$BaseDelaySeconds = 2
+        [int]$BaseDelaySeconds = (Get-RetryConfig).BASE_DELAY_SECONDS
     )
     
     $attempt = 0
     $lastError = $null
     
-    # Save original warning preference
-    $originalWarningPreference = $WarningPreference
-    
     do {
         $attempt++
         try {
-            # Suppress warnings from Azure PowerShell modules (e.g., unapproved verbs, breaking changes)
-            # This must be set before the scriptblock executes to catch module import warnings
-            $WarningPreference = 'SilentlyContinue'
-            # Also set PSDefaultParameterValues to suppress warnings on Azure cmdlets
-            $originalPSDefaultParams = $PSDefaultParameterValues.Clone()
-            $PSDefaultParameterValues['*:WarningAction'] = 'SilentlyContinue'
-            try {
-                $result = & $ScriptBlock
-            }
-            finally {
-                # Restore original parameter values
-                $PSDefaultParameterValues.Clear()
-                foreach ($key in $originalPSDefaultParams.Keys) {
-                    $PSDefaultParameterValues[$key] = $originalPSDefaultParams[$key]
-                }
-                $WarningPreference = $originalWarningPreference
-            }
+            # Suppress warnings from Azure PowerShell modules using helper function
+            $result = Invoke-WithSuppressedWarnings -SuppressPSDefaultParams -ScriptBlock $ScriptBlock
             return $result
         }
         catch {
-            # Restore warning preference even on error
-            $WarningPreference = $originalWarningPreference
             $lastError = $_
             $errorMessage = $_.Exception.Message
             
             if ($attempt -lt $MaxRetries) {
-                if ($errorMessage -match '429|throttl|TooManyRequests') {
-                    # Exponential backoff for rate limiting
-                    $delay = $BaseDelaySeconds * [Math]::Pow(2, $attempt - 1)
-                    Write-Verbose "Rate limited. Waiting $delay seconds before retry $attempt of $MaxRetries"
-                    Start-Sleep -Seconds $delay
+                $transientPatterns = Get-TransientErrorPatterns
+                $isTransient = $false
+                $isRateLimit = $false
+                
+                foreach ($pattern in $transientPatterns) {
+                    if ($errorMessage -match $pattern) {
+                        $isTransient = $true
+                        if ($pattern -match '429|throttl|TooManyRequests') {
+                            $isRateLimit = $true
+                        }
+                        break
+                    }
                 }
-                elseif ($errorMessage -match '503|ServiceUnavailable') {
-                    # Linear backoff for service unavailable
-                    $delay = $BaseDelaySeconds * $attempt
-                    Write-Verbose "Service unavailable. Waiting $delay seconds before retry $attempt of $MaxRetries"
-                    Start-Sleep -Seconds $delay
-                }
-                else {
-                    # For other errors, throw immediately unless it's a network/transient error
-                    if ($errorMessage -match 'timeout|network|connection|temporarily') {
+                
+                if ($isTransient) {
+                    if ($isRateLimit) {
+                        # Exponential backoff for rate limiting
+                        $delay = $BaseDelaySeconds * [Math]::Pow(2, $attempt - 1)
+                        Write-Verbose "Rate limited. Waiting $delay seconds before retry $attempt of $MaxRetries"
+                    } else {
+                        # Linear backoff for service unavailable or network errors
                         $delay = $BaseDelaySeconds * $attempt
                         Write-Verbose "Transient error detected. Waiting $delay seconds before retry $attempt of $MaxRetries"
-                        Start-Sleep -Seconds $delay
                     }
-                    else {
-                        throw
-                    }
+                    Start-Sleep -Seconds $delay
+                } else {
+                    throw
                 }
             }
             else {
@@ -98,8 +83,6 @@ function Invoke-AzureApiWithRetry {
         }
     } while ($attempt -lt $MaxRetries)
     
-    # Restore warning preference before throwing
-    $WarningPreference = $originalWarningPreference
     throw $lastError
 }
 
