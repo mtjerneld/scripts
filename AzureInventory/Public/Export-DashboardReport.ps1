@@ -47,6 +47,9 @@ function Export-DashboardReport {
         [Parameter(Mandatory = $false)]
         [hashtable]$AdvisorReportData = $null,
         
+        [Parameter(Mandatory = $false)]
+        [hashtable]$ChangeTrackingReportData = $null,
+        
         [Parameter(Mandatory = $true)]
         [string]$OutputPath,
         
@@ -116,6 +119,20 @@ function Export-DashboardReport {
             $savingsData = Get-CostSavingsFromRecommendations -Recommendations $AdvisorRecommendations
             $advisorSavings = $savingsData.TotalSavings
             $advisorCurrency = $savingsData.Currency
+        }
+    }
+    
+    # Change Tracking metrics - use pre-calculated data from Change Tracking Report if available
+    if ($ChangeTrackingReportData) {
+        $changeTrackingTotal = $ChangeTrackingReportData.TotalChanges
+        $changeTrackingSecurityAlerts = $ChangeTrackingReportData.HighSecurityFlags + $ChangeTrackingReportData.MediumSecurityFlags
+    } else {
+        # Fallback: Calculate from ChangeTrackingData
+        $changeTrackingTotal = 0
+        $changeTrackingSecurityAlerts = 0
+        if ($AuditResult.ChangeTrackingData -and $AuditResult.ChangeTrackingData.Count -gt 0) {
+            $changeTrackingTotal = $AuditResult.ChangeTrackingData.Count
+            $changeTrackingSecurityAlerts = @($AuditResult.ChangeTrackingData | Where-Object { $_.SecurityFlag -in @('high', 'medium') }).Count
         }
     }
     
@@ -296,6 +313,13 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="report-info">
                     <h3>Azure Advisor</h3>
                     <p>$advisorCount recommendations | $advisorHighCount high impact</p>
+                </div>
+            </a>
+            <a href="change-tracking.html" class="report-link">
+                <div class="report-icon" style="background: rgba(84, 160, 255, 0.15); color: var(--accent-blue);">↻</div>
+                <div class="report-info">
+                    <h3>Change Tracking</h3>
+                    <p>$changeTrackingTotal changes | $changeTrackingSecurityAlerts security alerts</p>
                 </div>
             </a>
         </div>

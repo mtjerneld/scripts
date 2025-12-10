@@ -63,6 +63,7 @@ function Invoke-AzureSecurityAudit {
     $allFindings = [System.Collections.Generic.List[PSObject]]::new()
     $vmInventory = [System.Collections.Generic.List[PSObject]]::new()
     $advisorRecommendations = [System.Collections.Generic.List[PSObject]]::new()
+    $changeTrackingData = [System.Collections.Generic.List[PSObject]]::new()
     $errors = [System.Collections.Generic.List[string]]::new()
     
     # Get subscriptions
@@ -334,6 +335,7 @@ function Invoke-AzureSecurityAudit {
         Findings                = $allFindings
         VMInventory             = $vmInventory
         AdvisorRecommendations  = $advisorRecommendations
+        ChangeTrackingData      = $changeTrackingData
         ComplianceScores        = $complianceScores
         Errors                  = $errors
         ToolVersion             = "2.0.0"
@@ -345,6 +347,13 @@ function Invoke-AzureSecurityAudit {
     # Update result with latest advisor recommendations (ensure it's an array)
     $result.AdvisorRecommendations = @($advisorRecommendations)
     Write-Verbose "Updated result.AdvisorRecommendations with $($advisorRecommendations.Count) recommendations"
+    
+    # Collect Change Tracking Data
+    Collect-ChangeTrackingData -Subscriptions $subscriptions -ChangeTrackingData $changeTrackingData -Errors $errors
+    
+    # Update result with latest change tracking data (ensure it's an array)
+    $result.ChangeTrackingData = @($changeTrackingData)
+    Write-Verbose "Updated result.ChangeTrackingData with $($changeTrackingData.Count) changes"
     
     # Generate reports
     $outputFolder = Generate-AuditReports -AuditResult $result -OutputPath $OutputPath -ExportJson:$ExportJson
@@ -397,6 +406,22 @@ function Invoke-AzureSecurityAudit {
         if ($potentialSavings -and $potentialSavings -gt 0) {
             Write-Host "  Potential Savings: `$$([math]::Round($potentialSavings, 0))/yr" -ForegroundColor Green
         }
+    }
+    
+    # Change Tracking summary
+    if ($changeTrackingData.Count -gt 0) {
+        $highSecurityFlags = 0
+        $mediumSecurityFlags = 0
+        foreach ($change in $changeTrackingData) {
+            if ($change.SecurityFlag -eq 'high') {
+                $highSecurityFlags++
+            } elseif ($change.SecurityFlag -eq 'medium') {
+                $mediumSecurityFlags++
+            }
+        }
+        Write-Host "`nChange Tracking:" -ForegroundColor Cyan
+        Write-Host "  Total Changes: $($changeTrackingData.Count)" -ForegroundColor White
+        Write-Host "  Security Alerts: $($highSecurityFlags + $mediumSecurityFlags) ($highSecurityFlags high, $mediumSecurityFlags medium)" -ForegroundColor $(if (($highSecurityFlags + $mediumSecurityFlags) -gt 0) { 'Yellow' } else { 'Green' })
     }
     
     if ($errors.Count -gt 0) {

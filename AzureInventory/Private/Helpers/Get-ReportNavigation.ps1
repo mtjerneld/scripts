@@ -16,7 +16,7 @@ function Get-ReportNavigation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('Dashboard', 'Security', 'VMBackup', 'Advisor')]
+        [ValidateSet('Dashboard', 'Security', 'VMBackup', 'Advisor', 'ChangeTracking')]
         [string]$ActivePage
     )
     
@@ -24,6 +24,7 @@ function Get-ReportNavigation {
     $securityClass = if ($ActivePage -eq 'Security') { 'active' } else { '' }
     $vmBackupClass = if ($ActivePage -eq 'VMBackup') { 'active' } else { '' }
     $advisorClass = if ($ActivePage -eq 'Advisor') { 'active' } else { '' }
+    $changeTrackingClass = if ($ActivePage -eq 'ChangeTracking') { 'active' } else { '' }
     
     return @"
     <nav class="report-nav">
@@ -32,6 +33,7 @@ function Get-ReportNavigation {
         <a href="security.html" class="nav-link $securityClass">Security Audit</a>
         <a href="vm-backup.html" class="nav-link $vmBackupClass">VM Backup</a>
         <a href="advisor.html" class="nav-link $advisorClass">Advisor</a>
+        <a href="change-tracking.html" class="nav-link $changeTrackingClass">Change Tracking</a>
     </nav>
 "@
 }

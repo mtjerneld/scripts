@@ -70,6 +70,7 @@ function Generate-AuditReports {
     $securityReportData = $null
     $vmBackupReportData = $null
     $advisorReportData = $null
+    $changeTrackingReportData = $null
     
     try {
         Write-Host "  - Security Audit..." -NoNewline
@@ -110,11 +111,24 @@ function Generate-AuditReports {
         Write-Host " ERROR: $_" -ForegroundColor Red
     }
     
+    try {
+        Write-Host "  - Change Tracking..." -NoNewline
+        $changeTrackingReportPath = Join-Path $outputFolder "change-tracking.html"
+        $changeTrackingResult = Export-ChangeTrackingReport -ChangeTrackingData $AuditResult.ChangeTrackingData -OutputPath $changeTrackingReportPath -TenantId $tenantId
+        if ($changeTrackingResult -is [hashtable]) {
+            $changeTrackingReportData = $changeTrackingResult
+        }
+        Write-Host " OK" -ForegroundColor Green
+    }
+    catch {
+        Write-Host " ERROR: $_" -ForegroundColor Red
+    }
+    
     # Generate Dashboard last, using metadata from all detail reports
     try {
         Write-Host "  - Dashboard..." -NoNewline
         $dashboardPath = Join-Path $outputFolder "index.html"
-        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -SecurityReportData $securityReportData -VMBackupReportData $vmBackupReportData -AdvisorReportData $advisorReportData -OutputPath $dashboardPath -TenantId $tenantId
+        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -SecurityReportData $securityReportData -VMBackupReportData $vmBackupReportData -AdvisorReportData $advisorReportData -ChangeTrackingReportData $changeTrackingReportData -OutputPath $dashboardPath -TenantId $tenantId
         Write-Host " OK" -ForegroundColor Green
     }
     catch {
