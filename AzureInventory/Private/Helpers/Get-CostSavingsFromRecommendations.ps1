@@ -108,6 +108,76 @@ function Get-CostSavingsFromRecommendations {
         Write-Verbose "RI recommendations reduced from $($riRecs.Count) to $($optimizedRi.Count) for cost calculation"
     }
     
+    # SAVINGS PLAN DEDUPLICATION - Choose best savings per subscription
+    # Savings Plans are ALTERNATIVE to Reserved Instances, not additive
+    $savingsPlanRecs = $Recommendations | Where-Object { 
+        $_.Category -eq 'Cost' -and (
+            $_.Problem -like "*savings plan*" -or 
+            $_.Solution -like "*savings plan*"
+        )
+    }
+    
+    if ($savingsPlanRecs.Count -gt 0) {
+        Write-Verbose "Deduplicating $($savingsPlanRecs.Count) Savings Plan recommendations for cost calculation"
+        
+        # Extract metadata from TechnicalDetails
+        foreach ($rec in $savingsPlanRecs) {
+            if ($rec.TechnicalDetails -match 'Lookback:\s*(\d+)') {
+                $rec | Add-Member -NotePropertyName '_Lookback' -NotePropertyValue $Matches[1] -Force
+            }
+            if ($rec.TechnicalDetails -match 'Term:\s*(\w+)') {
+                $rec | Add-Member -NotePropertyName '_Term' -NotePropertyValue $Matches[1] -Force
+            }
+            
+            # Also try to extract from ExtendedProperties if TechnicalDetails doesn't have it
+            if (-not $rec._Term -and $rec.ExtendedProperties) {
+                $extProps = $rec.ExtendedProperties
+                if ($extProps -is [string]) {
+                    try {
+                        $extProps = $extProps | ConvertFrom-Json
+                    } catch {
+                        Write-Verbose "Could not parse ExtendedProperties JSON for Savings Plan term extraction"
+                    }
+                }
+                if ($extProps) {
+                    if ($extProps.lookbackPeriod -and -not $rec._Lookback) {
+                        $rec | Add-Member -NotePropertyName '_Lookback' -NotePropertyValue $extProps.lookbackPeriod -Force
+                    }
+                    if ($extProps.term -and -not $rec._Term) {
+                        $rec | Add-Member -NotePropertyName '_Term' -NotePropertyValue $extProps.term -Force
+                    }
+                }
+            }
+        }
+        
+        # Group by Subscription (Savings Plans apply per subscription)
+        $spGroups = $savingsPlanRecs | Group-Object -Property SubscriptionName
+        
+        $optimizedSp = foreach ($group in $spGroups) {
+            # Select option with HIGHEST annual savings
+            $bestOption = $group.Group | 
+                Where-Object { $_.PotentialSavings -and $_.PotentialSavings -gt 0 } |
+                Sort-Object -Property PotentialSavings -Descending |
+                Select-Object -First 1
+            
+            if ($bestOption) {
+                $bestOption
+            }
+        }
+        
+        # Replace Savings Plan recommendations with optimized versions
+        $nonSpRecs = $Recommendations | Where-Object { 
+            -not ($_.Category -eq 'Cost' -and (
+                $_.Problem -like "*savings plan*" -or 
+                $_.Solution -like "*savings plan*"
+            ))
+        }
+        
+        $Recommendations = @($nonSpRecs) + @($optimizedSp)
+        
+        Write-Verbose "Savings Plan recommendations reduced from $($savingsPlanRecs.Count) to $($optimizedSp.Count) for cost calculation"
+    }
+    
     $costRecsRaw = @($Recommendations | Where-Object { $_.Category -eq 'Cost' })
     
     if ($costRecsRaw.Count -eq 0) {

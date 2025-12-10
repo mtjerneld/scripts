@@ -59,11 +59,41 @@ function Export-AdvisorReport {
     $operationalRecs = @($groupedRecs | Where-Object { $_.Category -eq 'OperationalExcellence' })
     $performanceRecs = @($groupedRecs | Where-Object { $_.Category -eq 'Performance' })
     
-    # Calculate total savings
-    $totalSavings = ($costRecs | Where-Object { $_.TotalSavings } | Measure-Object -Property TotalSavings -Sum).Sum
-    if (-not $totalSavings) { $totalSavings = 0 }
+    # Calculate savings by strategy (RI and SP are ALTERNATIVE strategies, not additive)
+    $riRecs = @($costRecs | Where-Object { 
+        $_.Problem -like "*reserved instance*" -or 
+        $_.Solution -like "*reserved instance*"
+    })
+    $spRecs = @($costRecs | Where-Object { 
+        $_.Problem -like "*savings plan*" -or 
+        $_.Solution -like "*savings plan*"
+    })
+    $otherCostRecs = @($costRecs | Where-Object { 
+        $_.Problem -notlike "*reserved instance*" -and 
+        $_.Solution -notlike "*reserved instance*" -and
+        $_.Problem -notlike "*savings plan*" -and 
+        $_.Solution -notlike "*savings plan*"
+    })
+    
+    # Calculate totals for each strategy
+    $riTotal = ($riRecs | Where-Object { $_.TotalSavings } | Measure-Object -Property TotalSavings -Sum).Sum
+    if (-not $riTotal) { $riTotal = 0 }
+    
+    $spTotal = ($spRecs | Where-Object { $_.TotalSavings } | Measure-Object -Property TotalSavings -Sum).Sum
+    if (-not $spTotal) { $spTotal = 0 }
+    
+    $otherCostTotal = ($otherCostRecs | Where-Object { $_.TotalSavings } | Measure-Object -Property TotalSavings -Sum).Sum
+    if (-not $otherCostTotal) { $otherCostTotal = 0 }
+    
+    # Total savings = max(RI, SP) + other cost savings (RI and SP are alternatives)
+    $totalSavings = [Math]::Max($riTotal, $spTotal) + $otherCostTotal
+    
     $savingsCurrency = ($costRecs | Where-Object { $_.SavingsCurrency } | Select-Object -First 1).SavingsCurrency
     if (-not $savingsCurrency) { $savingsCurrency = "USD" }
+    
+    # Determine recommended strategy
+    $recommendedStrategy = if ($spTotal -gt $riTotal) { "Savings Plans" } elseif ($riTotal -gt 0) { "Reserved Instances" } else { $null }
+    $recommendedSavings = [Math]::Max($riTotal, $spTotal)
     
     # Get unique subscriptions for filter
     $allSubscriptions = @($AdvisorRecommendations | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object)
@@ -578,6 +608,54 @@ function Export-AdvisorReport {
                 <div class="label">Potential Savings/yr</div>
             </div>
         </div>
+        
+        $(if ($riTotal -gt 0 -or $spTotal -gt 0) {
+            $strategyHtml = @"
+        <div style="background: var(--bg-surface); border-radius: 12px; padding: 24px; margin-bottom: 30px; border: 1px solid var(--border-color);">
+            <h2 style="margin-top: 0; margin-bottom: 20px; font-size: 1.3rem; color: var(--accent-yellow);">Cost Optimization Strategies</h2>
+            <p style="color: var(--text-muted); margin-bottom: 20px; font-size: 0.9rem;">Reserved Instances and Savings Plans are <strong>alternative strategies</strong>, not cumulative. Choose the approach that best fits your workload patterns.</p>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 20px;">
+                $(if ($riTotal -gt 0) {
+                    $riRecommended = if ($recommendedStrategy -eq "Reserved Instances") { '<span style="color: var(--accent-green); font-weight: 600; margin-left: 10px;">✓ RECOMMENDED</span>' } else { '' }
+                    @"
+                <div style="background: var(--bg-secondary); padding: 20px; border-radius: 8px; border: 1px solid var(--border-color);">
+                    <h3 style="margin-top: 0; margin-bottom: 10px; color: var(--accent-blue);">Strategy A: Reserved Instances$riRecommended</h3>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: var(--accent-green); margin: 10px 0;">$savingsCurrency $([math]::Round($riTotal, 0))/yr</div>
+                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin: 10px 0 0 0;">Purchase RIs for specific VM sizes. Best for stable, predictable workloads.</p>
+                </div>
+"@
+                })
+                
+                $(if ($spTotal -gt 0) {
+                    $spRecommended = if ($recommendedStrategy -eq "Savings Plans") { '<span style="color: var(--accent-green); font-weight: 600; margin-left: 10px;">✓ RECOMMENDED</span>' } else { '' }
+                    @"
+                <div style="background: var(--bg-secondary); padding: 20px; border-radius: 8px; border: 1px solid var(--border-color);">
+                    <h3 style="margin-top: 0; margin-bottom: 10px; color: var(--accent-blue);">Strategy B: Savings Plans$spRecommended</h3>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: var(--accent-green); margin: 10px 0;">$savingsCurrency $([math]::Round($spTotal, 0))/yr</div>
+                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin: 10px 0 0 0;">Commitment on compute spend. Best for dynamic, mixed workloads.</p>
+                </div>
+"@
+                })
+            </div>
+            
+            $(if ($recommendedStrategy) {
+                $savingsDiff = [Math]::Abs($spTotal - $riTotal)
+                if ($savingsDiff -gt 0) {
+                    @"
+            <div style="background: rgba(0, 210, 106, 0.1); border-left: 4px solid var(--accent-green); padding: 15px; border-radius: 6px; margin-top: 15px;">
+                <strong style="color: var(--accent-green);">Recommendation:</strong> 
+                <span style="color: var(--text-primary);">$recommendedStrategy provides $savingsCurrency $([math]::Round($savingsDiff, 0)) more annual savings compared to the alternative strategy.</span>
+            </div>
+"@
+                }
+            })
+            
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 20px; margin-bottom: 0; font-style: italic;">Note: These strategies are alternatives, not cumulative. You can also use a hybrid approach (RIs for stable VMs + Savings Plan for dynamic workloads) with detailed analysis.</p>
+        </div>
+"@
+            $strategyHtml
+        } else { '' })
         
         <div class="filter-section">
             <div class="filter-group">
