@@ -38,6 +38,15 @@ function Export-DashboardReport {
         [AllowEmptyCollection()]
         [System.Collections.Generic.List[PSObject]]$AdvisorRecommendations = $null,
         
+        [Parameter(Mandatory = $false)]
+        [hashtable]$SecurityReportData = $null,
+        
+        [Parameter(Mandatory = $false)]
+        [hashtable]$VMBackupReportData = $null,
+        
+        [Parameter(Mandatory = $false)]
+        [hashtable]$AdvisorReportData = $null,
+        
         [Parameter(Mandatory = $true)]
         [string]$OutputPath,
         
@@ -46,66 +55,80 @@ function Export-DashboardReport {
     
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     
-    # Security metrics
-    $findings = if ($AuditResult.Findings) { @($AuditResult.Findings) } else { @() }
-    $failedFindings = @($findings | Where-Object { $_.Status -eq 'FAIL' })
-    $passedFindings = @($findings | Where-Object { $_.Status -eq 'PASS' })
-    
-    # Use the same compliance score calculation as Security Report (weighted scoring)
-    if ($AuditResult.ComplianceScores) {
-        $securityScore = [math]::Round($AuditResult.ComplianceScores.OverallScore, 1)
-        $totalChecks = $AuditResult.ComplianceScores.TotalChecks
-        $passedChecks = $AuditResult.ComplianceScores.PassedChecks
+    # Security metrics - use pre-calculated data from Security Report if available
+    if ($SecurityReportData) {
+        $securityScore = $SecurityReportData.SecurityScore
+        $totalChecks = $SecurityReportData.TotalChecks
+        $passedChecks = $SecurityReportData.PassedChecks
+        $criticalCount = $SecurityReportData.CriticalCount
+        $highCount = $SecurityReportData.HighCount
+        $mediumCount = $SecurityReportData.MediumCount
+        $lowCount = $SecurityReportData.LowCount
+        $deprecatedCount = $SecurityReportData.DeprecatedCount
+        $pastDueCount = $SecurityReportData.PastDueCount
     } else {
-        # Fallback to simple calculation if ComplianceScores not available
-        $totalChecks = $findings.Count
-        $securityScore = if ($totalChecks -gt 0) { [math]::Round(($passedFindings.Count / $totalChecks) * 100, 1) } else { 0 }
-        $passedChecks = $passedFindings.Count
-    }
-    
-    # Count by severity using helper function
-    $severityCounts = Get-FindingsBySeverity -Findings $failedFindings -StatusFilter "FAIL"
-    $criticalCount = $severityCounts.Critical
-    $highCount = $severityCounts.High
-    $mediumCount = $severityCounts.Medium
-    $lowCount = $severityCounts.Low
-    
-    # VM Backup metrics
-    $totalVMs = $VMInventory.Count
-    $protectedVMs = @($VMInventory | Where-Object { $_.BackupEnabled }).Count
-    $unprotectedVMs = $totalVMs - $protectedVMs
-    $backupRate = if ($totalVMs -gt 0) { [math]::Round(($protectedVMs / $totalVMs) * 100, 1) } else { 0 }
-    $runningVMs = @($VMInventory | Where-Object { $_.PowerState -eq 'running' }).Count
-    
-    # Deprecated Components metrics - include all findings with EOLDate, regardless of status
-    $eolFindings = Get-EOLFindings -Findings $findings
-    $deprecatedCount = $eolFindings.Count
-    
-    # Debug: Log EOL findings count and details
-    Write-Verbose "Dashboard - EOL Findings count: $deprecatedCount"
-    Write-Verbose "Dashboard - Total findings count: $($findings.Count)"
-    if ($eolFindings.Count -gt 0) {
-        foreach ($finding in $eolFindings) {
-            Write-Verbose "Dashboard - EOL Finding: Resource=$($finding.ResourceName), EOLDate=$($finding.EOLDate), Status=$($finding.Status)"
-        }
-    }
-    $pastDueCount = @($eolFindings | Where-Object { 
-        try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
-    }).Count
-    
-    # Advisor metrics
-    $advisorCount = 0
-    $advisorHighCount = 0
-    $advisorSavings = 0
-    $advisorCurrency = "USD"
-    if ($AdvisorRecommendations -and $AdvisorRecommendations.Count -gt 0) {
-        $advisorCount = $AdvisorRecommendations.Count
-        $advisorHighCount = @($AdvisorRecommendations | Where-Object { $_.Impact -eq 'High' }).Count
+        # Fallback: Calculate from AuditResult
+        $findings = if ($AuditResult.Findings) { @($AuditResult.Findings) } else { @() }
+        $failedFindings = @($findings | Where-Object { $_.Status -eq 'FAIL' })
         
-        # Calculate cost savings using helper function
-        $savingsData = Get-CostSavingsFromRecommendations -Recommendations $AdvisorRecommendations
-        $advisorSavings = $savingsData.TotalSavings
-        $advisorCurrency = $savingsData.Currency
+        if ($AuditResult.ComplianceScores) {
+            $securityScore = [math]::Round($AuditResult.ComplianceScores.OverallScore, 1)
+            $totalChecks = $AuditResult.ComplianceScores.TotalChecks
+            $passedChecks = $AuditResult.ComplianceScores.PassedChecks
+        } else {
+            $totalChecks = $findings.Count
+            $passedChecks = @($findings | Where-Object { $_.Status -eq 'PASS' }).Count
+            $securityScore = if ($totalChecks -gt 0) { [math]::Round(($passedChecks / $totalChecks) * 100, 1) } else { 0 }
+        }
+        
+        $severityCounts = Get-FindingsBySeverity -Findings $failedFindings -StatusFilter "FAIL"
+        $criticalCount = $severityCounts.Critical
+        $highCount = $severityCounts.High
+        $mediumCount = $severityCounts.Medium
+        $lowCount = $severityCounts.Low
+        
+        $eolFindings = Get-EOLFindings -Findings $findings
+        $deprecatedCount = $eolFindings.Count
+        $pastDueCount = @($eolFindings | Where-Object { 
+            try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
+        }).Count
+    }
+    
+    # VM Backup metrics - use pre-calculated data from VM Backup Report if available
+    if ($VMBackupReportData) {
+        $totalVMs = $VMBackupReportData.TotalVMs
+        $protectedVMs = $VMBackupReportData.ProtectedVMs
+        $unprotectedVMs = $VMBackupReportData.UnprotectedVMs
+        $backupRate = $VMBackupReportData.BackupRate
+        $runningVMs = $VMBackupReportData.RunningVMs
+    } else {
+        # Fallback: Calculate from VMInventory
+        $totalVMs = $VMInventory.Count
+        $protectedVMs = @($VMInventory | Where-Object { $_.BackupEnabled }).Count
+        $unprotectedVMs = $totalVMs - $protectedVMs
+        $backupRate = if ($totalVMs -gt 0) { [math]::Round(($protectedVMs / $totalVMs) * 100, 1) } else { 0 }
+        $runningVMs = @($VMInventory | Where-Object { $_.PowerState -eq 'running' }).Count
+    }
+    
+    # Advisor metrics - use pre-calculated data from Advisor Report if available
+    if ($AdvisorReportData) {
+        $advisorCount = $AdvisorReportData.AdvisorCount
+        $advisorHighCount = $AdvisorReportData.AdvisorHighCount
+        $advisorSavings = $AdvisorReportData.TotalSavings
+        $advisorCurrency = $AdvisorReportData.SavingsCurrency
+    } else {
+        # Fallback: Calculate from AdvisorRecommendations
+        $advisorCount = 0
+        $advisorHighCount = 0
+        $advisorSavings = 0
+        $advisorCurrency = "USD"
+        if ($AdvisorRecommendations -and $AdvisorRecommendations.Count -gt 0) {
+            $advisorCount = $AdvisorRecommendations.Count
+            $advisorHighCount = @($AdvisorRecommendations | Where-Object { $_.Impact -eq 'High' }).Count
+            $savingsData = Get-CostSavingsFromRecommendations -Recommendations $AdvisorRecommendations
+            $advisorSavings = $savingsData.TotalSavings
+            $advisorCurrency = $savingsData.Currency
+        }
     }
     
     # Subscription count
@@ -138,342 +161,11 @@ function Export-DashboardReport {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Azure Audit Dashboard</title>
     <style>
-        :root {
-            --bg-primary: #0f0f1a;
-            --bg-secondary: #1a1a2e;
-            --bg-surface: #252542;
-            --bg-hover: #2d2d4a;
-            --text-primary: #e8e8e8;
-            --text-secondary: #b8b8b8;
-            --text-muted: #888;
-            --accent-green: #00d26a;
-            --accent-red: #ff6b6b;
-            --accent-yellow: #feca57;
-            --accent-blue: #54a0ff;
-            --accent-purple: #9b59b6;
-            --border-color: #3d3d5c;
-        }
-        
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        
-        body {
-            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.6;
-        }
-        
-        /* Navigation */
-        .report-nav {
-            background: var(--bg-secondary);
-            padding: 15px 30px;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .nav-brand {
-            font-weight: 600;
-            font-size: 1.1rem;
-            color: var(--accent-blue);
-            margin-right: 30px;
-        }
-        
-        .nav-link {
-            color: var(--text-muted);
-            text-decoration: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            transition: all 0.2s ease;
-            font-size: 0.9rem;
-        }
-        
-        .nav-link:hover {
-            background: var(--bg-surface);
-            color: var(--text-primary);
-        }
-        
-        .nav-link.active {
-            background: var(--accent-blue);
-            color: white;
-        }
-        
-        /* Main content */
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 30px;
-        }
-        
-        /* Hero section */
-        .hero {
-            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-surface) 100%);
-            border-radius: 16px;
-            padding: 40px;
-            margin-bottom: 30px;
-            border: 1px solid var(--border-color);
-            text-align: center;
-        }
-        
-        .hero h1 {
-            font-size: 2.5rem;
-            font-weight: 700;
-            margin-bottom: 10px;
-        }
-        
-        .hero .subtitle {
-            color: var(--text-muted);
-            font-size: 1rem;
-            margin-bottom: 20px;
-        }
-        
-        .health-indicator {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            background: var(--bg-hover);
-            padding: 12px 24px;
-            border-radius: 30px;
-            font-weight: 600;
-        }
-        
-        .health-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        /* Dashboard grid */
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 24px;
-            margin-bottom: 30px;
-        }
-        
-        /* Cards */
-        .card {
-            background: var(--bg-surface);
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            overflow: hidden;
-        }
-        
-        .card-header {
-            padding: 20px 24px;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .card-title {
-            font-weight: 600;
-            font-size: 1.1rem;
-        }
-        
-        .card-link {
-            color: var(--accent-blue);
-            text-decoration: none;
-            font-size: 0.85rem;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        
-        .card-link:hover {
-            text-decoration: underline;
-        }
-        
-        .card-body {
-            padding: 24px;
-        }
-        
-        /* Score display */
-        .score-display {
-            text-align: center;
-            padding: 20px;
-        }
-        
-        .score-circle {
-            width: 150px;
-            height: 150px;
-            border-radius: 50%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 20px;
-            position: relative;
-        }
-        
-        .score-circle::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            border-radius: 50%;
-            padding: 6px;
-            background: conic-gradient(var(--accent-green) calc(var(--score) * 3.6deg), var(--bg-hover) 0);
-            -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-            mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-            -webkit-mask-composite: xor;
-            mask-composite: exclude;
-        }
-        
-        .score-value {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: var(--accent-green);
-        }
-        
-        .score-label {
-            font-size: 0.85rem;
-            color: var(--text-muted);
-        }
-        
-        /* Metric rows */
-        .metric-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 12px 0;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .metric-row:last-child {
-            border-bottom: none;
-        }
-        
-        .metric-label {
-            color: var(--text-secondary);
-        }
-        
-        .metric-value {
-            font-weight: 600;
-        }
-        
-        .metric-value.critical { color: var(--accent-red); }
-        .metric-value.high { color: #ff9f43; }
-        .metric-value.medium { color: var(--accent-yellow); }
-        .metric-value.low { color: var(--accent-blue); }
-        .metric-value.green { color: var(--accent-green); }
-        .metric-value.red { color: var(--accent-red); }
-        
-        /* Quick stats */
-        .quick-stats {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        
-        .quick-stat {
-            background: var(--bg-surface);
-            padding: 24px;
-            border-radius: 12px;
-            text-align: center;
-            border: 1px solid var(--border-color);
-        }
-        
-        .quick-stat .value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: var(--accent-blue);
-        }
-        
-        .quick-stat .label {
-            color: var(--text-muted);
-            font-size: 0.85rem;
-            margin-top: 5px;
-        }
-        
-        /* Report links */
-        .report-links {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-        }
-        
-        .report-link {
-            background: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 24px;
-            text-decoration: none;
-            color: var(--text-primary);
-            transition: all 0.2s ease;
-            display: flex;
-            align-items: center;
-            gap: 20px;
-        }
-        
-        .report-link:hover {
-            transform: translateY(-3px);
-            border-color: var(--accent-blue);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-        }
-        
-        .report-icon {
-            width: 60px;
-            height: 60px;
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
-            flex-shrink: 0;
-        }
-        
-        .report-icon.security {
-            background: rgba(255, 107, 107, 0.15);
-            color: var(--accent-red);
-        }
-        
-        .report-icon.backup {
-            background: rgba(0, 210, 106, 0.15);
-            color: var(--accent-green);
-        }
-        
-        .report-info h3 {
-            font-size: 1.1rem;
-            margin-bottom: 5px;
-        }
-        
-        .report-info p {
-            color: var(--text-muted);
-            font-size: 0.9rem;
-        }
-        
-        /* Footer */
-        .footer {
-            text-align: center;
-            padding: 30px;
-            color: var(--text-muted);
-            font-size: 0.85rem;
-        }
-        
-        @media (max-width: 768px) {
-            .quick-stats { grid-template-columns: repeat(2, 1fr); }
-            .dashboard-grid { grid-template-columns: 1fr; }
-            .hero { padding: 30px 20px; }
-            .hero h1 { font-size: 1.8rem; }
-        }
+$(Get-ReportStylesheet)
     </style>
 </head>
 <body>
-    <nav class="report-nav">
-        <span class="nav-brand">Azure Audit Reports</span>
-        <a href="index.html" class="nav-link active">Dashboard</a>
-        <a href="security.html" class="nav-link">Security Audit</a>
-        <a href="vm-backup.html" class="nav-link">VM Backup</a>
-        <a href="advisor.html" class="nav-link">Advisor</a>
-    </nav>
+$(Get-ReportNavigation -ActivePage "Dashboard")
     
     <div class="container">
         <div class="hero">
@@ -589,7 +281,7 @@ function Export-DashboardReport {
                     </div>
                     <div class="metric-row">
                         <span class="metric-label">Potential Savings</span>
-                        <span class="metric-value green">$($advisorCurrency)$([math]::Round($advisorSavings, 0))/yr</span>
+                        <span class="metric-value green">$($advisorCurrency) $([math]::Round($advisorSavings, 0))/yr</span>
                     </div>
                 </div>
             </div>

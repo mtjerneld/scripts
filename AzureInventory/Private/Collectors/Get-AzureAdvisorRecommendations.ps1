@@ -109,468 +109,11 @@ function Export-AdvisorReport {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Azure Advisor Recommendations Report</title>
     <style>
-        :root {
-            --bg-primary: #0f0f1a;
-            --bg-secondary: #1a1a2e;
-            --bg-surface: #252542;
-            --bg-hover: #2d2d4a;
-            --bg-resource: #1e1e36;
-            --text-primary: #e8e8e8;
-            --text-secondary: #b8b8b8;
-            --text-muted: #888;
-            --accent-green: #00d26a;
-            --accent-red: #ff6b6b;
-            --accent-yellow: #feca57;
-            --accent-blue: #54a0ff;
-            --accent-purple: #9b59b6;
-            --accent-orange: #ff9f43;
-            --border-color: #3d3d5c;
-        }
-        
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        
-        body {
-            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.6;
-        }
-        
-        .report-nav {
-            background: var(--bg-secondary);
-            padding: 15px 30px;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            border-bottom: 1px solid var(--border-color);
-            position: sticky;
-            top: 0;
-            z-index: 100;
-        }
-        
-        .nav-brand {
-            font-weight: 600;
-            font-size: 1.1rem;
-            color: var(--accent-blue);
-            margin-right: 30px;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 30px;
-        }
-        
-        .page-header {
-            margin-bottom: 30px;
-        }
-        
-        .page-header h1 {
-            font-size: 2rem;
-            font-weight: 600;
-            margin-bottom: 8px;
-        }
-        
-        .page-header .subtitle {
-            color: var(--text-muted);
-            font-size: 0.9rem;
-        }
-        
-        /* Summary Cards */
-        .summary-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 16px;
-            margin-bottom: 30px;
-        }
-        
-        .summary-card {
-            background: var(--bg-surface);
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-            border: 1px solid var(--border-color);
-        }
-        
-        .summary-card .value {
-            font-size: 1.8rem;
-            font-weight: 700;
-            line-height: 1.2;
-        }
-        
-        .summary-card .label {
-            color: var(--text-muted);
-            font-size: 0.75rem;
-            margin-top: 6px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
-        .summary-card.total .value { color: var(--accent-blue); }
-        .summary-card.resources .value { color: var(--text-secondary); }
-        .summary-card.cost .value { color: var(--accent-green); }
-        .summary-card.security .value { color: var(--accent-red); }
-        .summary-card.reliability .value { color: var(--accent-orange); }
-        .summary-card.performance .value { color: var(--accent-purple); }
-        .summary-card.savings .value { color: var(--accent-green); }
-        
-        /* Filter Section */
-        .filter-section {
-            background: var(--bg-surface);
-            padding: 16px 20px;
-            border-radius: 10px;
-            margin-bottom: 24px;
-            border: 1px solid var(--border-color);
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-            align-items: center;
-        }
-        
-        .filter-group {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .filter-group label {
-            color: var(--text-muted);
-            font-size: 0.85rem;
-        }
-        
-        .filter-group input, .filter-group select {
-            background: var(--bg-primary);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 0.9rem;
-        }
-        
-        .filter-group input { width: 200px; }
-        .filter-group select { min-width: 150px; }
-        
-        /* Category Sections */
-        .category-section {
-            background: var(--bg-surface);
-            border-radius: 10px;
-            margin-bottom: 16px;
-            border: 1px solid var(--border-color);
-            overflow: hidden;
-        }
-        
-        .category-header {
-            background: var(--bg-secondary);
-            padding: 14px 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-            transition: background 0.2s ease;
-        }
-        
-        .category-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .category-header.collapsed + .category-content {
-            display: none;
-        }
-        
-        .category-title {
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .category-icon {
-            width: 28px;
-            height: 28px;
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.85rem;
-            font-weight: 700;
-        }
-        
-        .category-icon.cost { background: rgba(0, 210, 106, 0.2); color: var(--accent-green); }
-        .category-icon.security { background: rgba(255, 107, 107, 0.2); color: var(--accent-red); }
-        .category-icon.reliability { background: rgba(255, 159, 67, 0.2); color: var(--accent-orange); }
-        .category-icon.operational { background: rgba(84, 160, 255, 0.2); color: var(--accent-blue); }
-        .category-icon.performance { background: rgba(155, 89, 182, 0.2); color: var(--accent-purple); }
-        
-        .category-stats {
-            display: flex;
-            gap: 12px;
-            font-size: 0.8rem;
-        }
-        
-        .expand-icon {
-            width: 0;
-            height: 0;
-            border-left: 5px solid var(--text-muted);
-            border-top: 4px solid transparent;
-            border-bottom: 4px solid transparent;
-            transition: transform 0.2s;
-            margin-right: 8px;
-        }
-        
-        .category-header:not(.collapsed) .expand-icon {
-            transform: rotate(90deg);
-        }
-        
-        /* Impact Badges */
-        .impact-badge {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 500;
-        }
-        
-        .impact-badge.high { background: rgba(255, 107, 107, 0.15); color: var(--accent-red); }
-        .impact-badge.medium { background: rgba(254, 202, 87, 0.15); color: var(--accent-yellow); }
-        .impact-badge.low { background: rgba(84, 160, 255, 0.15); color: var(--accent-blue); }
-        
-        /* Recommendation Cards */
-        .rec-card {
-            border-bottom: 1px solid var(--border-color);
-            transition: background 0.2s;
-        }
-        
-        .rec-card:last-child {
-            border-bottom: none;
-        }
-        
-        .rec-header {
-            padding: 16px 20px;
-            cursor: pointer;
-            display: grid;
-            grid-template-columns: 24px 1fr auto;
-            gap: 12px;
-            align-items: start;
-        }
-        
-        .rec-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .rec-expand {
-            width: 0;
-            height: 0;
-            border-left: 5px solid var(--text-muted);
-            border-top: 4px solid transparent;
-            border-bottom: 4px solid transparent;
-            transition: transform 0.2s;
-            margin-top: 6px;
-        }
-        
-        .rec-card.expanded .rec-expand {
-            transform: rotate(90deg);
-        }
-        
-        .rec-main {
-            min-width: 0;
-        }
-        
-        .rec-problem {
-            font-weight: 500;
-            margin-bottom: 4px;
-            color: var(--text-primary);
-        }
-        
-        .rec-meta {
-            display: flex;
-            gap: 16px;
-            flex-wrap: wrap;
-            font-size: 0.85rem;
-            color: var(--text-muted);
-        }
-        
-        .rec-meta-item {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        
-        .rec-stats {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            flex-shrink: 0;
-        }
-        
-        .resource-count {
-            background: var(--bg-primary);
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-        }
-        
-        .savings-badge {
-            color: var(--accent-green);
-            font-weight: 600;
-            font-size: 0.9rem;
-        }
-        
-        /* Recommendation Details */
-        .rec-details {
-            display: none;
-            background: var(--bg-hover);
-            padding: 0 20px 20px 56px;
-        }
-        
-        .rec-card.expanded .rec-details {
-            display: block;
-        }
-        
-        .detail-section {
-            margin-bottom: 20px;
-        }
-        
-        .detail-section:last-child {
-            margin-bottom: 0;
-        }
-        
-        .detail-title {
-            color: var(--accent-blue);
-            font-weight: 600;
-            font-size: 0.9rem;
-            margin-bottom: 8px;
-        }
-        
-        .detail-content {
-            color: var(--text-secondary);
-            font-size: 0.9rem;
-            line-height: 1.6;
-        }
-        
-        .detail-content a {
-            color: var(--accent-blue);
-            text-decoration: none;
-        }
-        
-        .detail-content a:hover {
-            text-decoration: underline;
-        }
-        
-        /* Resources Table */
-        .resources-section {
-            margin-top: 20px;
-            background: var(--bg-resource);
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        
-        .resources-header {
-            padding: 12px 16px;
-            background: var(--bg-secondary);
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .resources-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .resources-title {
-            font-weight: 500;
-            font-size: 0.9rem;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .resources-table-wrapper {
-            display: none;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        
-        .resources-section.expanded .resources-table-wrapper {
-            display: block;
-        }
-        
-        .resources-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.85rem;
-        }
-        
-        .resources-table th {
-            background: var(--bg-surface);
-            padding: 10px 12px;
-            text-align: left;
-            font-weight: 600;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            font-size: 0.75rem;
-            letter-spacing: 0.5px;
-            position: sticky;
-            top: 0;
-        }
-        
-        .resources-table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid var(--border-color);
-            color: var(--text-secondary);
-        }
-        
-        .resources-table tr:last-child td {
-            border-bottom: none;
-        }
-        
-        .resources-table tr:hover td {
-            background: var(--bg-surface);
-        }
-        
-        .resource-name {
-            color: var(--text-primary);
-            font-weight: 500;
-        }
-        
-        /* No data */
-        .no-data {
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--text-muted);
-        }
-        
-        .no-data h2 {
-            color: var(--accent-green);
-            margin-bottom: 10px;
-        }
-        
-        /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        
-        ::-webkit-scrollbar-track {
-            background: var(--bg-primary);
-        }
-        
-        ::-webkit-scrollbar-thumb {
-            background: var(--border-color);
-            border-radius: 4px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--text-muted);
-        }
+$(Get-ReportStylesheet)
     </style>
 </head>
 <body>
-    <nav class="report-nav">
-        <span class="nav-brand">Azure Advisor Report</span>
-        <span style="color: var(--text-muted); font-size: 0.85rem;">Generated: $timestamp | Tenant: $TenantId</span>
-    </nav>
+$(Get-ReportNavigation -ActivePage "Advisor")
     
     <div class="container">
         <div class="page-header">
@@ -604,8 +147,8 @@ function Export-AdvisorReport {
                 <div class="label">Performance</div>
             </div>
             <div class="summary-card savings">
-                <div class="value">$savingsCurrency $([math]::Round($totalSavings, 0))</div>
-                <div class="label">Potential Savings/yr</div>
+                <div class="value">$savingsCurrency $([math]::Round($totalSavings, 0))/yr</div>
+                <div class="label">Potential Savings</div>
             </div>
         </div>
         
@@ -617,7 +160,7 @@ function Export-AdvisorReport {
             
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 20px;">
                 $(if ($riTotal -gt 0) {
-                    $riRecommended = if ($recommendedStrategy -eq "Reserved Instances") { '<span style="color: var(--accent-green); font-weight: 600; margin-left: 10px;">✓ RECOMMENDED</span>' } else { '' }
+                    $riRecommended = if ($recommendedStrategy -eq "Reserved Instances") { '<span style="color: var(--accent-green); font-weight: 600; margin-left: 10px;">&#10003; RECOMMENDED</span>' } else { '' }
                     @"
                 <div style="background: var(--bg-secondary); padding: 20px; border-radius: 8px; border: 1px solid var(--border-color);">
                     <h3 style="margin-top: 0; margin-bottom: 10px; color: var(--accent-blue);">Strategy A: Reserved Instances$riRecommended</h3>
@@ -628,7 +171,7 @@ function Export-AdvisorReport {
                 })
                 
                 $(if ($spTotal -gt 0) {
-                    $spRecommended = if ($recommendedStrategy -eq "Savings Plans") { '<span style="color: var(--accent-green); font-weight: 600; margin-left: 10px;">✓ RECOMMENDED</span>' } else { '' }
+                    $spRecommended = if ($recommendedStrategy -eq "Savings Plans") { '<span style="color: var(--accent-green); font-weight: 600; margin-left: 10px;">&#10003; RECOMMENDED</span>' } else { '' }
                     @"
                 <div style="background: var(--bg-secondary); padding: 20px; border-radius: 8px; border: 1px solid var(--border-color);">
                     <h3 style="margin-top: 0; margin-bottom: 10px; color: var(--accent-blue);">Strategy B: Savings Plans$spRecommended</h3>
@@ -717,7 +260,7 @@ function Export-AdvisorReport {
             $html += @"
         
         <div class="category-section" data-category="$($cat.Name.ToLower())">
-            <div class="category-header" onclick="toggleCategory(this)">
+            <div class="category-header collapsed" onclick="toggleCategory(this)">
                 <div class="category-title">
                     <span class="expand-icon"></span>
                     <span class="category-icon $($cat.Icon)">$($cat.Recs.Count)</span>
@@ -993,9 +536,6 @@ function Export-AdvisorReport {
         searchFilter.addEventListener('input', applyFilters);
         impactFilter.addEventListener('change', applyFilters);
         subscriptionFilter.addEventListener('change', applyFilters);
-        
-        // Expand all categories by default
-        document.querySelectorAll('.category-header.collapsed').forEach(h => h.classList.remove('collapsed'));
     </script>
 </body>
 </html>
@@ -1006,6 +546,21 @@ function Export-AdvisorReport {
     # Write to file
     $html | Out-File -FilePath $OutputPath -Encoding UTF8
     
-    return $OutputPath
+    # Calculate advisor counts
+    $advisorCount = $totalRecs
+    $advisorHighCount = @($groupedRecs | Where-Object { $_.Impact -eq 'High' }).Count
+    
+    # Return both path and calculated savings data for reuse in Dashboard
+    return @{
+        OutputPath = $OutputPath
+        AdvisorCount = $advisorCount
+        AdvisorHighCount = $advisorHighCount
+        TotalSavings = $totalSavings
+        SavingsCurrency = $savingsCurrency
+        RiTotal = $riTotal
+        SpTotal = $spTotal
+        OtherCostTotal = $otherCostTotal
+        RecommendedStrategy = $recommendedStrategy
+    }
 }
 

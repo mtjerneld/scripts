@@ -66,20 +66,18 @@ function Generate-AuditReports {
     Write-Host "Output folder: $outputFolder" -ForegroundColor Gray
     
     # Generate reports
-    try {
-        Write-Host "  - Dashboard..." -NoNewline
-        $dashboardPath = Join-Path $outputFolder "index.html"
-        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -OutputPath $dashboardPath -TenantId $tenantId
-        Write-Host " OK" -ForegroundColor Green
-    }
-    catch {
-        Write-Host " ERROR: $_" -ForegroundColor Red
-    }
+    # Generate all detail reports first to collect metadata for Dashboard
+    $securityReportData = $null
+    $vmBackupReportData = $null
+    $advisorReportData = $null
     
     try {
         Write-Host "  - Security Audit..." -NoNewline
         $securityReportPath = Join-Path $outputFolder "security.html"
-        $null = Export-SecurityReport -AuditResult $AuditResult -OutputPath $securityReportPath
+        $securityResult = Export-SecurityReport -AuditResult $AuditResult -OutputPath $securityReportPath
+        if ($securityResult -is [hashtable]) {
+            $securityReportData = $securityResult
+        }
         Write-Host " OK" -ForegroundColor Green
     }
     catch {
@@ -89,7 +87,10 @@ function Generate-AuditReports {
     try {
         Write-Host "  - VM Backup..." -NoNewline
         $vmBackupReportPath = Join-Path $outputFolder "vm-backup.html"
-        $null = Export-VMBackupReport -VMInventory $AuditResult.VMInventory -OutputPath $vmBackupReportPath -TenantId $tenantId
+        $vmBackupResult = Export-VMBackupReport -VMInventory $AuditResult.VMInventory -OutputPath $vmBackupReportPath -TenantId $tenantId
+        if ($vmBackupResult -is [hashtable]) {
+            $vmBackupReportData = $vmBackupResult
+        }
         Write-Host " OK" -ForegroundColor Green
     }
     catch {
@@ -99,7 +100,21 @@ function Generate-AuditReports {
     try {
         Write-Host "  - Advisor..." -NoNewline
         $advisorReportPath = Join-Path $outputFolder "advisor.html"
-        $null = Export-AdvisorReport -AdvisorRecommendations $AuditResult.AdvisorRecommendations -OutputPath $advisorReportPath -TenantId $tenantId
+        $advisorResult = Export-AdvisorReport -AdvisorRecommendations $AuditResult.AdvisorRecommendations -OutputPath $advisorReportPath -TenantId $tenantId
+        if ($advisorResult -is [hashtable]) {
+            $advisorReportData = $advisorResult
+        }
+        Write-Host " OK" -ForegroundColor Green
+    }
+    catch {
+        Write-Host " ERROR: $_" -ForegroundColor Red
+    }
+    
+    # Generate Dashboard last, using metadata from all detail reports
+    try {
+        Write-Host "  - Dashboard..." -NoNewline
+        $dashboardPath = Join-Path $outputFolder "index.html"
+        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -SecurityReportData $securityReportData -VMBackupReportData $vmBackupReportData -AdvisorReportData $advisorReportData -OutputPath $dashboardPath -TenantId $tenantId
         Write-Host " OK" -ForegroundColor Green
     }
     catch {

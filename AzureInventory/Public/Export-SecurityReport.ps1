@@ -78,6 +78,26 @@ function Export-SecurityReport {
         
         $totalFindings = $findings.Count
         
+        # Calculate compliance score
+        if ($AuditResult.ComplianceScores) {
+            $securityScore = [math]::Round($AuditResult.ComplianceScores.OverallScore, 1)
+            $totalChecks = $AuditResult.ComplianceScores.TotalChecks
+            $passedChecks = $AuditResult.ComplianceScores.PassedChecks
+        } else {
+            # Fallback to simple calculation if ComplianceScores not available
+            $totalChecks = $findings.Count
+            $passedChecks = @($findings | Where-Object { $_.Status -eq 'PASS' }).Count
+            $securityScore = if ($totalChecks -gt 0) { [math]::Round(($passedChecks / $totalChecks) * 100, 1) } else { 0 }
+        }
+        
+        # Calculate deprecated components counts
+        $deprecatedCount = $eolFindings.Count
+        $pastDueCount = if ($deprecatedCount -gt 0) {
+            @($eolFindings | Where-Object { 
+                try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
+            }).Count
+        } else { 0 }
+        
         # Build HTML
         $html = @"
 <!DOCTYPE html>
@@ -197,12 +217,7 @@ $(Get-ReportNavigation -ActivePage "Security")
         }
         
         # EOL/Deprecated Components Alert - Always show heading
-        $eolCount = $eolFindings.Count
-        $pastDueCount = if ($eolCount -gt 0) {
-            ($eolFindings | Where-Object { 
-                try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
-            }).Count
-        } else { 0 }
+        $eolCount = $deprecatedCount
         $upcomingCount = $eolCount - $pastDueCount
         
         $html += @"
@@ -992,7 +1007,19 @@ $(Get-ReportScript -ScriptType "SecurityReport")
         # Write HTML to file
         [System.IO.File]::WriteAllText($OutputPath, $html, [System.Text.Encoding]::UTF8)
         
-        return $OutputPath
+        # Return metadata for Dashboard consumption
+        return @{
+            OutputPath = $OutputPath
+            SecurityScore = $securityScore
+            TotalChecks = $totalChecks
+            PassedChecks = $passedChecks
+            CriticalCount = $criticalValue
+            HighCount = $highValue
+            MediumCount = $mediumValue
+            LowCount = $lowValue
+            DeprecatedCount = $deprecatedCount
+            PastDueCount = $pastDueCount
+        }
     }
     catch {
         Write-Error "Failed to generate HTML report: $_"

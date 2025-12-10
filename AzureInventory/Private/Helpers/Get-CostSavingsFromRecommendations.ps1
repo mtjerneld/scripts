@@ -267,8 +267,48 @@ function Get-CostSavingsFromRecommendations {
         }
     }
     
-    $totalSavings = ($costRecs | Where-Object { $_.PotentialSavings } | Measure-Object -Property PotentialSavings -Sum).Sum
-    $monthlySavings = ($costRecs | Where-Object { $_.MonthlySavings } | Measure-Object -Property MonthlySavings -Sum).Sum
+    # Separate RI, SP, and other cost recommendations
+    # RI and SP are ALTERNATIVE strategies, not additive
+    $riRecs = @($costRecs | Where-Object { 
+        $_.Problem -like "*reserved instance*" -or 
+        $_.Solution -like "*reserved instance*"
+    })
+    $spRecs = @($costRecs | Where-Object { 
+        $_.Problem -like "*savings plan*" -or 
+        $_.Solution -like "*savings plan*"
+    })
+    $otherCostRecs = @($costRecs | Where-Object { 
+        $_.Problem -notlike "*reserved instance*" -and 
+        $_.Solution -notlike "*reserved instance*" -and
+        $_.Problem -notlike "*savings plan*" -and 
+        $_.Solution -notlike "*savings plan*"
+    })
+    
+    # Calculate totals for each strategy
+    $riTotal = ($riRecs | Where-Object { $_.PotentialSavings } | Measure-Object -Property PotentialSavings -Sum).Sum
+    if (-not $riTotal) { $riTotal = 0 }
+    
+    $spTotal = ($spRecs | Where-Object { $_.PotentialSavings } | Measure-Object -Property PotentialSavings -Sum).Sum
+    if (-not $spTotal) { $spTotal = 0 }
+    
+    $otherCostTotal = ($otherCostRecs | Where-Object { $_.PotentialSavings } | Measure-Object -Property PotentialSavings -Sum).Sum
+    if (-not $otherCostTotal) { $otherCostTotal = 0 }
+    
+    # Total savings = max(RI, SP) + other cost savings (RI and SP are alternatives)
+    $totalSavings = [Math]::Max($riTotal, $spTotal) + $otherCostTotal
+    
+    # Calculate monthly savings similarly
+    $riMonthly = ($riRecs | Where-Object { $_.MonthlySavings } | Measure-Object -Property MonthlySavings -Sum).Sum
+    if (-not $riMonthly) { $riMonthly = 0 }
+    
+    $spMonthly = ($spRecs | Where-Object { $_.MonthlySavings } | Measure-Object -Property MonthlySavings -Sum).Sum
+    if (-not $spMonthly) { $spMonthly = 0 }
+    
+    $otherCostMonthly = ($otherCostRecs | Where-Object { $_.MonthlySavings } | Measure-Object -Property MonthlySavings -Sum).Sum
+    if (-not $otherCostMonthly) { $otherCostMonthly = 0 }
+    
+    $monthlySavings = [Math]::Max($riMonthly, $spMonthly) + $otherCostMonthly
+    
     $currency = ($costRecs | Where-Object { $_.SavingsCurrency } | Select-Object -First 1).SavingsCurrency
     if (-not $currency) { $currency = "USD" }
     
