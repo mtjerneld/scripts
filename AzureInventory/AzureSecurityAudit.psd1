@@ -18,6 +18,11 @@
     FunctionsToExport = @(
         'Invoke-AzureSecurityAudit',
         'Export-SecurityReport',
+        'Export-VMBackupReport',
+        'Export-AdvisorReport',
+        'Export-ChangeTrackingReport',
+        'Export-DashboardReport',
+        'Export-NetworkInventoryReport',
         'Connect-AuditEnvironment'
     )
     

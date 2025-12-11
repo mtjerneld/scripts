@@ -1,41 +1,44 @@
 <#
 .SYNOPSIS
-    Generates HTML navigation bar for audit reports.
+    Generates the navigation HTML for audit reports.
 
 .DESCRIPTION
-    Creates a consistent navigation bar with links to all report pages.
-    The active page is highlighted.
+    Returns consistent navigation HTML used across all report pages.
 
 .PARAMETER ActivePage
-    The currently active page: "Dashboard", "Security", "VMBackup", or "Advisor".
+    The current page to highlight as active.
 
-.EXAMPLE
-    $nav = Get-ReportNavigation -ActivePage "Security"
+.OUTPUTS
+    HTML string containing the navigation bar.
 #>
 function Get-ReportNavigation {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)]
-        [ValidateSet('Dashboard', 'Security', 'VMBackup', 'Advisor', 'ChangeTracking')]
-        [string]$ActivePage
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Dashboard', 'Security', 'Network', 'VMBackup', 'Advisor', 'ChangeTracking')]
+        [string]$ActivePage = 'Dashboard'
     )
     
-    $dashboardClass = if ($ActivePage -eq 'Dashboard') { 'active' } else { '' }
-    $securityClass = if ($ActivePage -eq 'Security') { 'active' } else { '' }
-    $vmBackupClass = if ($ActivePage -eq 'VMBackup') { 'active' } else { '' }
-    $advisorClass = if ($ActivePage -eq 'Advisor') { 'active' } else { '' }
-    $changeTrackingClass = if ($ActivePage -eq 'ChangeTracking') { 'active' } else { '' }
+    $navItems = @(
+        @{ Name = 'Dashboard'; Href = 'index.html'; Page = 'Dashboard' }
+        @{ Name = 'Security Audit'; Href = 'security.html'; Page = 'Security' }
+        @{ Name = 'Network Inventory'; Href = 'network.html'; Page = 'Network' }
+        @{ Name = 'VM Backup'; Href = 'vm-backup.html'; Page = 'VMBackup' }
+        @{ Name = 'Advisor'; Href = 'advisor.html'; Page = 'Advisor' }
+        @{ Name = 'Change Tracking'; Href = 'change-tracking.html'; Page = 'ChangeTracking' }
+    )
     
-    return @"
+    $navHtml = @"
     <nav class="report-nav">
         <span class="nav-brand">Azure Audit Reports</span>
-        <a href="index.html" class="nav-link $dashboardClass">Dashboard</a>
-        <a href="security.html" class="nav-link $securityClass">Security Audit</a>
-        <a href="vm-backup.html" class="nav-link $vmBackupClass">VM Backup</a>
-        <a href="advisor.html" class="nav-link $advisorClass">Advisor</a>
-        <a href="change-tracking.html" class="nav-link $changeTrackingClass">Change Tracking</a>
-    </nav>
 "@
+    
+    foreach ($item in $navItems) {
+        $activeClass = if ($item.Page -eq $ActivePage) { ' active' } else { '' }
+        $navHtml += "`n        <a href=`"$($item.Href)`" class=`"nav-link$activeClass`">$($item.Name)</a>"
+    }
+    
+    $navHtml += "`n    </nav>"
+    
+    return $navHtml
 }
-
-

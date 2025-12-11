@@ -50,6 +50,9 @@ function Export-DashboardReport {
         [Parameter(Mandatory = $false)]
         [hashtable]$ChangeTrackingReportData = $null,
         
+        [Parameter(Mandatory = $false)]
+        [hashtable]$NetworkInventoryReportData = $null,
+
         [Parameter(Mandatory = $true)]
         [string]$OutputPath,
         
@@ -133,6 +136,22 @@ function Export-DashboardReport {
         if ($AuditResult.ChangeTrackingData -and $AuditResult.ChangeTrackingData.Count -gt 0) {
             $changeTrackingTotal = $AuditResult.ChangeTrackingData.Count
             $changeTrackingSecurityAlerts = @($AuditResult.ChangeTrackingData | Where-Object { $_.SecurityFlag -in @('high', 'medium') }).Count
+        }
+    }
+
+    # Network Inventory metrics
+    if ($NetworkInventoryReportData) {
+        $networkVNetCount = $NetworkInventoryReportData.VNetCount
+        $networkDeviceCount = $NetworkInventoryReportData.DeviceCount
+    } else {
+        $networkVNetCount = if ($AuditResult.NetworkInventory) { $AuditResult.NetworkInventory.Count } else { 0 }
+        $networkDeviceCount = 0
+        if ($AuditResult.NetworkInventory) {
+            foreach ($vnet in $AuditResult.NetworkInventory) {
+                foreach ($subnet in $vnet.Subnets) {
+                    $networkDeviceCount += $subnet.ConnectedDevices.Count
+                }
+            }
         }
     }
     
@@ -290,6 +309,24 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                     </div>
                 </div>
             </div>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Network Inventory</span>
+                    <a href="network.html" class="card-link">View Details &rarr;</a>
+                </div>
+                <div class="card-body">
+                    <div class="score-display">
+                        <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, var(--bg-surface), var(--bg-hover));">
+                            <span class="score-value" style="color: #3498db; font-size: 2rem;">$networkVNetCount</span>
+                            <span class="score-label">VNets</span>
+                        </div>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Connected Devices</span>
+                        <span class="metric-value">$networkDeviceCount</span>
+                    </div>
+                </div>
+            </div>
         </div>
         
         <h2 style="margin-bottom: 20px; font-size: 1.3rem;">Detailed Reports</h2>
@@ -306,6 +343,13 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="report-info">
                     <h3>VM Backup Overview</h3>
                     <p>$totalVMs VMs | $protectedVMs protected | $unprotectedVMs unprotected</p>
+                </div>
+            </a>
+            <a href="network.html" class="report-link">
+                <div class="report-icon" style="background: rgba(52, 152, 219, 0.15); color: #3498db;">&infin;</div>
+                <div class="report-info">
+                    <h3>Network Inventory</h3>
+                    <p>$networkVNetCount Virtual Networks | $networkDeviceCount Connected Devices</p>
                 </div>
             </a>
             <a href="advisor.html" class="report-link">

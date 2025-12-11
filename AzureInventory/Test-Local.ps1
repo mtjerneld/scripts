@@ -33,6 +33,7 @@ $functionsToRemove = @(
     'Export-VMBackupReport',
     'Export-AdvisorReport',
     'Export-ChangeTrackingReport',
+    'Export-NetworkInventoryReport',
     # Helper functions
     'Get-SubscriptionContext',
     'Invoke-AzureApiWithRetry',
@@ -53,6 +54,7 @@ $functionsToRemove = @(
     'Invoke-ScannerForSubscription',
     'Collect-AdvisorRecommendations',
     'Collect-ChangeTrackingData',
+    'Collect-NetworkInventory',
     'Generate-AuditReports',
     # Config functions
     'Get-ControlDefinitions',
@@ -72,6 +74,7 @@ $functionsToRemove = @(
     'Convert-AdvisorRecommendation',
     'Group-AdvisorRecommendations',
     'Format-ExtendedPropertiesDetails',
+    'Get-AzureNetworkInventory',
     # Test functions
     'Test-ChangeTracking'
 )
@@ -372,3 +375,119 @@ function Test-ChangeTracking {
     }
 }
 
+# Add Test-NetworkInventory function for quick testing
+function Test-NetworkInventory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$SubscriptionIds,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$OutputPath = "network-inventory-test.html"
+    )
+    
+    Write-Host "`n=== Testing Network Inventory ===" -ForegroundColor Cyan
+    
+    # Check if connected to Azure
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Error "Not connected to Azure. Run Connect-AzAccount first."
+        return
+    }
+    
+    # Check if functions are loaded
+    if (-not (Get-Command -Name Get-AzureNetworkInventory -ErrorAction SilentlyContinue)) {
+        Write-Error "Get-AzureNetworkInventory function not found. Make sure Test-Local.ps1 has loaded all functions."
+        return
+    }
+    
+    if (-not (Get-Command -Name Export-NetworkInventoryReport -ErrorAction SilentlyContinue)) {
+        Write-Error "Export-NetworkInventoryReport function not found. Make sure Test-Local.ps1 has loaded all functions."
+        return
+    }
+    
+    # Get current tenant ID to filter subscriptions
+    $currentTenantId = if ($context -and $context.Tenant) { $context.Tenant.Id } else { $null }
+    
+    if (-not $currentTenantId) {
+        Write-Error "Could not determine current tenant ID. Make sure you are connected to Azure."
+        return
+    }
+    
+    # Get subscriptions
+    $subscriptions = @()
+    if ($SubscriptionIds) {
+        foreach ($subId in $SubscriptionIds) {
+            try {
+                $sub = Get-AzSubscription -SubscriptionId $subId -ErrorAction Stop
+                
+                # Filter out subscriptions from other tenants
+                if ($sub.TenantId -ne $currentTenantId) {
+                    Write-Warning "Skipping subscription $($sub.Name) ($subId) - belongs to different tenant. Current tenant: $currentTenantId"
+                    continue
+                }
+                
+                if ($sub.State -ne 'Enabled') {
+                    continue
+                }
+                
+                $subscriptions += $sub
+            }
+            catch {
+                Write-Warning "Could not find subscription $subId : $_"
+            }
+        }
+    } else {
+        # Get all subscriptions and filter by tenant
+        $allSubs = Get-AzSubscription -ErrorAction SilentlyContinue | Where-Object {
+            $_.TenantId -eq $currentTenantId -and $_.State -eq 'Enabled'
+        }
+        $subscriptions = @($allSubs)
+        
+        # If no subscriptions found, use current
+        if ($subscriptions.Count -eq 0) {
+             try {
+                $currentSub = Get-AzSubscription -SubscriptionId $context.Subscription.Id -ErrorAction Stop
+                if ($currentSub.State -eq 'Enabled' -and $currentSub.TenantId -eq $currentTenantId) {
+                    $subscriptions = @($currentSub)
+                }
+            } catch {}
+        }
+    }
+    
+    if ($subscriptions.Count -eq 0) {
+        Write-Error "No enabled subscriptions found in current tenant to test."
+        return
+    }
+    
+    Write-Host "Testing with $($subscriptions.Count) subscription(s)" -ForegroundColor Cyan
+    
+    # Collect data
+    $networkInventory = [System.Collections.Generic.List[PSObject]]::new()
+    $tenantId = $context.Tenant.Id
+    
+    Collect-NetworkInventory -Subscriptions $subscriptions -NetworkInventory $networkInventory
+    
+    Write-Host "`nTotal VNets collected: $($networkInventory.Count)" -ForegroundColor $(if ($networkInventory.Count -gt 0) { 'Green' } else { 'Yellow' })
+    
+    # Generate HTML report
+    # Always generate report even if empty to verify function
+    Write-Host "`nGenerating HTML report..." -ForegroundColor Cyan
+    try {
+        $result = Export-NetworkInventoryReport -NetworkInventory $networkInventory -OutputPath $OutputPath -TenantId $tenantId
+        
+        Write-Host "`n[SUCCESS] Report generated: $OutputPath" -ForegroundColor Green
+        Write-Host "  VNets: $($result.VNetCount)" -ForegroundColor Gray
+        Write-Host "  Devices: $($result.DeviceCount)" -ForegroundColor Gray
+        
+        # Try to open the report
+        if (Test-Path $OutputPath) {
+            $fullPath = (Resolve-Path $OutputPath).Path
+            Write-Host "`nOpening report..." -ForegroundColor Cyan
+            Start-Process $fullPath -ErrorAction SilentlyContinue
+        }
+    }
+    catch {
+        Write-Error "Failed to generate report: $_"
+    }
+}

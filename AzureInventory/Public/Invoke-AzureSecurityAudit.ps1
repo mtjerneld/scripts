@@ -64,6 +64,7 @@ function Invoke-AzureSecurityAudit {
     $vmInventory = [System.Collections.Generic.List[PSObject]]::new()
     $advisorRecommendations = [System.Collections.Generic.List[PSObject]]::new()
     $changeTrackingData = [System.Collections.Generic.List[PSObject]]::new()
+    $networkInventory = [System.Collections.Generic.List[PSObject]]::new()
     $errors = [System.Collections.Generic.List[string]]::new()
     
     # Get subscriptions
@@ -336,6 +337,7 @@ function Invoke-AzureSecurityAudit {
         VMInventory             = $vmInventory
         AdvisorRecommendations  = $advisorRecommendations
         ChangeTrackingData      = $changeTrackingData
+        NetworkInventory        = $networkInventory
         ComplianceScores        = $complianceScores
         Errors                  = $errors
         ToolVersion             = "2.0.0"
@@ -354,6 +356,13 @@ function Invoke-AzureSecurityAudit {
     # Update result with latest change tracking data (ensure it's an array)
     $result.ChangeTrackingData = @($changeTrackingData)
     Write-Verbose "Updated result.ChangeTrackingData with $($changeTrackingData.Count) changes"
+
+    # Collect Network Inventory
+    Collect-NetworkInventory -Subscriptions $subscriptions -NetworkInventory $networkInventory -Errors $errors
+
+    # Update result with latest network inventory (ensure it's an array)
+    $result.NetworkInventory = @($networkInventory)
+    Write-Verbose "Updated result.NetworkInventory with $($networkInventory.Count) VNets"
     
     # Generate reports
     $outputFolder = Generate-AuditReports -AuditResult $result -OutputPath $OutputPath -ExportJson:$ExportJson
@@ -422,6 +431,17 @@ function Invoke-AzureSecurityAudit {
         Write-Host "`nChange Tracking:" -ForegroundColor Cyan
         Write-Host "  Total Changes: $($changeTrackingData.Count)" -ForegroundColor White
         Write-Host "  Security Alerts: $($highSecurityFlags + $mediumSecurityFlags) ($highSecurityFlags high, $mediumSecurityFlags medium)" -ForegroundColor $(if (($highSecurityFlags + $mediumSecurityFlags) -gt 0) { 'Yellow' } else { 'Green' })
+    }
+
+    # Network Inventory summary
+    if ($networkInventory.Count -gt 0) {
+        Write-Host "`nNetwork Inventory:" -ForegroundColor Cyan
+        Write-Host "  Virtual Networks: $($networkInventory.Count)" -ForegroundColor White
+        $subnetCount = 0
+        foreach ($vnet in $networkInventory) {
+            $subnetCount += $vnet.Subnets.Count
+        }
+        Write-Host "  Subnets: $subnetCount" -ForegroundColor White
     }
     
     if ($errors.Count -gt 0) {

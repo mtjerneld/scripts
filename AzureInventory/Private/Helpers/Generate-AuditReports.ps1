@@ -71,6 +71,7 @@ function Generate-AuditReports {
     $vmBackupReportData = $null
     $advisorReportData = $null
     $changeTrackingReportData = $null
+    $networkInventoryReportData = $null
     
     try {
         Write-Host "  - Security Audit..." -NoNewline
@@ -123,12 +124,27 @@ function Generate-AuditReports {
     catch {
         Write-Host " ERROR: $_" -ForegroundColor Red
     }
+
+    try {
+        Write-Host "  - Network Inventory..." -NoNewline
+        $networkReportPath = Join-Path $outputFolder "network.html"
+        # Ensure NetworkInventory is not null
+        $networkData = if ($AuditResult.NetworkInventory) { $AuditResult.NetworkInventory } else { [System.Collections.Generic.List[PSObject]]::new() }
+        $networkResult = Export-NetworkInventoryReport -NetworkInventory $networkData -OutputPath $networkReportPath -TenantId $tenantId
+        if ($networkResult -is [hashtable]) {
+            $networkInventoryReportData = $networkResult
+        }
+        Write-Host " OK" -ForegroundColor Green
+    }
+    catch {
+        Write-Host " ERROR: $_" -ForegroundColor Red
+    }
     
     # Generate Dashboard last, using metadata from all detail reports
     try {
         Write-Host "  - Dashboard..." -NoNewline
         $dashboardPath = Join-Path $outputFolder "index.html"
-        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -SecurityReportData $securityReportData -VMBackupReportData $vmBackupReportData -AdvisorReportData $advisorReportData -ChangeTrackingReportData $changeTrackingReportData -OutputPath $dashboardPath -TenantId $tenantId
+        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -SecurityReportData $securityReportData -VMBackupReportData $vmBackupReportData -AdvisorReportData $advisorReportData -ChangeTrackingReportData $changeTrackingReportData -NetworkInventoryReportData $networkInventoryReportData -OutputPath $dashboardPath -TenantId $tenantId
         Write-Host " OK" -ForegroundColor Green
     }
     catch {
