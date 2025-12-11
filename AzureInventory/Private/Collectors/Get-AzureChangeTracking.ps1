@@ -59,11 +59,11 @@ function Get-AzureActivityLogViaRestApi {
         
         # Get Activity Log entries with pagination using Invoke-AzRestMethod
         # Limit pagination to avoid excessive API calls
-        $maxEvents = 5000
+        $maxEvents = 50000  # Increased significantly to handle noisy environments (e.g. Arc)
         $allLogs = [System.Collections.Generic.List[PSObject]]::new()
         $nextLink = $uri
         $pageCount = 0
-        $maxPages = 25  # Limit pagination to avoid excessive API calls
+        $maxPages = 500  # Increased to ensure we can dig through noise to find older events
         $hasRetriedWithSimpleFilter = $false
         
         do {
@@ -223,19 +223,24 @@ function Get-AzureChangeTracking {
                 throw "REST API returned null"
             }
             
-            Write-Verbose "Retrieved $($allLogs.Count) total Activity Log entries from REST API"
+            # Ensure $allLogs is iterable even if empty
+            if ($allLogs.Count -eq 0) {
+                Write-Verbose "REST API returned 0 results."
+            } else {
+                Write-Verbose "Retrieved $($allLogs.Count) total Activity Log entries from REST API"
+            }
             
             # Filter for relevant operations
             $activityLogs = $allLogs | Where-Object {
-                # Check EventCategory first (Health, Incident, and ResourceHealth are always included)
+                # Check EventCategory first (Health, Incident, ResourceHealth, and ServiceHealth are always included)
                 $eventCategory = if ($_.EventCategory) {
                     if ($_.EventCategory.Value) { $_.EventCategory.Value } else { $_.EventCategory }
                 } elseif ($_.Category) {
                     if ($_.Category.Value) { $_.Category.Value } else { $_.Category }
                 } else { $null }
                 
-                # Include Health, Incident, and ResourceHealth events regardless of operation name or status
-                if ($eventCategory -in @('Health', 'Incident', 'ResourceHealth')) {
+                # Include Health, Incident, ResourceHealth, and ServiceHealth events regardless of operation name or status
+                if ($eventCategory -in @('Health', 'Incident', 'ResourceHealth', 'ServiceHealth')) {
                     return $true
                 }
                 
@@ -332,11 +337,13 @@ function Get-AzureChangeTracking {
                     'Microsoft.Resources/tags/write',                  # Tag changes (often automated)
                     'Microsoft.Insights/components/ProactiveDetectionConfigurations/write', # Auto-detection configs
                     'Microsoft.Insights/alertRules/write',             # Alert rule updates (can be frequent)
-                    'Microsoft.Insights/metricAlerts/write'            # Metric alert updates
+                    'Microsoft.Insights/metricAlerts/write',           # Metric alert updates
+                    'Microsoft.AzureArcData/*',                        # Filter ALL Azure Arc Data operations
+                    'Microsoft.HybridCompute/*'                        # Filter ALL Azure Arc Machine operations
                 )
                 
                 foreach ($pattern in $noisePatterns) {
-                    if ($opName -eq $pattern) {
+                    if ($opName -like $pattern) {
                         Write-Verbose "Filtering out noise operation: $opName"
                         return $false
                     }
@@ -433,6 +440,7 @@ function Get-AzureChangeTracking {
             'Microsoft.Network/networkSecurityGroups' = 'Networking'
             'Microsoft.Network/publicIPAddresses' = 'Networking'
             'Microsoft.Network/loadBalancers' = 'Networking'
+            'Microsoft.Network/dnszones' = 'Networking'  # Added DNS Zones
             'Microsoft.Sql/servers' = 'Databases'
             'Microsoft.Sql/servers/firewallRules' = 'Databases'  # Sub-resource
             'Microsoft.Sql/databases' = 'Databases'
@@ -452,6 +460,7 @@ function Get-AzureChangeTracking {
         # Security flagging rules
         $highPriorityPatterns = @(
             'Microsoft.Authorization/roleAssignments/write',
+            'Microsoft.Authorization/roleAssignments/delete', # Role assignment removal (high security)
             'Microsoft.Network/networkSecurityGroups/securityRules/write',
             'Microsoft.KeyVault/vaults/accessPolicies/write',
             'Microsoft.KeyVault/vaults/secrets/delete',
@@ -489,6 +498,8 @@ function Get-AzureChangeTracking {
                 # Priority: Properties.OperationName > Authorization.Action > OperationName.Value > OperationName
                 # Get-AzActivityLog returns localized text in OperationName, so we need to check Properties or Authorization
                 $operationName = $null
+                $operationNameLocalized = $null
+                
                 if ($logEntry.Properties -and $logEntry.Properties.OperationName) {
                     $operationName = $logEntry.Properties.OperationName
                 } elseif ($logEntry.Authorization -and $logEntry.Authorization.Action) {
@@ -496,13 +507,21 @@ function Get-AzureChangeTracking {
                 } elseif ($logEntry.OperationName) {
                     if ($logEntry.OperationName.Value) {
                         $operationName = $logEntry.OperationName.Value
+                        if ($logEntry.OperationName.localizedValue) {
+                            $operationNameLocalized = $logEntry.OperationName.localizedValue
+                        }
                     } else {
                         $operationName = $logEntry.OperationName
                     }
                 }
                 
+                # If we have a localized operation name, use it as title if no other title exists
+                if ($operationNameLocalized -and -not $changeTitle) {
+                    $changeTitle = $operationNameLocalized
+                }
+                
                 # For Health, Incident, and ResourceHealth events, use EventCategory as OperationName if missing
-                if (-not $operationName -and $eventCategory -in @('Health', 'Incident', 'ResourceHealth')) {
+                if (-not $operationName -and $eventCategory -in @('Health', 'Incident', 'ResourceHealth', 'ServiceHealth')) {
                     $operationName = "EventCategory/$eventCategory"
                 }
                 
@@ -517,7 +536,7 @@ function Get-AzureChangeTracking {
                 # For Health, Incident, and ResourceHealth events, use EventCategory as operation type
                 $operationType = 'Modify'
                 
-                if ($eventCategory -in @('Health', 'Incident', 'ResourceHealth')) {
+                if ($eventCategory -in @('Health', 'Incident', 'ResourceHealth', 'ServiceHealth')) {
                     $operationType = $eventCategory
                 }
                 elseif ($operationName -match '/delete$') {
@@ -589,14 +608,17 @@ function Get-AzureChangeTracking {
                 
                 # Normalize ResourceType (convert to proper case: Microsoft.Sql/servers instead of MICROSOFT.SQL/servers)
                 if ($resourceType) {
+                    # Convert to lowercase first to ensure consistent casing input (ensure string)
+                    $resourceType = "$resourceType".ToLower()
+                    
                     # Split by / and normalize each part
                     $parts = $resourceType -split '/'
                     if ($parts.Count -ge 2) {
-                        # Normalize provider name (Microsoft.Sql instead of MICROSOFT.SQL)
+                        # Normalize provider name (Microsoft.Sql instead of microsoft.sql)
                         $providerParts = $parts[0] -split '\.'
                         $normalizedProvider = ($providerParts | ForEach-Object { 
                             if ($_.Length -gt 0) {
-                                $_.Substring(0,1).ToUpper() + $_.Substring(1).ToLower() 
+                                $_.Substring(0,1).ToUpper() + $_.Substring(1)
                             } else {
                                 $_
                             }
@@ -627,6 +649,37 @@ function Get-AzureChangeTracking {
                     }
                 }
                 
+                # Special handling for sub-resources (like firewall rules) to show parent resource context if useful
+                $parentResourceName = $null
+                if ($resourceId -and $resourceType -match '/.*/.*') {
+                    # Check if it's a sub-resource (more than 2 segments in type or ID implies nesting)
+                    # Example ID: .../providers/Microsoft.Sql/servers/mpsqlserver/firewallRules/Micke mobil
+                    
+                    # Try to extract parent name for known sub-resource types
+                    if ($resourceType -like 'Microsoft.Sql/servers/firewallRules') {
+                        if ($resourceId -match '/servers/([^/]+)/firewallRules/') {
+                            $parentResourceName = $matches[1]
+                        }
+                    }
+                    elseif ($resourceType -like 'Microsoft.Web/sites/slots') {
+                        if ($resourceId -match '/sites/([^/]+)/slots/') {
+                            $parentResourceName = $matches[1]
+                        }
+                    }
+                    elseif ($resourceType -like 'Microsoft.Network/networkSecurityGroups/securityRules') {
+                        if ($resourceId -match '/networkSecurityGroups/([^/]+)/securityRules/') {
+                            $parentResourceName = $matches[1]
+                        }
+                    }
+                }
+                
+                if ($parentResourceName) {
+                    # Append parent context to resource name for clarity
+                    if ($resourceName) {
+                        $resourceName = "$resourceName (on $parentResourceName)"
+                    }
+                }
+                
                 # Determine resource category
                 $resourceCategory = 'Other'
                 if ($resourceCategoryMap.ContainsKey($resourceType)) {
@@ -639,6 +692,123 @@ function Get-AzureChangeTracking {
                             $resourceCategory = $resourceCategoryMap[$key]
                             break
                         }
+                    }
+                }
+                
+                # Extract additional details from Properties (Title, Details, Description)
+                $changeTitle = $null
+                $changeDescription = $null
+                
+                if ($logEntry.Properties) {
+                    # Helper function to get property value case-insensitively
+                    $GetPropValue = { param($props, $name)
+                        if ($props.PSObject.Properties[$name]) { return $props.PSObject.Properties[$name].Value }
+                        if ($props[$name]) { return $props[$name] }
+                        if ($props.ContainsKey -and $props.ContainsKey($name)) { return $props[$name] }
+                        return $null
+                    }
+                    
+                    # Try to get Title
+                    $title = & $GetPropValue $logEntry.Properties 'title'
+                    if (-not $title) { $title = & $GetPropValue $logEntry.Properties 'Title' }
+                    if ($title) { $changeTitle = $title }
+                    
+                    # Try to get Details/Description/Message
+                    $details = & $GetPropValue $logEntry.Properties 'details'
+                    if (-not $details) { $details = & $GetPropValue $logEntry.Properties 'Details' }
+                    if (-not $details) { $details = & $GetPropValue $logEntry.Properties 'description' }
+                    if (-not $details) { $details = & $GetPropValue $logEntry.Properties 'Description' }
+                    if (-not $details) { $details = & $GetPropValue $logEntry.Properties 'message' }
+                    if (-not $details) { $details = & $GetPropValue $logEntry.Properties 'Message' }
+                    
+                    if ($details) { $changeDescription = $details }
+                }
+
+                # Special Handling for Role Assignments (RBAC)
+                if ($resourceType -eq 'Microsoft.Authorization/roleAssignments') {
+                    # Built-in Role Definitions Lookup
+                    $roleDefinitions = @{
+                        'acdd72a7-3385-48ef-bd42-f606fba81ae7' = 'Reader'
+                        'b24988ac-6180-42a0-ab88-20f7382dd24c' = 'Contributor'
+                        '8e3af657-a8ff-443c-a75c-2fe8c4bcb635' = 'Owner'
+                        '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9' = 'User Access Administrator'
+                        'ba92f5b4-2d11-453d-a403-e96b0029c9fe' = 'Blob Storage Data Contributor'
+                        '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1' = 'Storage Blob Data Reader'
+                        '974c5e8b-45b9-4653-ba55-5f855dd0fb88' = 'Storage Blob Data Owner'
+                    }
+
+                    if ($operationType -eq 'Create' -or $operationName -match '/write$') {
+                        $requestBody = $null
+                        # Try case-insensitive property access for requestbody
+                        if ($logEntry.Properties) {
+                            $requestBodyJson = & $GetPropValue $logEntry.Properties 'requestbody'
+                            if ($requestBodyJson) {
+                                try {
+                                    $requestBody = $requestBodyJson | ConvertFrom-Json
+                                } catch {
+                                    Write-Verbose "Failed to parse requestbody for RBAC assignment: $_"
+                                }
+                            }
+                        }
+
+                        if ($requestBody -and $requestBody.Properties) {
+                            $props = $requestBody.Properties
+                            
+                            # Extract Role ID
+                            $roleDefId = $props.RoleDefinitionId
+                            if ($roleDefId -match '/roleDefinitions/([^/]+)$') {
+                                $roleDefId = $matches[1]
+                            }
+                            
+                            $roleName = if ($roleDefinitions.ContainsKey($roleDefId)) { $roleDefinitions[$roleDefId] } else { "Role ($roleDefId)" }
+                            
+                            # Extract Principal
+                            $principalId = $props.PrincipalId
+                            $principalType = $props.PrincipalType
+                            
+                            $changeTitle = "Assigned '$roleName'"
+                            $changeDescription = "Assigned role '$roleName' to Principal '$principalId' ($principalType)"
+                            
+                            # Set Resource Name to something meaningful
+                            $resourceName = "$roleName Assignment"
+                        } else {
+                            $changeTitle = "Role Assignment Created"
+                            $changeDescription = "Details could not be parsed from requestbody"
+                            $resourceName = "Role Assignment"
+                        }
+                    } elseif ($operationType -eq 'Delete' -or $operationName -match '/delete$') {
+                        $changeTitle = "Removed Role Assignment"
+                        $changeDescription = "A role assignment was removed (details not available in deletion log)"
+                        $resourceName = "Role Assignment"
+                    }
+                }
+                
+                # Special Handling for Recovery Services (Backup)
+                if ($resourceType -like 'Microsoft.RecoveryServices/*') {
+                    if ($operationName -like '*/backup/action') {
+                        $changeTitle = "Triggered Backup"
+                        $resourceName = "Backup Job"
+                        
+                        # Try to extract protected item from ResourceId
+                        if ($resourceId -match '/protectedItems/([^/]+)') {
+                            # Format often contains container info like "VM;iaasvmcontainerv2;RG;VMName"
+                            $rawItem = $matches[1]
+                            # Try to extract the actual VM/Item name (last part after semicolon)
+                            $parts = $rawItem -split ';'
+                            if ($parts.Count -gt 0) {
+                                $resourceName = $parts[-1]
+                            } else {
+                                $resourceName = $rawItem
+                            }
+                            $changeDescription = "Manual backup triggered for '$resourceName'"
+                        } else {
+                            $changeDescription = "Manual backup triggered on vault"
+                        }
+                    }
+                    elseif ($operationName -like '*/restore/action') {
+                        $changeTitle = "Triggered Restore"
+                        $resourceName = "Restore Job"
+                        $changeDescription = "Restore operation initiated"
                     }
                 }
                 
@@ -766,6 +936,8 @@ function Get-AzureChangeTracking {
                     SecurityFlag     = $securityFlag
                     SecurityReason   = $securityReason
                     ResourceId       = $resourceId
+                    ChangeTitle      = $changeTitle
+                    ChangeDescription = $changeDescription
                 }
                 
                 $changes.Add($changeObj)
@@ -775,6 +947,7 @@ function Get-AzureChangeTracking {
                 $skippedCount++
                 Write-Warning "Failed to process activity log entry: $_"
                 Write-Verbose "Entry details: OperationName=$($logEntry.OperationName), ResourceId=$($logEntry.ResourceId), Error=$($_.Exception.Message)"
+                Write-Verbose "Stack Trace: $($_.ScriptStackTrace)"
                 if ($_.Exception) {
                     Write-Verbose "Exception: $($_.Exception.GetType().FullName) - $($_.Exception.Message)"
                     if ($_.Exception.InnerException) {

@@ -100,10 +100,20 @@ function Get-StorageAccountFindings {
         # Control: Minimum TLS Version 1.2
         $tlsControl = $controlLookup["Minimum TLS Version 1.2"]
         if ($tlsControl) {
-            $tlsVersions = Get-TlsVersions
-            $minTlsVersion = if ($sa.MinimumTlsVersion) { $sa.MinimumTlsVersion } else { $tlsVersions.TLS_1_0 }
-            $tlsStatus = if ($minTlsVersion -in @($tlsVersions.TLS_1_2, $tlsVersions.TLS_1_3)) { "PASS" } else { "FAIL" }
-            $eolDate = if ($minTlsVersion -in @($tlsVersions.TLS_1_0, $tlsVersions.TLS_1_1)) { $tlsControl.eolDate } else { $null }
+            # Define valid TLS versions explicitly to avoid any scope/loading issues with constants
+            $validTlsVersions = @("TLS1_2", "TLS1_3")
+            
+            # Get TLS version with fallback
+            $minTlsVersion = if ($sa.MinimumTlsVersion) { "$($sa.MinimumTlsVersion)" } else { "TLS1_0" }
+            
+            # Debugging
+            Write-Verbose "Storage Account: $($sa.StorageAccountName) - MinimumTlsVersion: '$minTlsVersion'"
+            
+            $tlsStatus = if ($minTlsVersion -in $validTlsVersions) { "PASS" } else { "FAIL" }
+            
+            # Check for legacy versions for EOL date
+            $legacyVersions = @("TLS1_0", "TLS1_1")
+            $eolDate = if ($minTlsVersion -in $legacyVersions) { $tlsControl.eolDate } else { $null }
             
             $remediationCmd = $tlsControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
             $finding = New-SecurityFinding `
@@ -159,7 +169,7 @@ function Get-StorageAccountFindings {
         # Control: Public Blob Access
         $publicAccessControl = $controlLookup["Public Blob Access"]
         if ($publicAccessControl) {
-            $publicAccess = if ($sa.AllowBlobPublicAccess -ne $null) { $sa.AllowBlobPublicAccess } else { $true }
+            $publicAccess = if ($null -ne $sa.AllowBlobPublicAccess) { $sa.AllowBlobPublicAccess } else { $true }
             $publicStatus = if (-not $publicAccess) { "PASS" } else { "FAIL" }
             
             $remediationCmd = $publicAccessControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName

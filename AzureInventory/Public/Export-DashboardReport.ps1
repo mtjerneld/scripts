@@ -188,7 +188,7 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="label">Subscriptions Scanned</div>
             </div>
             <div class="quick-stat" style="$(if ($deprecatedCount -gt 0) { 'border-color: var(--accent-red);' })">
-                <div class="value" style="$(if ($deprecatedCount -gt 0) { 'color: var(--accent-red);' })">$deprecatedCount</div>
+                <div class="value" style="$(if ($deprecatedCount -gt 0) { 'color: var(--accent-red);' })">$(if ($deprecatedCount) { $deprecatedCount } else { 0 })</div>
                 <div class="label">Deprecated Components</div>
             </div>
             <div class="quick-stat">
@@ -316,7 +316,7 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 </div>
             </a>
             <a href="change-tracking.html" class="report-link">
-                <div class="report-icon" style="background: rgba(84, 160, 255, 0.15); color: var(--accent-blue);">↻</div>
+                <div class="report-icon" style="background: rgba(84, 160, 255, 0.15); color: var(--accent-blue);">&crarr;</div>
                 <div class="report-info">
                     <h3>Change Tracking</h3>
                     <p>$changeTrackingTotal changes | $changeTrackingSecurityAlerts security alerts</p>
@@ -332,8 +332,8 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
 </html>
 "@
     
-    # Write to file
-    $html | Out-File -FilePath $OutputPath -Encoding UTF8
+    # Write to file with UTF-8 encoding (no BOM for better browser compatibility)
+    [System.IO.File]::WriteAllText($OutputPath, $html, [System.Text.UTF8Encoding]::new($false))
     
     return $OutputPath
 }
