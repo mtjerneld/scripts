@@ -55,6 +55,7 @@ $functionsToRemove = @(
     'Collect-AdvisorRecommendations',
     'Collect-ChangeTrackingData',
     'Collect-NetworkInventory',
+    'Get-NsgRiskAnalysis',
     'Generate-AuditReports',
     # Config functions
     'Get-ControlDefinitions',
@@ -439,28 +440,32 @@ function Test-NetworkInventory {
         }
     } else {
         # Get all subscriptions and filter by tenant
-        $allSubs = Get-AzSubscription -ErrorAction SilentlyContinue | Where-Object {
+        # Suppress warnings about other tenants - we'll filter them out anyway
+        $allSubs = Get-AzSubscription -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Where-Object {
             $_.TenantId -eq $currentTenantId -and $_.State -eq 'Enabled'
         }
         $subscriptions = @($allSubs)
         
-        # If no subscriptions found, use current
+        # If no subscriptions found, use current subscription if it's in the right tenant
         if ($subscriptions.Count -eq 0) {
-             try {
-                $currentSub = Get-AzSubscription -SubscriptionId $context.Subscription.Id -ErrorAction Stop
+            try {
+                $currentSub = Get-AzSubscription -SubscriptionId $context.Subscription.Id -ErrorAction Stop -WarningAction SilentlyContinue
                 if ($currentSub.State -eq 'Enabled' -and $currentSub.TenantId -eq $currentTenantId) {
                     $subscriptions = @($currentSub)
                 }
-            } catch {}
+            }
+            catch {
+                Write-Verbose "Could not get current subscription: $_"
+            }
         }
     }
     
     if ($subscriptions.Count -eq 0) {
-        Write-Error "No enabled subscriptions found in current tenant to test."
+        Write-Error "No enabled subscriptions found in current tenant ($currentTenantId) to test."
         return
     }
     
-    Write-Host "Testing with $($subscriptions.Count) subscription(s)" -ForegroundColor Cyan
+    Write-Host "Testing with $($subscriptions.Count) subscription(s) in tenant $currentTenantId" -ForegroundColor Cyan
     
     # Collect data
     $networkInventory = [System.Collections.Generic.List[PSObject]]::new()
@@ -473,21 +478,41 @@ function Test-NetworkInventory {
     # Generate HTML report
     # Always generate report even if empty to verify function
     Write-Host "`nGenerating HTML report..." -ForegroundColor Cyan
+    
+    # Resolve full path
+    if (-not [System.IO.Path]::IsPathRooted($OutputPath)) {
+        $OutputPath = Join-Path (Get-Location).Path $OutputPath
+    }
+    Write-Host "  Output path: $OutputPath" -ForegroundColor Gray
+    
     try {
         $result = Export-NetworkInventoryReport -NetworkInventory $networkInventory -OutputPath $OutputPath -TenantId $tenantId
         
         Write-Host "`n[SUCCESS] Report generated: $OutputPath" -ForegroundColor Green
         Write-Host "  VNets: $($result.VNetCount)" -ForegroundColor Gray
         Write-Host "  Devices: $($result.DeviceCount)" -ForegroundColor Gray
+        if ($result.SecurityRisks -and $result.SecurityRisks -gt 0) {
+            Write-Host "  Security Risks: $($result.SecurityRisks)" -ForegroundColor Yellow
+        } else {
+            Write-Host "  Security Risks: 0" -ForegroundColor Green
+        }
         
-        # Try to open the report
+        # Verify file exists and try to open the report
         if (Test-Path $OutputPath) {
             $fullPath = (Resolve-Path $OutputPath).Path
-            Write-Host "`nOpening report..." -ForegroundColor Cyan
+            Write-Host "`nFile verified at: $fullPath" -ForegroundColor Green
+            Write-Host "Opening report..." -ForegroundColor Cyan
             Start-Process $fullPath -ErrorAction SilentlyContinue
+        } else {
+            Write-Warning "Report file not found at: $OutputPath"
+            Write-Host "Current directory: $(Get-Location)" -ForegroundColor Yellow
         }
     }
     catch {
         Write-Error "Failed to generate report: $_"
+        Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
     }
 }

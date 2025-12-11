@@ -46,6 +46,33 @@ function Get-AzureNetworkInventory {
                 if ($gw) { $gateways.Add($gw) }
             }
         }
+        
+        # Get VPN Connections (S2S tunnels)
+        $vpnConnections = [System.Collections.Generic.List[PSObject]]::new()
+        $connectionResources = Get-AzResource -ResourceType "Microsoft.Network/connections" -ErrorAction SilentlyContinue
+        if ($connectionResources) {
+            foreach ($res in $connectionResources) {
+                try {
+                    $conn = Get-AzVirtualNetworkGatewayConnection -ResourceGroupName $res.ResourceGroupName -Name $res.Name -ErrorAction SilentlyContinue
+                    if ($conn -and $conn.ConnectionType -eq "IPsec") {
+                        $vpnConnections.Add($conn)
+                    }
+                }
+                catch {
+                    # Connection might not be a gateway connection, skip
+                }
+            }
+        }
+        
+        # Get Local Network Gateways (on-premises networks)
+        $localGateways = [System.Collections.Generic.List[PSObject]]::new()
+        $localGatewayResources = Get-AzResource -ResourceType "Microsoft.Network/localNetworkGateways" -ErrorAction SilentlyContinue
+        if ($localGatewayResources) {
+            foreach ($res in $localGatewayResources) {
+                $lgw = Get-AzLocalNetworkGateway -ResourceGroupName $res.ResourceGroupName -Name $res.Name -ErrorAction SilentlyContinue
+                if ($lgw) { $localGateways.Add($lgw) }
+            }
+        }
 
         $publicIps = Get-AzPublicIpAddress -ErrorAction SilentlyContinue
         $privateEndpoints = Get-AzPrivateEndpoint -ErrorAction SilentlyContinue
@@ -153,6 +180,70 @@ function Get-AzureNetworkInventory {
                     if ($gw.Sku -and $gw.Sku.Name) {
                         $skuName = $gw.Sku.Name
                     }
+                    
+                    # Find VPN connections for this gateway
+                    $gwConnections = [System.Collections.Generic.List[PSObject]]::new()
+                    foreach ($conn in $vpnConnections) {
+                        if ($conn.VirtualNetworkGateway1 -and $conn.VirtualNetworkGateway1.Id -eq $gw.Id) {
+                            # This is a connection FROM this gateway
+                            $remoteNetwork = $null
+                            $remoteNetworkName = "Unknown"
+                            
+                            # Check if connected to Local Network Gateway (on-premises)
+                            if ($conn.LocalNetworkGateway2) {
+                                $lgw = $localGateways | Where-Object { $_.Id -eq $conn.LocalNetworkGateway2.Id } | Select-Object -First 1
+                                if ($lgw) {
+                                    $remoteNetworkName = $lgw.Name
+                                    $remoteNetwork = [PSCustomObject]@{
+                                        Type = "OnPremises"
+                                        Name = $lgw.Name
+                                        AddressSpace = if ($lgw.LocalNetworkAddressSpace) { $lgw.LocalNetworkAddressSpace.AddressPrefixes -join ", " } else { "" }
+                                        GatewayIpAddress = if ($lgw.GatewayIpAddress) { $lgw.GatewayIpAddress } else { "" }
+                                    }
+                                }
+                            }
+                            # Check if connected to another Virtual Network Gateway (VNet-to-VNet)
+                            elseif ($conn.VirtualNetworkGateway2) {
+                                $remoteGw = $gateways | Where-Object { $_.Id -eq $conn.VirtualNetworkGateway2.Id } | Select-Object -First 1
+                                if ($remoteGw) {
+                                    # Find the VNet this gateway belongs to
+                                    $remoteVnet = $vnets | Where-Object {
+                                        $matched = $false
+                                        if ($remoteGw.IpConfigurations) {
+                                            foreach ($ipconf in $remoteGw.IpConfigurations) {
+                                                if ($ipconf.Subnet -and $ipconf.Subnet.Id -like "$($_.Id)/subnets/*") {
+                                                    $matched = $true
+                                                    break
+                                                }
+                                            }
+                                        }
+                                        $matched
+                                    } | Select-Object -First 1
+                                    
+                                    if ($remoteVnet) {
+                                        $remoteNetworkName = $remoteVnet.Name
+                                        $remoteNetwork = [PSCustomObject]@{
+                                            Type = "VNet"
+                                            Name = $remoteVnet.Name
+                                            AddressSpace = if ($remoteVnet.AddressSpace -and $remoteVnet.AddressSpace.AddressPrefixes) {
+                                                $remoteVnet.AddressSpace.AddressPrefixes -join ", "
+                                            } else { "" }
+                                            SubscriptionId = $remoteVnet.SubscriptionId
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            $gwConnections.Add([PSCustomObject]@{
+                                Name = $conn.Name
+                                Id = $conn.Id
+                                ConnectionStatus = $conn.ConnectionStatus
+                                ConnectionType = $conn.ConnectionType
+                                RemoteNetwork = $remoteNetwork
+                                RemoteNetworkName = $remoteNetworkName
+                            })
+                        }
+                    }
 
                     $vnetObj.Gateways.Add([PSCustomObject]@{
                         Name = $gw.Name
@@ -161,6 +252,7 @@ function Get-AzureNetworkInventory {
                         Sku = $skuName
                         VpnType = $gw.VpnType
                         PublicIp = $pipId
+                        Connections = $gwConnections
                     })
                 }
             }
@@ -208,6 +300,12 @@ function Get-AzureNetworkInventory {
                         $serviceEndpointsString = $subnet.ServiceEndpoints.Service -join ", "
                     }
 
+                    # Analyze NSG for security risks
+                    $nsgRisks = @()
+                    if ($nsg -and $nsg.SecurityRules) {
+                        $nsgRisks = @(Get-NsgRiskAnalysis -NsgRules $nsg.SecurityRules -NsgName $nsg.Name)
+                    }
+
                     $subnetObj = [PSCustomObject]@{
                         Name = $subnet.Name
                         Id = $subnet.Id
@@ -217,6 +315,7 @@ function Get-AzureNetworkInventory {
                         NsgId = if ($nsg) { $nsg.Id } else { $null }
                         NsgName = if ($nsg) { $nsg.Name } else { $null }
                         NsgRules = if ($nsg) { $nsg.SecurityRules } else { $null }
+                        NsgRisks = $nsgRisks
                         
                         RouteTableId = if ($rt) { $rt.Id } else { $null }
                         RouteTableName = if ($rt) { $rt.Name } else { $null }
