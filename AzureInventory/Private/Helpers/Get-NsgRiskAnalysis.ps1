@@ -163,8 +163,15 @@ function Get-NsgRiskAnalysis {
                 elseif ($cleanAddr -like "169.254.*") { 
                     $isPrivate = $true 
                 }
-                # Azure Service Tags
-                elseif ($cleanAddr -like "VirtualNetwork*" -or $cleanAddr -like "AzureLoadBalancer*") { 
+                # Azure Service Tags - any tag starting with "Azure" or common service tags
+                # Azure service tags are internal/private, not internet-facing
+                elseif ($cleanAddr -like "Azure*" -or 
+                        $cleanAddr -eq "VirtualNetwork" -or 
+                        $cleanAddr -like "VirtualNetwork*" -or
+                        $cleanAddr -eq "Storage" -or
+                        $cleanAddr -eq "Sql" -or
+                        $cleanAddr -eq "AppService" -or
+                        $cleanAddr -eq "ServiceTag") { 
                     $isPrivate = $true 
                 }
                 
