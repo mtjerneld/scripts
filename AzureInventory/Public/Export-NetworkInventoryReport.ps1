@@ -58,10 +58,20 @@ function Export-NetworkInventoryReport {
         $subscriptions = [System.Collections.Generic.Dictionary[string, PSObject]]::new()
         $allRisks = [System.Collections.Generic.List[PSObject]]::new()
         
+        # Count unique peerings (each peering relationship appears twice - once from each VNet)
+        $uniquePeerings = [System.Collections.Generic.HashSet[string]]::new()
+        
         foreach ($vnet in $NetworkInventory) {
             $totalSubnets += $vnet.Subnets.Count
-            $totalPeerings += $vnet.Peerings.Count
             $totalGateways += $vnet.Gateways.Count
+            
+            # Track unique peering relationships
+            foreach ($peering in $vnet.Peerings) {
+                # Create a unique key by sorting VNet names alphabetically
+                $vnetPair = @($vnet.Name, $peering.RemoteVnetName) | Sort-Object
+                $peeringKey = "$($vnetPair[0])|$($vnetPair[1])"
+                [void]$uniquePeerings.Add($peeringKey)
+            }
             
             # Track subscriptions
             $subKey = $vnet.SubscriptionId
@@ -112,6 +122,9 @@ function Export-NetworkInventoryReport {
                 }
             }
         }
+        
+        # Set total peerings to unique count (each bidirectional peering counted once)
+        $totalPeerings = $uniquePeerings.Count
         $totalNsgs = $uniqueNsgIds.Count
         $totalRisks = $totalCriticalRisks + $totalHighRisks + $totalMediumRisks
 
@@ -646,7 +659,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                 <div class="summary-card-label">Gateways</div>
                 <div class="summary-card-value">$totalGateways</div>
             </div>
-            <div class="summary-card" style="border-top: 3px solid #e67e22;">
+            <div class="summary-card" style="border-top: 3px solid #16a085;">
                 <div class="summary-card-label">Peerings</div>
                 <div class="summary-card-value">$totalPeerings</div>
             </div>
@@ -733,9 +746,10 @@ $(Get-ReportNavigation -ActivePage "Network")
                 <h2>Network Topology</h2>
                 <div style="display: flex; align-items: center; gap: 20px;">
                     <div class="diagram-legend">
-                        <div class="legend-item"><div class="legend-dot" style="background: #3498db;"></div> VNet</div>
+                        <div class="legend-item"><div class="legend-dot" style="background: #3498db;"></div> VNet (color by subscription)</div>
+                        <div class="legend-item"><div class="legend-dot" style="background: #95a5a6;"></div> VNet (Unknown Subscription)</div>
                         <div class="legend-item"><div class="legend-diamond"></div> Gateway</div>
-                        <div class="legend-item"><div class="legend-dot" style="background: #e67e22; border-radius: 0;"></div> On-Premises</div>
+                        <div class="legend-item"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
                         <div class="legend-item"><div class="legend-line peering"></div> Peering</div>
                         <div class="legend-item"><div class="legend-line s2s"></div> S2S Tunnel</div>
                     </div>
@@ -755,9 +769,10 @@ $(Get-ReportNavigation -ActivePage "Network")
                 <h2>Network Topology - Fullscreen</h2>
                 <div style="display: flex; align-items: center; gap: 15px;">
                     <div class="diagram-legend">
-                        <div class="legend-item"><div class="legend-dot" style="background: #3498db;"></div> VNet</div>
+                        <div class="legend-item"><div class="legend-dot" style="background: #3498db;"></div> VNet (color by subscription)</div>
+                        <div class="legend-item"><div class="legend-dot" style="background: #95a5a6;"></div> VNet (Unknown Subscription)</div>
                         <div class="legend-item"><div class="legend-diamond"></div> Gateway</div>
-                        <div class="legend-item"><div class="legend-dot" style="background: #e67e22; border-radius: 0;"></div> On-Premises</div>
+                        <div class="legend-item"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
                         <div class="legend-item"><div class="legend-line peering"></div> Peering</div>
                         <div class="legend-item"><div class="legend-line s2s"></div> S2S Tunnel</div>
                     </div>
@@ -1047,6 +1062,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                                 <thead>
                                     <tr>
                                         <th>Remote VNet</th>
+                                        <th>Subscription</th>
                                         <th>State</th>
                                         <th>Traffic</th>
                                         <th>Gateway Use</th>
@@ -1055,10 +1071,15 @@ $(Get-ReportNavigation -ActivePage "Network")
                                 <tbody>
 "@
                     foreach ($peering in $vnet.Peerings) {
+                        # Find the remote VNet to get its subscription
+                        $remoteVnet = $NetworkInventory | Where-Object { $_.Name -eq $peering.RemoteVnetName } | Select-Object -First 1
+                        $remoteSubscription = if ($remoteVnet) { $remoteVnet.SubscriptionName } else { "Unknown" }
+                        
                         $stateColor = if ($peering.State -eq "Connected") { "#2ecc71" } else { "#e74c3c" }
                         $html += @"
                                     <tr>
                                         <td>$(Encode-Html $peering.RemoteVnetName)</td>
+                                        <td>$(Encode-Html $remoteSubscription)</td>
                                         <td style="color: $stateColor;">$(Encode-Html $peering.State)</td>
                                         <td>Fwd: $($peering.AllowForwardedTraffic)</td>
                                         <td>RemoteGW: $($peering.UseRemoteGateways)</td>
@@ -1105,8 +1126,12 @@ $(Get-ReportNavigation -ActivePage "Network")
         
         # Create nodes grouped by subscription
         foreach ($subId in $vnetGroups.Keys) {
-            $sub = $subscriptions[$subId]
-            $subColor = if ($subColorMap[$subId]) { $subColorMap[$subId] } else { "#3498db" }
+            # Ensure subscription color is assigned (build color map if missing)
+            if (-not $subColorMap.ContainsKey($subId)) {
+                $colorIndex = $subColorMap.Count
+                $subColorMap[$subId] = $subscriptionColors[$colorIndex % $subscriptionColors.Count]
+            }
+            $subColor = $subColorMap[$subId]
             
             foreach ($vnet in $vnetGroups[$subId]) {
                 $nodeId = $nodeCounter++
@@ -1115,15 +1140,31 @@ $(Get-ReportNavigation -ActivePage "Network")
                 foreach ($s in $vnet.Subnets) { $deviceCount += $s.ConnectedDevices.Count }
                 
                 $tooltip = "$($vnet.Name)\nSubscription: $($vnet.SubscriptionName)\nAddress: $($vnet.AddressSpace)\nLocation: $($vnet.Location)\nSubnets: $($vnet.Subnets.Count)\nDevices: $deviceCount"
-                $nodesJson.Add("{ id: $nodeId, label: `"$($vnet.Name)`", title: `"$tooltip`", color: `"$subColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`" }, group: `"$subId`" }")
+                # Use subscription color for each VNet
+                $nodesJson.Add("{ id: $nodeId, label: `"$($vnet.Name)`", title: `"$tooltip`", color: `"$subColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                 
                 # Add gateway nodes
                 foreach ($gw in $vnet.Gateways) {
                     $gwNodeId = $nodeCounter++
                     $gwNodeIdMap[$gw.Id] = $gwNodeId
                     $gwTooltip = "$($gw.Name)\nType: $($gw.Type)\nSKU: $($gw.Sku)\nVPN: $($gw.VpnType)"
-                    $nodesJson.Add("{ id: $gwNodeId, label: `"$($gw.Name)`", title: `"$gwTooltip`", color: `"#9b59b6`", shape: `"diamond`", size: 15, font: { color: `"#e8e8e8`", size: 10 }, group: `"$subId`" }")
-                    $edgesJson.Add("{ from: $nodeId, to: $gwNodeId, color: { color: `"#9b59b6`" }, width: 2 }")
+                    $nodesJson.Add("{ id: $gwNodeId, label: `"$($gw.Name)`", title: `"$gwTooltip`", color: `"#9b59b6`", shape: `"diamond`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
+                    $edgesJson.Add("{ from: $nodeId, to: $gwNodeId, color: { color: `"#9b59b6`" }, width: 2, length: 50 }")
+                }
+            }
+        }
+        
+        # Create nodes for remote VNets that aren't in NetworkInventory (unknown subscriptions)
+        $unknownVnetColor = "#95a5a6"  # Gray color for unknown VNets
+        foreach ($vnet in $NetworkInventory) {
+            foreach ($peering in $vnet.Peerings) {
+                $remoteVnetName = $peering.RemoteVnetName
+                if ($remoteVnetName -and -not $nodeIdMap.ContainsKey($remoteVnetName)) {
+                    # This remote VNet is not in our inventory - create a node for it
+                    $nodeId = $nodeCounter++
+                    $nodeIdMap[$remoteVnetName] = $nodeId
+                    $tooltip = "$remoteVnetName\nSubscription: Unknown\n(No access to this subscription)"
+                    $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetName`", title: `"$tooltip`", color: `"$unknownVnetColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, group: `"unknown`" }")
                 }
             }
         }
@@ -1167,7 +1208,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                                     # Create on-premises node
                                     $onPremNodeId = $nodeCounter++
                                     $onPremTooltip = "$remoteName\nType: On-Premises Network\nAddress Space: $($conn.RemoteNetwork.AddressSpace)\nGateway IP: $($conn.RemoteNetwork.GatewayIpAddress)"
-                                    $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteName`", title: `"$onPremTooltip`", color: `"#e67e22`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`" } }")
+                                    $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteName`", title: `"$onPremTooltip`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#ffffff`", size: 16 } }")
                                     
                                     # Add S2S edge
                                     $statusColor = if ($conn.ConnectionStatus -eq "Connected") { "#16a085" } else { "#e74c3c" }
@@ -1258,7 +1299,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                 borderWidth: 2,
                 shadow: true,
                 font: {
-                    size: 14
+                    size: 16
                 },
                 fixed: {
                     x: false,

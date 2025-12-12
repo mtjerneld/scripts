@@ -69,44 +69,6 @@ function Get-NsgRiskAnalysis {
         "Any"
     )
 
-    # Helper function to check if an IP/CIDR is a private/internal address (RFC 1918)
-    function Test-IsPrivateIp {
-        param([string]$IpOrCidr)
-        
-        if ([string]::IsNullOrWhiteSpace($IpOrCidr)) { return $false }
-        
-        # Aggressive cleaning: remove invisible chars, quotes, extra spaces
-        # Keep only: Alphanumeric, dot, slash, asterisk, dash
-        $clean = $IpOrCidr -replace '[^0-9a-zA-Z\.\/\*\-]', ''
-        
-        # 1. Check for explicit internet indicators
-        if ($clean -eq "*" -or $clean -eq "0.0.0.0/0" -or $clean -eq "Internet" -or $clean -eq "Any") {
-            return $false
-        }
-        
-        # 2. Azure Service Tags
-        if ($clean -like "VirtualNetwork*" -or $clean -like "AzureLoadBalancer*") { return $true }
-        
-        # 3. RFC 1918 Private Ranges
-        if ($clean -like "10.*") { return $true }
-        if ($clean -like "192.168.*") { return $true }
-        
-        # 172.16.x.x - 172.31.x.x
-        if ($clean -like "172.*") {
-            if ($clean -match "^172\.(\d+)") {
-                $secondOctet = [int]$Matches[1]
-                if ($secondOctet -ge 16 -and $secondOctet -le 31) {
-                    return $true
-                }
-            }
-        }
-        
-        # 4. Special Ranges
-        if ($clean -like "127.*") { return $true }      # Loopback
-        if ($clean -like "169.254.*") { return $true }  # Link-Local
-        
-        return $false
-    }
     
     foreach ($rule in $NsgRules) {
         # Only analyze Allow rules for inbound traffic
@@ -164,15 +126,48 @@ function Get-NsgRiskAnalysis {
             # Check for explicit internet indicators first
             $isInternetSource = $false
             foreach ($dangerous in $dangerousSources) {
-                if ($trimmedAddr -eq $dangerous -or $trimmedAddr -like $dangerous) {
+                if ($trimmedAddr -eq $dangerous) {
                     $isInternetSource = $true
                     break
                 }
             }
             
             # If not an explicit internet indicator, check if it's a private range
+            # FULLY INLINED - no function call to eliminate any scope issues
             if (-not $isInternetSource) {
-                $isPrivate = Test-IsPrivateIp -IpOrCidr $trimmedAddr
+                $cleanAddr = $trimmedAddr -replace '[^0-9a-zA-Z\.\/\*\-]', ''
+                $isPrivate = $false
+                
+                # RFC 1918: 10.0.0.0/8
+                if ($cleanAddr -like "10.*") { 
+                    $isPrivate = $true 
+                }
+                # RFC 1918: 192.168.0.0/16
+                elseif ($cleanAddr -like "192.168.*") { 
+                    $isPrivate = $true 
+                }
+                # RFC 1918: 172.16.0.0/12 (172.16.x.x - 172.31.x.x)
+                elseif ($cleanAddr -like "172.*") {
+                    if ($cleanAddr -match "^172\.(\d+)") {
+                        $octet2 = [int]$Matches[1]
+                        if ($octet2 -ge 16 -and $octet2 -le 31) {
+                            $isPrivate = $true
+                        }
+                    }
+                }
+                # Loopback
+                elseif ($cleanAddr -like "127.*") { 
+                    $isPrivate = $true 
+                }
+                # Link-Local
+                elseif ($cleanAddr -like "169.254.*") { 
+                    $isPrivate = $true 
+                }
+                # Azure Service Tags
+                elseif ($cleanAddr -like "VirtualNetwork*" -or $cleanAddr -like "AzureLoadBalancer*") { 
+                    $isPrivate = $true 
+                }
+                
                 if ($isPrivate) {
                     # This is a private range - not an internet source, continue checking other sources
                     continue
