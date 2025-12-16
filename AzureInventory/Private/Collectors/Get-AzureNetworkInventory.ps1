@@ -79,6 +79,84 @@ function Get-AzureNetworkInventory {
         
         # Get all NICs once (might be heavy, but better than per-subnet loop if many subnets)
         $allNics = Get-AzNetworkInterface -ErrorAction SilentlyContinue
+        
+        # Get additional network resources
+        Write-Verbose "Collecting additional network resources..."
+        
+        # DNS Resolvers
+        $dnsResolvers = @()
+        try {
+            $dnsResolverResources = Get-AzResource -ResourceType "Microsoft.Network/dnsResolvers" -ErrorAction SilentlyContinue
+            if ($dnsResolverResources) {
+                foreach ($res in $dnsResolverResources) {
+                    try {
+                        $resolver = Get-AzDnsResolver -ResourceGroupName $res.ResourceGroupName -Name $res.Name -ErrorAction SilentlyContinue
+                        if ($resolver) { $dnsResolvers += $resolver }
+                    } catch {
+                        # DNS Resolver cmdlet might not be available in all Az.Network versions
+                    }
+                }
+            }
+        } catch {
+            Write-Verbose "DNS Resolvers collection skipped: $_"
+        }
+        
+        # Load Balancers
+        $loadBalancers = Get-AzLoadBalancer -ErrorAction SilentlyContinue
+        
+        # Application Gateways
+        $appGateways = @()
+        try {
+            $appGwResources = Get-AzResource -ResourceType "Microsoft.Network/applicationGateways" -ErrorAction SilentlyContinue
+            if ($appGwResources) {
+                foreach ($res in $appGwResources) {
+                    try {
+                        $appGw = Get-AzApplicationGateway -ResourceGroupName $res.ResourceGroupName -Name $res.Name -ErrorAction SilentlyContinue
+                        if ($appGw) { $appGateways += $appGw }
+                    } catch {
+                        Write-Verbose "Failed to get Application Gateway $($res.Name): $_"
+                    }
+                }
+            }
+        } catch {
+            Write-Verbose "Application Gateways collection skipped: $_"
+        }
+        
+        # NAT Gateways
+        $natGateways = @()
+        try {
+            $natGwResources = Get-AzResource -ResourceType "Microsoft.Network/natGateways" -ErrorAction SilentlyContinue
+            if ($natGwResources) {
+                foreach ($res in $natGwResources) {
+                    try {
+                        $natGw = Get-AzNatGateway -ResourceGroupName $res.ResourceGroupName -Name $res.Name -ErrorAction SilentlyContinue
+                        if ($natGw) { $natGateways += $natGw }
+                    } catch {
+                        Write-Verbose "Failed to get NAT Gateway $($res.Name): $_"
+                    }
+                }
+            }
+        } catch {
+            Write-Verbose "NAT Gateways collection skipped: $_"
+        }
+        
+        # Bastion Hosts
+        $bastionHosts = @()
+        try {
+            $bastionResources = Get-AzResource -ResourceType "Microsoft.Network/bastionHosts" -ErrorAction SilentlyContinue
+            if ($bastionResources) {
+                foreach ($res in $bastionResources) {
+                    try {
+                        $bastion = Get-AzBastion -ResourceGroupName $res.ResourceGroupName -Name $res.Name -ErrorAction SilentlyContinue
+                        if ($bastion) { $bastionHosts += $bastion }
+                    } catch {
+                        Write-Verbose "Failed to get Bastion Host $($res.Name): $_"
+                    }
+                }
+            }
+        } catch {
+            Write-Verbose "Bastion Hosts collection skipped: $_"
+        }
 
         # If $vnets is null, the previous check handles it.
         # Ensure collection is not null before looping
@@ -324,6 +402,9 @@ function Get-AzureNetworkInventory {
                         ConnectedDevices = [System.Collections.Generic.List[PSObject]]::new()
                     }
 
+                    # Track Private Endpoints already added via NICs to avoid duplicates
+                    $processedPEIds = [System.Collections.Generic.HashSet[string]]::new()
+                    
                     # Process Connected Devices (NICs)
                     foreach ($nic in $subnetNics) {
                         $vmId = $null
@@ -335,10 +416,13 @@ function Get-AzureNetworkInventory {
                         # Check for Private Endpoint
                         $isPe = $false
                         $peName = ""
+                        $peId = $null
                         if ($nic.PrivateEndpoint -and $nic.PrivateEndpoint.Id) {
                             $isPe = $true
-                            $peName = $nic.PrivateEndpoint.Id.Split('/')[-1]
+                            $peId = $nic.PrivateEndpoint.Id
+                            $peName = $peId.Split('/')[-1]
                             $vmName = "PE: $peName"
+                            [void]$processedPEIds.Add($peId)
                         }
 
                         # Public IP - Handle array of IP Configs
@@ -371,7 +455,191 @@ function Get-AzureNetworkInventory {
                             VmName = $vmName
                             VmId = $vmId
                             IsPrivateEndpoint = $isPe
+                            DeviceType = if ($isPe) { "Private Endpoint" } else { "NIC/VM" }
                         })
+                    }
+                    
+                    # Process Private Endpoints directly (not just via NICs)
+                    if ($privateEndpoints) {
+                        foreach ($pe in $privateEndpoints) {
+                            # Skip if this PE was already added via NIC processing
+                            if ($processedPEIds.Contains($pe.Id)) {
+                                continue
+                            }
+                            
+                            # Check if PE is connected to this subnet
+                            if ($pe.Subnet -and $pe.Subnet.Id -eq $subnet.Id) {
+                                $pePrivateIp = $null
+                                if ($pe.PrivateIPAddress) {
+                                    $pePrivateIp = $pe.PrivateIPAddress
+                                } elseif ($pe.NetworkInterfaces -and $pe.NetworkInterfaces.Count -gt 0) {
+                                    # Try to get IP from first NIC
+                                    $peNicId = $pe.NetworkInterfaces[0].Id
+                                    $peNic = $allNics | Where-Object { $_.Id -eq $peNicId } | Select-Object -First 1
+                                    if ($peNic -and $peNic.IpConfigurations) {
+                                        foreach ($ipconf in $peNic.IpConfigurations) {
+                                            if ($ipconf.Subnet -and $ipconf.Subnet.Id -eq $subnet.Id) {
+                                                $pePrivateIp = $ipconf.PrivateIpAddress
+                                                break
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                $subnetObj.ConnectedDevices.Add([PSCustomObject]@{
+                                    Name = $pe.Name
+                                    Id = $pe.Id
+                                    PrivateIp = $pePrivateIp
+                                    PublicIp = $null
+                                    VmName = "Private Endpoint"
+                                    VmId = $null
+                                    IsPrivateEndpoint = $true
+                                    DeviceType = "Private Endpoint"
+                                })
+                            }
+                        }
+                    }
+                    
+                    # Process DNS Resolvers
+                    if ($dnsResolvers) {
+                        foreach ($resolver in $dnsResolvers) {
+                            # DNS Resolvers can have subnet references in various places
+                            $matched = $false
+                            if ($resolver.VirtualNetwork -and $resolver.VirtualNetwork.Id -eq $vnet.Id) {
+                                # Check if resolver has direct subnet reference
+                                if ($resolver.Subnet -and $resolver.Subnet.Id -eq $subnet.Id) {
+                                    $matched = $true
+                                }
+                                # Check IP configurations for subnet references
+                                elseif ($resolver.VirtualNetworkIpConfigurations) {
+                                    foreach ($ipConfig in $resolver.VirtualNetworkIpConfigurations) {
+                                        if ($ipConfig.Subnet -and $ipConfig.Subnet.Id -eq $subnet.Id) {
+                                            $matched = $true
+                                            break
+                                        }
+                                    }
+                                }
+                                
+                                if ($matched) {
+                                    $subnetObj.ConnectedDevices.Add([PSCustomObject]@{
+                                        Name = $resolver.Name
+                                        Id = $resolver.Id
+                                        PrivateIp = $null
+                                        PublicIp = $null
+                                        VmName = "DNS Resolver"
+                                        VmId = $null
+                                        IsPrivateEndpoint = $false
+                                        DeviceType = "DNS Resolver"
+                                    })
+                                }
+                            }
+                        }
+                    }
+                    
+                    # Process Load Balancers
+                    if ($loadBalancers) {
+                        foreach ($lb in $loadBalancers) {
+                            if ($lb.FrontendIpConfigurations) {
+                                foreach ($frontendIp in $lb.FrontendIpConfigurations) {
+                                    if ($frontendIp.Subnet -and $frontendIp.Subnet.Id -eq $subnet.Id) {
+                                        $subnetObj.ConnectedDevices.Add([PSCustomObject]@{
+                                            Name = $lb.Name
+                                            Id = $lb.Id
+                                            PrivateIp = if ($frontendIp.PrivateIpAddress) { $frontendIp.PrivateIpAddress } else { $null }
+                                            PublicIp = if ($frontendIp.PublicIpAddress -and $frontendIp.PublicIpAddress.Id) {
+                                                $pip = $publicIps | Where-Object { $_.Id -eq $frontendIp.PublicIpAddress.Id } | Select-Object -First 1
+                                                if ($pip) { $pip.IpAddress } else { $null }
+                                            } else { $null }
+                                            VmName = "Load Balancer"
+                                            VmId = $null
+                                            IsPrivateEndpoint = $false
+                                            DeviceType = "Load Balancer"
+                                        })
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    # Process Application Gateways
+                    if ($appGateways) {
+                        foreach ($appGw in $appGateways) {
+                            if ($appGw.GatewayIPConfigurations) {
+                                foreach ($ipConfig in $appGw.GatewayIPConfigurations) {
+                                    if ($ipConfig.Subnet -and $ipConfig.Subnet.Id -eq $subnet.Id) {
+                                        $subnetObj.ConnectedDevices.Add([PSCustomObject]@{
+                                            Name = $appGw.Name
+                                            Id = $appGw.Id
+                                            PrivateIp = if ($ipConfig.Subnet) { "Subnet: $($subnet.Name)" } else { $null }
+                                            PublicIp = if ($appGw.PublicIPAddresses) {
+                                                $pipIds = $appGw.PublicIPAddresses | ForEach-Object { $_.Id }
+                                                $pips = $publicIps | Where-Object { $pipIds -contains $_.Id }
+                                                if ($pips) { ($pips | ForEach-Object { $_.IpAddress }) -join ", " } else { $null }
+                                            } else { $null }
+                                            VmName = "Application Gateway"
+                                            VmId = $null
+                                            IsPrivateEndpoint = $false
+                                            DeviceType = "Application Gateway"
+                                        })
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    # Process NAT Gateways
+                    if ($natGateways) {
+                        foreach ($natGw in $natGateways) {
+                            if ($natGw.Subnets) {
+                                foreach ($natSubnet in $natGw.Subnets) {
+                                    if ($natSubnet.Id -eq $subnet.Id) {
+                                        $subnetObj.ConnectedDevices.Add([PSCustomObject]@{
+                                            Name = $natGw.Name
+                                            Id = $natGw.Id
+                                            PrivateIp = $null
+                                            PublicIp = if ($natGw.PublicIpAddresses) {
+                                                $pipIds = $natGw.PublicIpAddresses | ForEach-Object { $_.Id }
+                                                $pips = $publicIps | Where-Object { $pipIds -contains $_.Id }
+                                                if ($pips) { ($pips | ForEach-Object { $_.IpAddress }) -join ", " } else { $null }
+                                            } else { $null }
+                                            VmName = "NAT Gateway"
+                                            VmId = $null
+                                            IsPrivateEndpoint = $false
+                                            DeviceType = "NAT Gateway"
+                                        })
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    # Process Bastion Hosts
+                    if ($bastionHosts) {
+                        foreach ($bastion in $bastionHosts) {
+                            if ($bastion.IpConfigurations) {
+                                foreach ($ipConfig in $bastion.IpConfigurations) {
+                                    if ($ipConfig.Subnet -and $ipConfig.Subnet.Id -eq $subnet.Id) {
+                                        $subnetObj.ConnectedDevices.Add([PSCustomObject]@{
+                                            Name = $bastion.Name
+                                            Id = $bastion.Id
+                                            PrivateIp = if ($ipConfig.PrivateIpAddress) { $ipConfig.PrivateIpAddress } else { $null }
+                                            PublicIp = if ($ipConfig.PublicIpAddress -and $ipConfig.PublicIpAddress.Id) {
+                                                $pip = $publicIps | Where-Object { $_.Id -eq $ipConfig.PublicIpAddress.Id } | Select-Object -First 1
+                                                if ($pip) { $pip.IpAddress } else { $null }
+                                            } else { $null }
+                                            VmName = "Bastion Host"
+                                            VmId = $null
+                                            IsPrivateEndpoint = $false
+                                            DeviceType = "Bastion Host"
+                                        })
+                                        break
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     $vnetObj.Subnets.Add($subnetObj)

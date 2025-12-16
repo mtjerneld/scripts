@@ -692,6 +692,7 @@
       "cliCommand": "az webapp config show --name {name} --resource-group {rg} --query minTlsVersion",
       "remediationCommand": "az webapp config set --name {name} --resource-group {rg} --min-tls-version 1.2",
       "businessImpact": "Enforces secure TLS connections for web applications. Prevents use of deprecated protocols.",
+      "eolDate": "2026-02-03",
       "references": [
         "https://learn.microsoft.com/en-us/azure/app-service/configure-ssl-bindings#enforce-tls-versions",
         "https://workbench.cisecurity.org/files/3459",

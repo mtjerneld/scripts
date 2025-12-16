@@ -237,15 +237,18 @@ function Get-AppServiceFindings {
                 Write-Verbose "Web app $($app.Name): webAppConfig is null, cannot retrieve MinTlsVersion"
             }
             
-            
             # Default to 1.0 if not found
             if ([string]::IsNullOrWhiteSpace($minTlsVersion)) {
                 $minTlsVersion = "1.0"
                 Write-Verbose "Web app $($app.Name): MinTlsVersion not found, defaulting to '1.0'"
             }
             
+            # Legacy TLS versions for EOL/deprecation
+            $legacyVersions = @("1.0", "1.1")
+            $eolDate = if ($minTlsVersion -in $legacyVersions) { $tlsControl.eolDate } else { $null }
+            
             $tlsStatus = if ($minTlsVersion -ge "1.2") { "PASS" } else { "FAIL" }
-            Write-Verbose "Web app $($app.Name): Final MinTlsVersion = '$minTlsVersion', Status = $tlsStatus"
+            Write-Verbose "Web app $($app.Name): Final MinTlsVersion = '$minTlsVersion', Status = $tlsStatus, EOLDate = '$eolDate'"
             
             $remediationCmd = $tlsControl.remediationCommand -replace '\{name\}', $app.Name -replace '\{rg\}', $resourceGroupName
             $finding = New-SecurityFinding `
@@ -265,7 +268,8 @@ function Get-AppServiceFindings {
                 -ExpectedValue $tlsControl.expectedValue `
                 -Status $tlsStatus `
                 -RemediationSteps $tlsControl.businessImpact `
-                -RemediationCommand $remediationCmd
+                -RemediationCommand $remediationCmd `
+                -EOLDate $eolDate
             $findings.Add($finding)
         }
         

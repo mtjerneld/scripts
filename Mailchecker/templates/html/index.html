@@ -43,6 +43,21 @@
     </div>
 {{DOWNLOAD_LINKS}}
     <h2>Detailed Results</h2>
+    <div class="table-controls">
+        <div class="table-controls-left">
+            <label for="statusFilter"><strong>Filter by status:</strong></label>
+            <select id="statusFilter">
+                <option value="all">All domains</option>
+                <option value="pass">Fully compliant (PASS)</option>
+                <option value="warn">Needs improvement (WARN)</option>
+                <option value="fail">Critical issues (FAIL)</option>
+            </select>
+        </div>
+        <div class="table-controls-right">
+            <label for="domainFilter"><strong>Search domain:</strong></label>
+            <input id="domainFilter" type="search" placeholder="e.g. example.com">
+        </div>
+    </div>
   <table class="index-table">
         <thead>
             <tr>

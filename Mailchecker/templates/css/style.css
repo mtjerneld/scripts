@@ -654,6 +654,41 @@ a:hover {
     gap: 12px;
 }
 
+/* Table controls above Detailed Results */
+.table-controls {
+    margin: var(--space-3) 0;
+    padding: var(--space-3);
+    background-color: var(--surface-muted);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: center;
+}
+
+.table-controls label {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-right: 8px;
+}
+
+.table-controls select,
+.table-controls input[type="search"] {
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background-color: var(--surface);
+    color: var(--text);
+    font-size: 14px;
+    min-width: 180px;
+}
+
+.table-controls input[type="search"]::placeholder {
+    color: var(--text-muted);
+}
+
 /* Button */
 .btn {
     display: inline-block;

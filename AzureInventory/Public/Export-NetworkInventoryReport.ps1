@@ -973,6 +973,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                                     <thead>
                                         <tr>
                                             <th>Name</th>
+                                            <th>Type</th>
                                             <th>Private IP</th>
                                             <th>Public IP</th>
                                             <th>Attached To</th>
@@ -981,10 +982,12 @@ $(Get-ReportNavigation -ActivePage "Network")
                                     <tbody>
 "@
                         foreach ($device in $subnet.ConnectedDevices) {
+                            $deviceType = if ($device.DeviceType) { $device.DeviceType } else { if ($device.IsPrivateEndpoint) { "Private Endpoint" } else { "NIC/VM" } }
                             $html += @"
                                         <tr>
                                             <td>$(Encode-Html $device.Name)</td>
-                                            <td>$(Encode-Html $device.PrivateIp)</td>
+                                            <td>$(Encode-Html $deviceType)</td>
+                                            <td>$(if ($device.PrivateIp) { Encode-Html $device.PrivateIp } else { "<span style='color:var(--text-muted);'>-</span>" })</td>
                                             <td>$(if ($device.PublicIp) { Encode-Html $device.PublicIp } else { "<span style='color:var(--text-muted);'>-</span>" })</td>
                                             <td>$(Encode-Html $device.VmName)</td>
                                         </tr>
