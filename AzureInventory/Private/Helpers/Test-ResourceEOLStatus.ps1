@@ -70,7 +70,7 @@ function Test-ResourceEOLStatus {
         }
     }
     
-    # Helper to get nested property value
+    # Helper to get nested property value (supports array syntax like extensions[].name)
     function Get-ResourcePropertyValue {
         param(
             [PSObject]$Obj,
@@ -82,6 +82,70 @@ function Test-ResourceEOLStatus {
         }
         
         $current = $Obj
+        
+        # Handle array syntax: extensions[].name or extensions[]
+        if ($Path -match '^(.+)\[\](\..+)?$') {
+            $arrayPath = $matches[1]
+            $propertyAfterArray = if ($matches[2]) { $matches[2].Substring(1) } else { $null }
+            
+            # Navigate to the array property
+            $arrayObj = $current
+            $arraySegments = $arrayPath -split '\.'
+            foreach ($seg in $arraySegments) {
+                if ($null -eq $arrayObj) { return $null }
+                
+                if ($arrayObj -is [System.Collections.IDictionary]) {
+                    if (-not $arrayObj.Contains($seg)) { return $null }
+                    $arrayObj = $arrayObj[$seg]
+                }
+                elseif ($arrayObj.PSObject) {
+                    $propNames = $arrayObj.PSObject.Properties.Name
+                    $matchedProp = $propNames | Where-Object { $_ -eq $seg }
+                    if (-not $matchedProp) {
+                        $matchedProp = $propNames | Where-Object { $_ -ieq $seg }
+                    }
+                    if ($matchedProp) {
+                        $arrayObj = $arrayObj.$matchedProp
+                    } else {
+                        return $null
+                    }
+                }
+                else {
+                    return $null
+                }
+            }
+            
+            # Check if it's actually an array/collection
+            if ($null -eq $arrayObj) { return $null }
+            
+            $array = if ($arrayObj -is [System.Array]) {
+                @($arrayObj)
+            } elseif ($arrayObj -is [System.Collections.IEnumerable] -and $arrayObj -isnot [string]) {
+                @($arrayObj)
+            } else {
+                return $null
+            }
+            
+            # If there's a property after [], extract values from each array element
+            if ($propertyAfterArray) {
+                $values = @()
+                foreach ($item in $array) {
+                    if ($null -ne $item) {
+                        $itemValue = Get-ResourcePropertyValue -Obj $item -Path $propertyAfterArray
+                        if ($null -ne $itemValue) {
+                            $values += $itemValue
+                        }
+                    }
+                }
+                # Return array of values (for matching, we'll check if expectedValue is in the array)
+                return $values
+            } else {
+                # No property after [], return the array itself
+                return $array
+            }
+        }
+        
+        # Regular property path (no array syntax)
         $segments = $Path -split '\.'
         foreach ($seg in $segments) {
             if ($null -eq $current) { return $null }

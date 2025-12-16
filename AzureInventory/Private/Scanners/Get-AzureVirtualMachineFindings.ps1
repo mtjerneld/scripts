@@ -317,10 +317,12 @@ function Get-AzureVirtualMachineFindings {
         $legacyMmaControl = $controlLookup["NO Legacy MMA/OMS Agent (RETIRED)"]
         if ($legacyMmaControl) {
             $legacyMmaPresent = $false
+            $legacyExtensionName = $null
             if ($extensions) {
                 foreach ($ext in $extensions) {
                     if ($ext.ExtensionType -eq "MicrosoftMonitoringAgent" -or $ext.ExtensionType -eq "OmsAgentForLinux") {
                         $legacyMmaPresent = $true
+                        $legacyExtensionName = $ext.ExtensionType
                         break
                     }
                 }
@@ -467,8 +469,17 @@ function Get-AzureVirtualMachineFindings {
                 $null
             }
             
+            # Create a wrapper object with Extensions property for EOL matching
+            # (since Get-AzVM doesn't include Extensions, we add it from Get-AzVMExtension)
+            $vmForEOL = $vm | Select-Object *
+            if ($extensions) {
+                $vmForEOL | Add-Member -MemberType NoteProperty -Name "Extensions" -Value $extensions -Force
+            } else {
+                $vmForEOL | Add-Member -MemberType NoteProperty -Name "Extensions" -Value @() -Force
+            }
+            
             $eolStatus = Test-ResourceEOLStatus `
-                -Resource $vm `
+                -Resource $vmForEOL `
                 -ResourceType "Microsoft.Compute/virtualMachines" `
                 -DeprecationRules $deprecationRules `
                 -ResourceTypeMapping @{ "Microsoft.Compute/virtualMachines" = $mapping }
