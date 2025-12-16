@@ -16,7 +16,7 @@
 .OUTPUTS
     Array of SecurityFinding objects.
 #>
-function Get-AppServiceFindings {
+function Get-AzureAppServiceFindings {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -29,12 +29,38 @@ function Get-AppServiceFindings {
     )
     
     $findings = [System.Collections.Generic.List[PSObject]]::new()
+    $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
+    
+    # Load deprecation rules for EOL checking
+    $deprecationRules = Get-DeprecationRules
+    $resourceTypeMapping = @{}
+    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
+    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
+    if (Test-Path $mappingPath) {
+        try {
+            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
+            if ($mappingJson -and $mappingJson.mappings) {
+                foreach ($mapping in $mappingJson.mappings) {
+                    if ($mapping.resourceType -eq "Microsoft.Web/sites") {
+                        $resourceTypeMapping["Microsoft.Web/sites"] = $mapping
+                        break
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Failed to load ResourceTypeMapping: $_"
+        }
+    }
     
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "AppService" -IncludeLevel2:$IncludeLevel2
     if ($null -eq $controls -or $controls.Count -eq 0) {
         Write-Verbose "No enabled AppService controls found in configuration for subscription $SubscriptionName"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     Write-Verbose "Loaded $($controls.Count) AppService control(s) from configuration"
     
@@ -85,14 +111,20 @@ function Get-AppServiceFindings {
         catch {
             Write-Warning "Failed to retrieve web apps in subscription $SubscriptionName using both methods: $_"
             Write-Verbose "Error details: $($_.Exception.Message)"
-            return $findings
+            return @{
+                Findings = $findings
+                EOLFindings = $eolFindings
+            }
         }
     }
     
     # Handle case where no web apps found
     if ($null -eq $webApps) {
         Write-Verbose "No web apps found in subscription $SubscriptionName (Get-AzWebApp returned null)"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     # Convert to array if single object
@@ -102,7 +134,10 @@ function Get-AppServiceFindings {
     
     if ($webApps.Count -eq 0) {
         Write-Verbose "No web apps found in subscription $SubscriptionName (empty array)"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     Write-Verbose "Found $($webApps.Count) web app(s) in subscription $SubscriptionName"
@@ -243,12 +278,8 @@ function Get-AppServiceFindings {
                 Write-Verbose "Web app $($app.Name): MinTlsVersion not found, defaulting to '1.0'"
             }
             
-            # Legacy TLS versions for EOL/deprecation
-            $legacyVersions = @("1.0", "1.1")
-            $eolDate = if ($minTlsVersion -in $legacyVersions) { $tlsControl.eolDate } else { $null }
-            
             $tlsStatus = if ($minTlsVersion -ge "1.2") { "PASS" } else { "FAIL" }
-            Write-Verbose "Web app $($app.Name): Final MinTlsVersion = '$minTlsVersion', Status = $tlsStatus, EOLDate = '$eolDate'"
+            Write-Verbose "Web app $($app.Name): Final MinTlsVersion = '$minTlsVersion', Status = $tlsStatus"
             
             $remediationCmd = $tlsControl.remediationCommand -replace '\{name\}', $app.Name -replace '\{rg\}', $resourceGroupName
             $finding = New-SecurityFinding `
@@ -268,8 +299,7 @@ function Get-AppServiceFindings {
                 -ExpectedValue $tlsControl.expectedValue `
                 -Status $tlsStatus `
                 -RemediationSteps $tlsControl.businessImpact `
-                -RemediationCommand $remediationCmd `
-                -EOLDate $eolDate
+                -RemediationCommand $remediationCmd
             $findings.Add($finding)
         }
         
@@ -414,6 +444,51 @@ function Get-AppServiceFindings {
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
         }
+        
+        # EOL Checking: Check if this App Service matches any deprecation rules
+        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
+            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Web/sites")) {
+                $resourceTypeMapping["Microsoft.Web/sites"]
+            } else {
+                $null
+            }
+            
+            # Create a resource object with SiteConfig.MinTlsVersion for matching
+            $resourceForEOL = [PSCustomObject]@{
+                Name = $app.Name
+                Id = $app.Id
+                ResourceGroupName = $resourceGroupName
+                SiteConfig = @{
+                    MinTlsVersion = $minTlsVersion
+                }
+            }
+            
+            $eolStatus = Test-ResourceEOLStatus `
+                -Resource $resourceForEOL `
+                -ResourceType "Microsoft.Web/sites" `
+                -DeprecationRules $deprecationRules `
+                -ResourceTypeMapping @{ "Microsoft.Web/sites" = $mapping }
+            
+            if ($eolStatus.Matched -and $eolStatus.Rule) {
+                $rule = $eolStatus.Rule
+                $eolFinding = New-EOLFinding `
+                    -SubscriptionId $SubscriptionId `
+                    -SubscriptionName $SubscriptionName `
+                    -ResourceGroup $resourceGroupName `
+                    -ResourceType "Microsoft.Web/sites" `
+                    -ResourceName $app.Name `
+                    -ResourceId $app.Id `
+                    -Component $rule.component `
+                    -Status $rule.status `
+                    -Deadline $eolStatus.Deadline `
+                    -Severity $eolStatus.Severity `
+                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
+                    -ActionRequired $rule.actionRequired `
+                    -MigrationGuide $rule.migrationGuide `
+                    -References $(if ($rule.references) { $rule.references } else { @() })
+                $eolFindings.Add($eolFinding)
+            }
+        }
     }
     
     if ($skippedCount -gt 0) {
@@ -428,10 +503,13 @@ function Get-AppServiceFindings {
         Write-Warning "AppService scan found $($webApps.Count) web app(s) but generated 0 findings - this may indicate a problem"
     }
     else {
-        Write-Verbose "AppService scan completed: $($findings.Count) findings from $processedCount web app(s)"
+        Write-Verbose "AppService scan completed: $($findings.Count) findings, $($eolFindings.Count) EOL findings from $processedCount web app(s)"
     }
     
-    return $findings
+    # Return both security findings and EOL findings
+    return @{
+        Findings = $findings
+        EOLFindings = $eolFindings
+    }
 }
-
 

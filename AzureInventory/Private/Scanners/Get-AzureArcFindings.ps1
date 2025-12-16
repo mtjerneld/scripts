@@ -27,12 +27,38 @@ function Get-AzureArcFindings {
     )
     
     $findings = [System.Collections.Generic.List[PSObject]]::new()
+    $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
+    
+    # Load deprecation rules for EOL checking
+    $deprecationRules = Get-DeprecationRules
+    $resourceTypeMapping = @{}
+    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
+    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
+    if (Test-Path $mappingPath) {
+        try {
+            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
+            if ($mappingJson -and $mappingJson.mappings) {
+                foreach ($mapping in $mappingJson.mappings) {
+                    if ($mapping.resourceType -eq "Microsoft.HybridCompute/machines") {
+                        $resourceTypeMapping["Microsoft.HybridCompute/machines"] = $mapping
+                        break
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Failed to load ResourceTypeMapping: $_"
+        }
+    }
     
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "ARC"
     if ($null -eq $controls -or $controls.Count -eq 0) {
         Write-Verbose "No enabled ARC controls found in configuration for subscription $SubscriptionName"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     Write-Verbose "Loaded $($controls.Count) ARC control(s) from configuration"
     
@@ -50,12 +76,18 @@ function Get-AzureArcFindings {
     }
     catch {
         Write-Warning "Failed to retrieve ARC machines in subscription $SubscriptionName : $_"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     if (-not $arcMachines) {
         Write-Verbose "No ARC machines found in subscription $SubscriptionName"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     foreach ($machine in $arcMachines) {
@@ -216,9 +248,48 @@ function Get-AzureArcFindings {
                 -References $descAndRefs.References
             $findings.Add($finding)
         }
+        
+        # EOL Checking: Check if this ARC machine matches any deprecation rules
+        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
+            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.HybridCompute/machines")) {
+                $resourceTypeMapping["Microsoft.HybridCompute/machines"]
+            } else {
+                $null
+            }
+            
+            $eolStatus = Test-ResourceEOLStatus `
+                -Resource $machine `
+                -ResourceType "Microsoft.HybridCompute/machines" `
+                -DeprecationRules $deprecationRules `
+                -ResourceTypeMapping @{ "Microsoft.HybridCompute/machines" = $mapping }
+            
+            if ($eolStatus.Matched -and $eolStatus.Rule) {
+                $rule = $eolStatus.Rule
+                $eolFinding = New-EOLFinding `
+                    -SubscriptionId $SubscriptionId `
+                    -SubscriptionName $SubscriptionName `
+                    -ResourceGroup $machine.ResourceGroupName `
+                    -ResourceType "Microsoft.HybridCompute/machines" `
+                    -ResourceName $machine.Name `
+                    -ResourceId $machine.Id `
+                    -Component $rule.component `
+                    -Status $rule.status `
+                    -Deadline $eolStatus.Deadline `
+                    -Severity $eolStatus.Severity `
+                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
+                    -ActionRequired $rule.actionRequired `
+                    -MigrationGuide $rule.migrationGuide `
+                    -References $(if ($rule.references) { $rule.references } else { @() })
+                $eolFindings.Add($eolFinding)
+            }
+        }
     }
     
-    return $findings
+    # Return both security findings and EOL findings
+    return @{
+        Findings = $findings
+        EOLFindings = $eolFindings
+    }
 }
 
 

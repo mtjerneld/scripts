@@ -22,7 +22,7 @@
 .OUTPUTS
     Array of SecurityFinding objects.
 #>
-function Get-StorageAccountFindings {
+function Get-AzureStorageFindings {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -37,12 +37,38 @@ function Get-StorageAccountFindings {
     )
     
     $findings = [System.Collections.Generic.List[PSObject]]::new()
+    $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
+    
+    # Load deprecation rules for EOL checking
+    $deprecationRules = Get-DeprecationRules
+    $resourceTypeMapping = @{}
+    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
+    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
+    if (Test-Path $mappingPath) {
+        try {
+            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
+            if ($mappingJson -and $mappingJson.mappings) {
+                foreach ($mapping in $mappingJson.mappings) {
+                    if ($mapping.resourceType -eq "Microsoft.Storage/storageAccounts") {
+                        $resourceTypeMapping["Microsoft.Storage/storageAccounts"] = $mapping
+                        break
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Failed to load ResourceTypeMapping: $_"
+        }
+    }
     
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "Storage" -IncludeLevel2:$IncludeLevel2
     if ($null -eq $controls -or $controls.Count -eq 0) {
         Write-Verbose "No enabled Storage controls found in configuration for subscription $SubscriptionName"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     Write-Verbose "Loaded $($controls.Count) Storage control(s) from configuration"
     
@@ -60,13 +86,19 @@ function Get-StorageAccountFindings {
     }
     catch {
         Write-Warning "Failed to retrieve storage accounts in subscription $SubscriptionName : $_"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     # Check if storageAccounts is null or empty array
     if ($null -eq $storageAccounts -or ($storageAccounts -is [System.Array] -and $storageAccounts.Count -eq 0)) {
         Write-Verbose "No storage accounts found in subscription $SubscriptionName"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     foreach ($sa in $storageAccounts) {
@@ -111,10 +143,6 @@ function Get-StorageAccountFindings {
             
             $tlsStatus = if ($minTlsVersion -in $validTlsVersions) { "PASS" } else { "FAIL" }
             
-            # Check for legacy versions for EOL date
-            $legacyVersions = @("TLS1_0", "TLS1_1")
-            $eolDate = if ($minTlsVersion -in $legacyVersions) { $tlsControl.eolDate } else { $null }
-            
             $remediationCmd = $tlsControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
             $finding = New-SecurityFinding `
                 -SubscriptionId $SubscriptionId `
@@ -133,8 +161,7 @@ function Get-StorageAccountFindings {
                 -ExpectedValue $tlsControl.expectedValue `
                 -Status $tlsStatus `
                 -RemediationSteps $tlsControl.businessImpact `
-                -RemediationCommand $remediationCmd `
-                -EOLDate $eolDate
+                -RemediationCommand $remediationCmd
             $findings.Add($finding)
         }
         
@@ -266,7 +293,6 @@ function Get-StorageAccountFindings {
         $kindControl = $controlLookup["Storage Account Kind (Legacy Detection)"]
         if ($kindControl) {
             $kindStatus = if ($sa.Kind -eq "StorageV2") { "PASS" } else { "FAIL" }
-            $eolDate = if ($sa.Kind -in @('Storage', 'BlobStorage')) { $kindControl.eolDate } else { $null }
             
             $remediationCmd = $kindControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
             $finding = New-SecurityFinding `
@@ -286,9 +312,43 @@ function Get-StorageAccountFindings {
                 -ExpectedValue $kindControl.expectedValue `
                 -Status $kindStatus `
                 -RemediationSteps $kindControl.businessImpact `
-                -RemediationCommand $remediationCmd `
-                -EOLDate $eolDate
+                -RemediationCommand $remediationCmd
             $findings.Add($finding)
+        }
+        
+        # EOL Checking: Check if this storage account matches any deprecation rules
+        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
+            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Storage/storageAccounts")) {
+                $resourceTypeMapping["Microsoft.Storage/storageAccounts"]
+            } else {
+                $null
+            }
+            
+            $eolStatus = Test-ResourceEOLStatus `
+                -Resource $sa `
+                -ResourceType "Microsoft.Storage/storageAccounts" `
+                -DeprecationRules $deprecationRules `
+                -ResourceTypeMapping @{ "Microsoft.Storage/storageAccounts" = $mapping }
+            
+            if ($eolStatus.Matched -and $eolStatus.Rule) {
+                $rule = $eolStatus.Rule
+                $eolFinding = New-EOLFinding `
+                    -SubscriptionId $SubscriptionId `
+                    -SubscriptionName $SubscriptionName `
+                    -ResourceGroup $sa.ResourceGroupName `
+                    -ResourceType "Microsoft.Storage/storageAccounts" `
+                    -ResourceName $sa.StorageAccountName `
+                    -ResourceId $resourceId `
+                    -Component $rule.component `
+                    -Status $rule.status `
+                    -Deadline $eolStatus.Deadline `
+                    -Severity $eolStatus.Severity `
+                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
+                    -ActionRequired $rule.actionRequired `
+                    -MigrationGuide $rule.migrationGuide `
+                    -References $(if ($rule.references) { $rule.references } else { @() })
+                $eolFindings.Add($eolFinding)
+            }
         }
         
         # Level 2 Controls - Only check if control is enabled and IncludeLevel2 is specified
@@ -412,5 +472,9 @@ function Get-StorageAccountFindings {
         }
     }
     
-    return $findings
+    # Return both security findings and EOL findings
+    return @{
+        Findings = $findings
+        EOLFindings = $eolFindings
+    }
 }

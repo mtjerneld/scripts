@@ -48,6 +48,9 @@ function Invoke-ScannerForSubscription {
         [System.Collections.Generic.List[PSObject]]$AllFindings,
         
         [Parameter(Mandatory = $false)]
+        [System.Collections.Generic.List[PSObject]]$AllEOLFindings,
+        
+        [Parameter(Mandatory = $false)]
         [System.Collections.Generic.List[PSObject]]$VMInventory,
         
         [Parameter(Mandatory = $false)]
@@ -58,6 +61,9 @@ function Invoke-ScannerForSubscription {
     # Use $null check instead of truthy check to preserve the reference to the original list
     if ($null -eq $AllFindings) {
         $AllFindings = [System.Collections.Generic.List[PSObject]]::new()
+    }
+    if ($null -eq $AllEOLFindings) {
+        $AllEOLFindings = [System.Collections.Generic.List[PSObject]]::new()
     }
     if ($null -eq $VMInventory) {
         $VMInventory = [System.Collections.Generic.List[PSObject]]::new()
@@ -128,9 +134,21 @@ function Invoke-ScannerForSubscription {
                 & $Scanners[$category] -subId $Subscription.Id -subName $subscriptionNameToUse -includeL2:$IncludeLevel2
             }
             
-            # Handle VM scanner's new return structure (Findings + Inventory)
+            # Handle scanners that return structured results (Findings + EOLFindings or Findings + Inventory)
             $findings = $null
-            if ($category -eq 'VM' -and $scanResult -is [PSCustomObject] -and $scanResult.PSObject.Properties.Name -contains 'Findings') {
+            $eolFindings = $null
+            
+            if ($scanResult -is [hashtable]) {
+                # Scanners return hashtable with Findings and EOLFindings (Storage, Network, AppService, SQL, KeyVault, Monitor, ARC)
+                if ($scanResult.ContainsKey('Findings')) {
+                    $findings = $scanResult['Findings']
+                }
+                if ($scanResult.ContainsKey('EOLFindings')) {
+                    $eolFindings = $scanResult['EOLFindings']
+                }
+                Write-Verbose "Scanner $category returned hashtable: Findings=$($findings.Count), EOLFindings=$($eolFindings.Count)"
+            }
+            elseif ($category -eq 'VM' -and $scanResult -is [PSCustomObject] -and $scanResult.PSObject.Properties.Name -contains 'Findings') {
                 $findings = $scanResult.Findings
                 # Add VM inventory data
                 if ($scanResult.Inventory -and $scanResult.Inventory.Count -gt 0) {
@@ -138,8 +156,14 @@ function Invoke-ScannerForSubscription {
                         $VMInventory.Add($vmData)
                     }
                 }
+                # VM scanner also returns EOLFindings
+                if ($scanResult.PSObject.Properties.Name -contains 'EOLFindings') {
+                    $eolFindings = $scanResult.EOLFindings
+                }
+                Write-Verbose "Scanner $category returned PSCustomObject: Findings=$($findings.Count), EOLFindings=$($eolFindings.Count)"
             } else {
                 $findings = $scanResult
+                Write-Verbose "Scanner $category returned simple array: Findings=$($findings.Count)"
             }
             
             # Handle null or empty results
@@ -170,6 +194,20 @@ function Invoke-ScannerForSubscription {
             }
             
             Write-Verbose "Added $findingsAdded findings from $category scan. Total findings in collection: $($AllFindings.Count)"
+            
+            # Handle EOL findings if present
+            if ($null -ne $eolFindings) {
+                $eolFindingsAdded = 0
+                if ($eolFindings -is [System.Array] -or $eolFindings -is [System.Collections.Generic.List[PSObject]]) {
+                    foreach ($eolFinding in $eolFindings) {
+                        if ($null -ne $eolFinding) {
+                            $AllEOLFindings.Add($eolFinding)
+                            $eolFindingsAdded++
+                        }
+                    }
+                }
+                Write-Verbose "Added $eolFindingsAdded EOL findings from $category scan. Total EOL findings in collection: $($AllEOLFindings.Count)"
+            }
             
             # Filter out null findings
             $validFindings = @($findings | Where-Object { $null -ne $_ })

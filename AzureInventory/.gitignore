@@ -1,6 +1,7 @@
 # Environment files with secrets
 .env
 *.env
+*.mp
 
 # PowerShell module cache
 *.psm1.bak

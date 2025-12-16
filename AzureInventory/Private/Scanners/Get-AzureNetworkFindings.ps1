@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Scans Azure Network Security Groups and related networking resources for CIS security compliance.
+    Scans Azure Network resources for CIS security compliance.
 
 .DESCRIPTION
     Checks Network Security Groups, Virtual Networks, and Azure Firewalls against CIS controls:
@@ -16,7 +16,7 @@
 .OUTPUTS
     Array of SecurityFinding objects.
 #>
-function Get-NetworkSecurityFindings {
+function Get-AzureNetworkFindings {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -30,8 +30,31 @@ function Get-NetworkSecurityFindings {
     
     # Suppress Azure PowerShell module warnings about unapproved verbs
     $findings = [System.Collections.Generic.List[PSObject]]::new()
+    $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
     $resourcesChecked = 0
     $checksPerformed = 0
+    
+    # Load deprecation rules for EOL checking
+    $deprecationRules = Get-DeprecationRules
+    $resourceTypeMapping = @{}
+    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
+    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
+    if (Test-Path $mappingPath) {
+        try {
+            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
+            if ($mappingJson -and $mappingJson.mappings) {
+                foreach ($mapping in $mappingJson.mappings) {
+                    if ($mapping.resourceType -eq "Microsoft.Network/virtualNetworkGateways") {
+                        $resourceTypeMapping["Microsoft.Network/virtualNetworkGateways"] = $mapping
+                        break
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Failed to load ResourceTypeMapping: $_"
+        }
+    }
     
     # Load enabled controls from JSON
     try {
@@ -39,14 +62,20 @@ function Get-NetworkSecurityFindings {
         if ($null -eq $controls -or $controls.Count -eq 0) {
             Write-Warning "No enabled Network controls found in configuration for subscription $SubscriptionName"
             Write-Verbose "This may indicate all Network controls are disabled in ControlDefinitions.json"
-            return $findings
+            return @{
+                Findings = $findings
+                EOLFindings = $eolFindings
+            }
         }
         Write-Verbose "Loaded $($controls.Count) Network control(s) from configuration"
     }
     catch {
         Write-Warning "Failed to load Network controls from configuration: $_"
         Write-Verbose "Error details: $($_.Exception.Message)"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     # Create lookup hashtable for quick control access
@@ -346,6 +375,112 @@ function Get-NetworkSecurityFindings {
         }
     }
     
+    # Control: VPN Gateway - Availability Zone SKU Required (Security check only, EOL handled separately)
+    $vpnGwControl = $controlLookup["VPN Gateway - Availability Zone SKU Required"]
+    if ($vpnGwControl) {
+        try {
+            # Get VPN Gateways using Get-AzResource first to avoid prompting for ResourceGroup
+            $gatewayResources = Invoke-AzureApiWithRetry {
+                Get-AzResource -ResourceType "Microsoft.Network/virtualNetworkGateways" -ErrorAction SilentlyContinue
+            }
+            
+            if ($gatewayResources -and $gatewayResources.Count -gt 0) {
+                $resourcesChecked += $gatewayResources.Count
+                foreach ($gwResource in $gatewayResources) {
+                    try {
+                        $gateway = Invoke-AzureApiWithRetry {
+                            Get-AzVirtualNetworkGateway -ResourceGroupName $gwResource.ResourceGroupName -Name $gwResource.Name -ErrorAction SilentlyContinue
+                        }
+                        
+                        if ($gateway) {
+                            $checksPerformed++
+                            $skuName = if ($gateway.Sku) { $gateway.Sku.Name } else { "Unknown" }
+                            
+                            # Check if SKU is deprecated (VpnGw1-5 without AZ suffix, but not ExpressRoute SKUs)
+                            $deprecatedSkus = @("VpnGw1", "VpnGw2", "VpnGw3", "VpnGw4", "VpnGw5")
+                            $isDeprecated = $deprecatedSkus -contains $skuName
+                            
+                            $gwStatus = if ($isDeprecated) { "FAIL" } else { "PASS" }
+                            $currentValue = if ($isDeprecated) { "$skuName (Deprecated - EOL Sep 2026)" } else { "$skuName (Zone-redundant or ExpressRoute)" }
+                            
+                            $remediationCmd = $vpnGwControl.remediationCommand -replace '\{name\}', $gateway.Name -replace '\{rg\}', $gateway.ResourceGroupName
+                            # Replace {newSku} with appropriate AZ version
+                            $newSku = $skuName + "AZ"
+                            $remediationCmd = $remediationCmd -replace '\{newSku\}', $newSku
+                            
+                            $finding = New-SecurityFinding `
+                                -SubscriptionId $SubscriptionId `
+                                -SubscriptionName $SubscriptionName `
+                                -ResourceGroup $gateway.ResourceGroupName `
+                                -ResourceType "Microsoft.Network/virtualNetworkGateways" `
+                                -ResourceName $gateway.Name `
+                                -ResourceId $gateway.Id `
+                                -ControlId $vpnGwControl.controlId `
+                                -ControlName $vpnGwControl.controlName `
+                                -Category $vpnGwControl.category `
+                                -Frameworks $vpnGwControl.frameworks `
+                                -Severity $vpnGwControl.severity `
+                                -CisLevel $vpnGwControl.level `
+                                -CurrentValue $currentValue `
+                                -ExpectedValue $vpnGwControl.expectedValue `
+                                -Status $gwStatus `
+                                -RemediationSteps $vpnGwControl.businessImpact `
+                                -RemediationCommand $remediationCmd
+                            $findings.Add($finding)
+                            
+                            # EOL Checking: Check if this VPN Gateway matches any deprecation rules
+                            if ($deprecationRules -and $deprecationRules.Count -gt 0) {
+                                $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Network/virtualNetworkGateways")) {
+                                    $resourceTypeMapping["Microsoft.Network/virtualNetworkGateways"]
+                                } else {
+                                    $null
+                                }
+                                
+                                # Debug: Log gateway SKU for troubleshooting
+                                Write-Verbose "VPN Gateway EOL Check: $($gateway.Name), SKU: $skuName, Mapping present: $($null -ne $mapping)"
+                                
+                                $eolStatus = Test-ResourceEOLStatus `
+                                    -Resource $gateway `
+                                    -ResourceType "Microsoft.Network/virtualNetworkGateways" `
+                                    -DeprecationRules $deprecationRules `
+                                    -ResourceTypeMapping @{ "Microsoft.Network/virtualNetworkGateways" = $mapping }
+                                
+                                Write-Verbose "VPN Gateway EOL Check Result: Matched=$($eolStatus.Matched), Severity=$($eolStatus.Severity)"
+                                
+                                if ($eolStatus.Matched -and $eolStatus.Rule) {
+                                    $rule = $eolStatus.Rule
+                                    $eolFinding = New-EOLFinding `
+                                        -SubscriptionId $SubscriptionId `
+                                        -SubscriptionName $SubscriptionName `
+                                        -ResourceGroup $gateway.ResourceGroupName `
+                                        -ResourceType "Microsoft.Network/virtualNetworkGateways" `
+                                        -ResourceName $gateway.Name `
+                                        -ResourceId $gateway.Id `
+                                        -Component $rule.component `
+                                        -Status $rule.status `
+                                        -Deadline $eolStatus.Deadline `
+                                        -Severity $eolStatus.Severity `
+                                        -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
+                                        -ActionRequired $rule.actionRequired `
+                                        -MigrationGuide $rule.migrationGuide `
+                                        -References $(if ($rule.references) { $rule.references } else { @() })
+                                    $eolFindings.Add($eolFinding)
+                                    Write-Verbose "Added EOL finding for VPN Gateway: $($gateway.Name)"
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Verbose "Could not get VPN Gateway $($gwResource.Name): $_"
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Could not check VPN Gateways: $_"
+        }
+    }
+    
     # Control: DDoS Protection Standard (only if enabled in JSON)
     $ddosControl = $controlLookup["DDoS Protection Standard"]
     if ($ddosControl) {
@@ -451,14 +586,17 @@ function Get-NetworkSecurityFindings {
         Write-Verbose "Control 'Azure Firewall Threat Intel' not found in controlLookup or not enabled"
     }
     
-    Write-Verbose "Network scan completed. Resources checked: $resourcesChecked, Checks performed: $checksPerformed, Total findings: $($findings.Count)"
+    Write-Verbose "Network scan completed. Resources checked: $resourcesChecked, Checks performed: $checksPerformed, Total findings: $($findings.Count), EOL findings: $($eolFindings.Count)"
     
     # If no resources were found but controls are enabled, log a warning
     if ($resourcesChecked -eq 0 -and $controls.Count -gt 0) {
         Write-Verbose "No Network resources (NSGs, VNets, Firewalls) found in subscription $SubscriptionName, but $($controls.Count) control(s) are enabled"
     }
     
-    return $findings
+    # Return both security findings and EOL findings
+    return @{
+        Findings = $findings
+        EOLFindings = $eolFindings
+    }
 }
-
 

@@ -30,23 +30,42 @@ function Export-SecurityReport {
     # Prepare data
     $findings = if ($AuditResult.Findings) { @($AuditResult.Findings) } else { @() }
     $failedFindings = @($findings | Where-Object { $_.Status -eq 'FAIL' })
-    # Include all findings with EOLDate, regardless of status (deprecated components should be shown even if currently compliant)
-    $eolFindings = Get-EOLFindings -Findings $findings
     
-    # Debug: Log EOL findings count and details
+    # Get EOL findings from separate EOLFindings collection (new structure)
+    $eolFindings = @()
+    if ($AuditResult.EOLFindings) {
+        # Handle both List and Array types
+        if ($AuditResult.EOLFindings -is [System.Collections.Generic.List[PSObject]]) {
+            $eolFindings = @($AuditResult.EOLFindings)
+        } elseif ($AuditResult.EOLFindings -is [System.Array]) {
+            $eolFindings = @($AuditResult.EOLFindings)
+        } elseif ($AuditResult.EOLFindings -is [System.Collections.IEnumerable] -and $AuditResult.EOLFindings -isnot [string]) {
+            $eolFindings = @($AuditResult.EOLFindings)
+        } else {
+            # Single object or null
+            if ($AuditResult.EOLFindings) {
+                $eolFindings = @($AuditResult.EOLFindings)
+            }
+        }
+    }
     Write-Verbose "EOL Findings count: $($eolFindings.Count)"
-    Write-Verbose "Total findings count: $($findings.Count)"
+    Write-Verbose "Total security findings count: $($findings.Count)"
+    
+    # Debug: Log EOL findings details
     if ($eolFindings.Count -gt 0) {
-        Write-Verbose "EOL Findings sample: $($eolFindings[0] | ConvertTo-Json -Depth 2)"
-        foreach ($finding in $eolFindings) {
-            Write-Verbose "EOL Finding: Resource=$($finding.ResourceName), EOLDate=$($finding.EOLDate), Status=$($finding.Status)"
+        Write-Verbose "EOL Findings sample (first 3):"
+        $eolFindings | Select-Object -First 3 | ForEach-Object {
+            Write-Verbose "  - $($_.ResourceName) ($($_.ResourceType)): $($_.Component), Severity=$($_.Severity), DaysUntil=$($_.DaysUntilDeadline)"
         }
     } else {
-        # Debug: Check why no EOL findings
-        $findingsWithEolDate = @($findings | Where-Object { $_.EOLDate })
-        Write-Verbose "Findings with EOLDate property (any value): $($findingsWithEolDate.Count)"
-        if ($findingsWithEolDate.Count -gt 0) {
-            Write-Verbose "Sample EOLDate values: $($findingsWithEolDate | Select-Object -First 5 | ForEach-Object { $_.EOLDate })"
+        Write-Verbose "WARNING: No EOL findings found in AuditResult.EOLFindings"
+        if ($AuditResult.EOLFindings) {
+            Write-Verbose "AuditResult.EOLFindings type: $($AuditResult.EOLFindings.GetType().FullName)"
+            Write-Verbose "AuditResult.EOLFindings is null: $($null -eq $AuditResult.EOLFindings)"
+            Write-Verbose "AuditResult.EOLFindings count: $($AuditResult.EOLFindings.Count)"
+            Write-Verbose "AuditResult.EOLFindings value: $($AuditResult.EOLFindings | ConvertTo-Json -Depth 2)"
+        } else {
+            Write-Verbose "AuditResult.EOLFindings is null or empty"
         }
     }
     
@@ -90,13 +109,19 @@ function Export-SecurityReport {
             $securityScore = if ($totalChecks -gt 0) { [math]::Round(($passedChecks / $totalChecks) * 100, 1) } else { 0 }
         }
         
-        # Calculate deprecated components counts
+        # Calculate deprecated components counts (using new EOLFindings structure)
         $deprecatedCount = $eolFindings.Count
         $pastDueCount = if ($deprecatedCount -gt 0) {
             @($eolFindings | Where-Object { 
-                try { [DateTime]::Parse($_.EOLDate) -lt (Get-Date) } catch { $false }
+                $_.DaysUntilDeadline -lt 0
             }).Count
         } else { 0 }
+        
+        # Count by severity for EOL findings
+        $eolCriticalCount = @($eolFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
+        $eolHighCount = @($eolFindings | Where-Object { $_.Severity -eq 'High' }).Count
+        $eolMediumCount = @($eolFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
+        $eolLowCount = @($eolFindings | Where-Object { $_.Severity -eq 'Low' }).Count
         
         # Build HTML
         $html = @"
@@ -216,7 +241,7 @@ $(Get-ReportNavigation -ActivePage "Security")
 "@
         }
         
-        # EOL/Deprecated Components Alert - Always show heading
+        # EOL/Deprecated Components Alert - Always show heading (using new EOLFindings structure)
         $eolCount = $deprecatedCount
         $upcomingCount = $eolCount - $pastDueCount
         
@@ -228,64 +253,71 @@ $(Get-ReportNavigation -ActivePage "Security")
                 <h3 style="color: var(--danger); margin: 0;">Deprecated Components$(if ($eolCount -gt 0) { " Found ($eolCount items)" } else { "" })</h3>
                 $(if ($eolCount -gt 0) {
                     "<span class=`"header-severity-summary`">
-                        <span class=`"severity-count critical`">$pastDueCount Past Due</span>
-                        <span class=`"severity-count medium`">$upcomingCount Upcoming</span>
+                        <span class=`"severity-count critical`">$eolCriticalCount Critical</span>
+                        <span class=`"severity-count high`">$eolHighCount High</span>
+                        <span class=`"severity-count medium`">$eolMediumCount Medium</span>
+                        <span class=`"severity-count low`">$eolLowCount Low</span>
                     </span>"
                 } else { "" })
             </div>
             <div class="subscription-content" id="deprecated-components" style="display: none;">
 "@
         if ($eolCount -gt 0) {
+            # Sort by severity (Critical first), then days until deadline
+            $severityOrder = @{ "Critical" = 0; "High" = 1; "Medium" = 2; "Low" = 3 }
+            $sortedEolFindings = $eolFindings | Sort-Object {
+                $sev = if ($severityOrder.ContainsKey($_.Severity)) { $severityOrder[$_.Severity] } else { 99 }
+                $days = if ($_.DaysUntilDeadline -ne $null) { $_.DaysUntilDeadline } else { 99999 }
+                "$sev|$days"
+            }
+            
             $html += @"
                 <table class="resource-summary-table">
                     <thead>
                         <tr>
+                            <th>Severity</th>
                             <th>Subscription</th>
                             <th>Resource Group</th>
                             <th>Resource</th>
-                            <th>Category</th>
-                            <th>Control</th>
-                            <th>EOL Date</th>
+                            <th>Component</th>
+                            <th>Deadline</th>
+                            <th>Days Until</th>
                             <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
 "@
-            foreach ($finding in $eolFindings) {
-                try {
-                    $eolDate = [DateTime]::Parse($finding.EOLDate)
-                    $status = if ($eolDate -lt (Get-Date)) { "PAST DUE" } else { "Upcoming" }
-                    $statusClass = if ($status -eq "PAST DUE") { "status-fail" } else { "status-warn" }
-                    $subscriptionName = if ($finding.SubscriptionName) { $finding.SubscriptionName } else { $finding.SubscriptionId }
-                    $resourceGroup = if ($finding.ResourceGroup) { $finding.ResourceGroup } else { "N/A" }
-                    $html += @"
-                        <tr>
-                            <td>$(Encode-Html $subscriptionName)</td>
-                            <td>$(Encode-Html $resourceGroup)</td>
-                            <td>$(Encode-Html $finding.ResourceName)</td>
-                            <td>$(Encode-Html $finding.Category)</td>
-                            <td>$(Encode-Html $finding.ControlName)</td>
-                            <td>$(Encode-Html $finding.EOLDate)</td>
-                            <td class="$statusClass">$status</td>
-                        </tr>
-"@
-                } catch {
-                    Write-Warning "Failed to parse EOLDate for finding: $($finding | ConvertTo-Json -Depth 1)"
-                    # Still include the finding even if date parsing fails
-                    $subscriptionName = if ($finding.SubscriptionName) { $finding.SubscriptionName } else { $finding.SubscriptionId }
-                    $resourceGroup = if ($finding.ResourceGroup) { $finding.ResourceGroup } else { "N/A" }
-                    $html += @"
-                        <tr>
-                            <td>$(Encode-Html $subscriptionName)</td>
-                            <td>$(Encode-Html $resourceGroup)</td>
-                            <td>$(Encode-Html $finding.ResourceName)</td>
-                            <td>$(Encode-Html $finding.Category)</td>
-                            <td>$(Encode-Html $finding.ControlName)</td>
-                            <td>$(Encode-Html $finding.EOLDate)</td>
-                            <td class="status-warn">Invalid Date</td>
-                        </tr>
-"@
+            foreach ($eolFinding in $sortedEolFindings) {
+                $severity = $eolFinding.Severity
+                $severityLower = $severity.ToLower()
+                $daysUntil = $eolFinding.DaysUntilDeadline
+                $deadline = $eolFinding.Deadline
+                $status = $eolFinding.Status
+                $statusLower = $status.ToLower()
+                
+                $daysText = if ($daysUntil -ne $null) {
+                    if ($daysUntil -lt 0) { "Past due ($([math]::Abs($daysUntil)) days)" } else { "$daysUntil days" }
+                } else {
+                    "N/A"
                 }
+                
+                $statusClass = if ($daysUntil -lt 0) { "status-fail" } elseif ($daysUntil -lt 90) { "status-fail" } elseif ($daysUntil -lt 180) { "status-warn" } else { "status-info" }
+                
+                $subscriptionName = if ($eolFinding.SubscriptionName) { $eolFinding.SubscriptionName } else { $eolFinding.SubscriptionId }
+                $resourceGroup = if ($eolFinding.ResourceGroup) { $eolFinding.ResourceGroup } else { "N/A" }
+                
+                $html += @"
+                        <tr>
+                            <td><span class="badge severity-$severityLower">$severity</span></td>
+                            <td>$(Encode-Html $subscriptionName)</td>
+                            <td>$(Encode-Html $resourceGroup)</td>
+                            <td>$(Encode-Html $eolFinding.ResourceName)</td>
+                            <td>$(Encode-Html $eolFinding.Component)</td>
+                            <td>$(Encode-Html $deadline)</td>
+                            <td>$daysText</td>
+                            <td class="$statusClass"><span class="badge status-$statusLower">$status</span></td>
+                        </tr>
+"@
             }
             $html += @"
                     </tbody>
@@ -302,6 +334,12 @@ $(Get-ReportNavigation -ActivePage "Security")
             </div>
         </div>
 "@
+
+        # New EOL Tracking section (based on Azure EOL repository rules)
+        if ($AuditResult.EOLStatus) {
+            $eolSectionHtml = Get-EOLReportSection -EOLStatus $AuditResult.EOLStatus
+            $html += $eolSectionHtml
+        }
         
         # Get unique categories and severities for filter dropdowns
         # Use all findings, not just failed ones, to populate category filter

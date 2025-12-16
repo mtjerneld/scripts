@@ -25,8 +25,21 @@ function Get-EOLFindings {
     }
     
     return @($Findings | Where-Object { 
-        if (-not $_.EOLDate) { return $false }
-        $eolDateStr = $_.EOLDate.ToString().Trim()
+        # Handle case-sensitivity: PowerShell property access is case-insensitive, but -contains is case-sensitive
+        # So we'll use case-insensitive matching to find the property
+        $eolDateValue = $null
+        $propertyNames = $_.PSObject.Properties.Name
+        # Case-insensitive search for EOLDate property
+        $eolDateProp = $propertyNames | Where-Object { $_ -like 'EOLDate' -or $_ -like 'EolDate' -or $_ -like 'eolDate' } | Select-Object -First 1
+        if ($eolDateProp) {
+            $eolDateValue = $_.$eolDateProp
+        } else {
+            # Fallback: try direct access (PowerShell is case-insensitive for property access)
+            $eolDateValue = $_.EOLDate
+        }
+        
+        if (-not $eolDateValue) { return $false }
+        $eolDateStr = "$eolDateValue".Trim()
         if ([string]::IsNullOrWhiteSpace($eolDateStr)) { return $false }
         if ($eolDateStr -eq "N/A" -or $eolDateStr -eq "n/a") { return $false }
         return $true

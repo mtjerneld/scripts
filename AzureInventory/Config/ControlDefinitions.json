@@ -29,8 +29,7 @@
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
       "cliCommand": "az storage account show --name {name} --resource-group {rg} --query minimumTlsVersion",
       "remediationCommand": "az storage account update --name {name} --resource-group {rg} --min-tls-version TLS1_2",
-      "businessImpact": "Prevents use of insecure TLS 1.0/1.1 protocols. TLS 1.0/1.1 will be deprecated in February 2026.",
-      "eolDate": "2026-02-03",
+      "businessImpact": "Prevents use of insecure TLS 1.0/1.1 protocols. TLS 1.0/1.1 will be deprecated in February 2026. EOL tracking is handled via DeprecationRules.json.",
       "references": [
         "https://learn.microsoft.com/en-us/azure/storage/common/transport-layer-security-configure-minimum-version",
         "https://workbench.cisecurity.org/files/3459",
@@ -212,8 +211,7 @@
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
       "cliCommand": "az storage account show --name {name} --resource-group {rg} --query kind",
       "remediationCommand": "az storage account update --name {name} --resource-group {rg} --set kind=StorageV2",
-      "businessImpact": "Legacy storage account types (GPv1, BlobStorage) are being deprecated October 2026. Upgrade to StorageV2 for full feature support.",
-      "eolDate": "2026-10-13",
+      "businessImpact": "Legacy storage account types (GPv1, BlobStorage) are being deprecated October 2026. Upgrade to StorageV2 for full feature support. EOL tracking is handled via DeprecationRules.json.",
       "references": [
         "https://azure.microsoft.com/en-us/updates/action-required-switch-to-azure-storage-account-standard-general-purpose-v2-by-13-october-2026/"
       ],
@@ -540,6 +538,41 @@
       "description": "Prevents overly permissive network rules that allow any source to reach any destination. Implements least-privilege network access."
     },
     {
+      "controlId": "N/A",
+      "controlName": "VPN Gateway - Availability Zone SKU Required",
+      "category": "Network",
+      "frameworks": ["ASB"],
+      "priority": "P1",
+      "level": "L1",
+      "severity": "High",
+      "automated": true,
+      "commercial": false,
+      "propertyPath": "properties.sku.name",
+      "expectedValue": "VpnGw1AZ, VpnGw2AZ, VpnGw3AZ, VpnGw4AZ, VpnGw5AZ, or ExpressRoute SKU",
+      "checkLogic": "value ends with 'AZ' or starts with 'ErGw'",
+      "valueMapping": {
+        "VpnGw1": "VpnGw1 (Deprecated - EOL Sep 2026)",
+        "VpnGw2": "VpnGw2 (Deprecated - EOL Sep 2026)",
+        "VpnGw3": "VpnGw3 (Deprecated - EOL Sep 2026)",
+        "VpnGw4": "VpnGw4 (Deprecated - EOL Sep 2026)",
+        "VpnGw5": "VpnGw5 (Deprecated - EOL Sep 2026)",
+        "VpnGw1AZ": "VpnGw1AZ (Zone-redundant)",
+        "VpnGw2AZ": "VpnGw2AZ (Zone-redundant)",
+        "VpnGw3AZ": "VpnGw3AZ (Zone-redundant)",
+        "VpnGw4AZ": "VpnGw4AZ (Zone-redundant)",
+        "VpnGw5AZ": "VpnGw5AZ (Zone-redundant)"
+      },
+      "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/virtualNetworkGateways?api-version=2024-05-01",
+      "cliCommand": "az network vnet-gateway show --name {name} --resource-group {rg} --query sku.name",
+      "remediationCommand": "az network vnet-gateway update --name {name} --resource-group {rg} --sku {newSku}",
+      "businessImpact": "Non-AZ VPN Gateway SKUs (VpnGw1-5) are deprecated. From January 1, 2025, new gateways cannot be created with these SKUs. Existing gateways will be automatically migrated to AZ versions (VpnGw1AZ-5AZ) between April 2025 and September 2026. Migrate proactively to maintain control and avoid service disruption. EOL tracking is handled via DeprecationRules.json.",
+      "references": [
+        "https://learn.microsoft.com/en-us/azure/vpn-gateway/gateway-sku-consolidation",
+        "https://azure.microsoft.com/en-us/updates/action-required-upgrade-your-vpn-gateway-skus-to-zone-redundant-versions-by-30-september-2026/"
+      ],
+      "description": "Non-AZ VPN Gateway SKUs (VpnGw1-5) are deprecated in favor of zone-redundant AZ versions (VpnGw1AZ-5AZ). From January 1, 2025, new gateways cannot be created with non-AZ SKUs. Existing gateways will be automatically migrated between April 2025 and September 2026."
+    },
+    {
       "controlId": "6.6",
       "controlName": "Network Watcher Enabled",
       "category": "Network",
@@ -661,9 +694,7 @@
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Compute/virtualMachines/{vmName}/extensions?api-version=2024-03-01",
       "cliCommand": "az vm extension list --vm-name {vmName} --resource-group {rg}",
       "remediationCommand": "az vm extension delete --name MicrosoftMonitoringAgent --vm-name {vmName} --resource-group {rg} && az vm extension set --name AzureMonitorWindowsAgent --publisher Microsoft.Azure.Monitor --vm-name {vmName} --resource-group {rg}",
-      "businessImpact": "Log Analytics Agent (MMA/OMS) was RETIRED August 31, 2024. Must migrate to Azure Monitor Agent immediately.",
-      "eolDate": "2024-08-31",
-      "eolStatus": "PAST",
+      "businessImpact": "Log Analytics Agent (MMA/OMS) was RETIRED August 31, 2024. Must migrate to Azure Monitor Agent immediately. EOL tracking is handled via DeprecationRules.json.",
       "references": [
         "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/log-analytics-agent"
       ],
@@ -691,8 +722,7 @@
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Web/sites/{name}/config/web?api-version=2024-04-01",
       "cliCommand": "az webapp config show --name {name} --resource-group {rg} --query minTlsVersion",
       "remediationCommand": "az webapp config set --name {name} --resource-group {rg} --min-tls-version 1.2",
-      "businessImpact": "Enforces secure TLS connections for web applications. Prevents use of deprecated protocols.",
-      "eolDate": "2026-02-03",
+      "businessImpact": "Enforces secure TLS connections for web applications. Prevents use of deprecated protocols. EOL tracking is handled via DeprecationRules.json.",
       "references": [
         "https://learn.microsoft.com/en-us/azure/app-service/configure-ssl-bindings#enforce-tls-versions",
         "https://workbench.cisecurity.org/files/3459",

@@ -302,6 +302,52 @@ function Get-ReportScript {
                         }
                     });
                 });
+
+                // --- EOL Tracking filters ---
+                const eolSearch = document.getElementById('eol-search');
+                const eolSeverityFilter = document.getElementById('eol-severity-filter');
+                const eolStatusFilter = document.getElementById('eol-status-filter');
+                const eolResultCount = document.getElementById('eol-result-count');
+                const eolItems = document.querySelectorAll('.eol-item');
+
+                function updateEolFilters() {
+                    if (!eolItems || eolItems.length === 0 || !eolResultCount) {
+                        return;
+                    }
+                    const sev = eolSeverityFilter ? eolSeverityFilter.value.toLowerCase() : 'all';
+                    const stat = eolStatusFilter ? eolStatusFilter.value.toLowerCase() : 'all';
+                    const text = eolSearch ? eolSearch.value.toLowerCase().trim() : '';
+
+                    let visible = 0;
+                    eolItems.forEach(item => {
+                        const itemSev = (item.getAttribute('data-severity') || '').toLowerCase();
+                        const itemStat = (item.getAttribute('data-status') || '').toLowerCase();
+                        const searchable = (item.getAttribute('data-searchable') || '').toLowerCase();
+
+                        const sevMatch = (sev === 'all') || (itemSev === sev);
+                        const statMatch = (stat === 'all') || (itemStat === stat);
+                        const textMatch = (text === '') || searchable.includes(text);
+
+                        if (sevMatch && statMatch && textMatch) {
+                            item.style.display = 'block';
+                            visible++;
+                        } else {
+                            item.style.display = 'none';
+                        }
+                    });
+
+                    eolResultCount.textContent = 'Showing ' + visible + ' components';
+                }
+
+                if (eolSearch) {
+                    eolSearch.addEventListener('input', updateEolFilters);
+                }
+                if (eolSeverityFilter) {
+                    eolSeverityFilter.addEventListener('change', updateEolFilters);
+                }
+                if (eolStatusFilter) {
+                    eolStatusFilter.addEventListener('change', updateEolFilters);
+                }
                 
                 // Initialize: Hide all detail rows and nested rows FIRST, before setting up event listeners
                 const allResourceDetailRows = document.querySelectorAll('.resource-detail-row');
@@ -525,6 +571,27 @@ function Get-ReportScript {
             } else {
                 initFilters();
             }
+
+            // EOL section toggle helpers (used by Get-EOLReportSection)
+            window.toggleEolSection = function() {
+                const content = document.getElementById('eol-content');
+                const icon = document.getElementById('eol-toggle-icon');
+                if (!content || !icon) return;
+                const isHidden = content.style.display === 'none';
+                content.style.display = isHidden ? 'block' : 'none';
+                icon.textContent = isHidden ? '▼' : '▲';
+            };
+
+            window.toggleEolItemDetails = function(headerEl) {
+                const container = headerEl.closest('.eol-item');
+                if (!container) return;
+                const details = container.querySelector('.eol-item-details');
+                const icon = headerEl.querySelector('.expand-icon');
+                if (!details || !icon) return;
+                const isHidden = details.style.display === 'none';
+                details.style.display = isHidden ? 'block' : 'none';
+                icon.textContent = isHidden ? '▲' : '▼';
+            };
         })();
 "@
         }

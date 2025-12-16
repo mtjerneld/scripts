@@ -56,15 +56,19 @@ function Invoke-AzureSecurityAudit {
         
         [switch]$IncludeLevel2,
         
-        [string[]]$CriticalStorageAccounts = @()
+        [string[]]$CriticalStorageAccounts = @(),
+
+        [switch]$IncludeEOLTracking
     )
     
     $scanStart = Get-Date
     $allFindings = [System.Collections.Generic.List[PSObject]]::new()
+    $allEOLFindings = [System.Collections.Generic.List[PSObject]]::new()
     $vmInventory = [System.Collections.Generic.List[PSObject]]::new()
     $advisorRecommendations = [System.Collections.Generic.List[PSObject]]::new()
     $changeTrackingData = [System.Collections.Generic.List[PSObject]]::new()
     $networkInventory = [System.Collections.Generic.List[PSObject]]::new()
+    $eolStatus = [System.Collections.Generic.List[PSObject]]::new()
     $errors = [System.Collections.Generic.List[string]]::new()
     
     # Get subscriptions
@@ -83,15 +87,15 @@ function Invoke-AzureSecurityAudit {
     $scanners = @{
         'Storage'    = { 
             param($subId, $subName) 
-            Get-StorageAccountFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$IncludeLevel2 -CriticalStorageAccounts $CriticalStorageAccounts
+            Get-AzureStorageFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$IncludeLevel2 -CriticalStorageAccounts $CriticalStorageAccounts
         }
-        'AppService' = { param($subId, $subName, $includeL2) Get-AppServiceFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
-        'VM'         = { param($subId, $subName, $includeL2) Get-VirtualMachineFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'AppService' = { param($subId, $subName, $includeL2) Get-AzureAppServiceFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'VM'         = { param($subId, $subName, $includeL2) Get-AzureVirtualMachineFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
         'ARC'        = { param($subId, $subName) Get-AzureArcFindings -SubscriptionId $subId -SubscriptionName $subName }
         'Monitor'    = { param($subId, $subName) Get-AzureMonitorFindings -SubscriptionId $subId -SubscriptionName $subName }
-        'Network'    = { param($subId, $subName, $includeL2) Get-NetworkSecurityFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
-        'SQL'        = { param($subId, $subName, $includeL2) Get-SqlDatabaseFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
-        'KeyVault'   = { param($subId, $subName, $includeL2) Get-KeyVaultFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'Network'    = { param($subId, $subName, $includeL2) Get-AzureNetworkFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'SQL'        = { param($subId, $subName, $includeL2) Get-AzureSqlDatabaseFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'KeyVault'   = { param($subId, $subName, $includeL2) Get-AzureKeyVaultFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
     }
     
     # Determine categories to scan
@@ -138,6 +142,7 @@ function Invoke-AzureSecurityAudit {
             -Scanners $scanners `
             -IncludeLevel2:$IncludeLevel2 `
             -AllFindings $allFindings `
+            -AllEOLFindings $allEOLFindings `
             -VMInventory $vmInventory `
             -Errors $errors
         
@@ -324,6 +329,16 @@ function Invoke-AzureSecurityAudit {
     # Calculate compliance scores
     $complianceScores = Calculate-CisComplianceScore -Findings $allFindings -IncludeLevel2:$IncludeLevel2
     
+    # Ensure EOLFindings is converted to array for proper serialization
+    $eolFindingsArray = if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
+        @($allEOLFindings)
+    } elseif ($allEOLFindings) {
+        @($allEOLFindings)
+    } else {
+        @()
+    }
+    Write-Verbose "Converting EOLFindings: List count=$($allEOLFindings.Count), Array count=$($eolFindingsArray.Count)"
+    
     $result = [PSCustomObject]@{
         ScanStartTime           = $scanStart
         ScanEndTime             = Get-Date
@@ -334,11 +349,13 @@ function Invoke-AzureSecurityAudit {
         FindingsBySeverity      = $findingsBySeverity
         FindingsByCategory      = $findingsByCategory
         Findings                = $allFindings
+        EOLFindings             = $eolFindingsArray
         VMInventory             = $vmInventory
         AdvisorRecommendations  = $advisorRecommendations
         ChangeTrackingData      = $changeTrackingData
         NetworkInventory        = $networkInventory
         ComplianceScores        = $complianceScores
+        EOLStatus               = @()
         Errors                  = $errors
         ToolVersion             = "2.0.0"
     }
@@ -359,10 +376,31 @@ function Invoke-AzureSecurityAudit {
 
     # Collect Network Inventory
     Collect-NetworkInventory -Subscriptions $subscriptions -NetworkInventory $networkInventory -Errors $errors
-
+    
     # Update result with latest network inventory (ensure it's an array)
     $result.NetworkInventory = @($networkInventory)
     Write-Verbose "Updated result.NetworkInventory with $($networkInventory.Count) VNets"
+
+    # Collect EOL Status (optional)
+    if ($IncludeEOLTracking.IsPresent) {
+        try {
+            $subIdsForEol = @($subscriptions.Id)
+            if ($subIdsForEol.Count -gt 0) {
+                Write-Verbose "Running EOL tracking across $($subIdsForEol.Count) subscription(s)"
+                $eolResults = Get-EOLStatus -SubscriptionIds $subIdsForEol
+                if ($eolResults) {
+                    foreach ($item in $eolResults) {
+                        $eolStatus.Add($item)
+                    }
+                    $result.EOLStatus = @($eolStatus)
+                    Write-Verbose "EOLTracking: Found $($eolStatus.Count) EOL component(s)"
+                }
+            }
+        }
+        catch {
+            Write-Warning "EOL tracking failed: $_"
+        }
+    }
     
     # Generate reports
     $outputFolder = Generate-AuditReports -AuditResult $result -OutputPath $OutputPath -ExportJson:$ExportJson
@@ -375,6 +413,19 @@ function Invoke-AzureSecurityAudit {
     Write-Host "  High:     $($findingsBySeverity.High)" -ForegroundColor $(if ($findingsBySeverity.High -gt 0) { 'Yellow' } else { 'Green' })
     Write-Host "  Medium:   $($findingsBySeverity.Medium)" -ForegroundColor White
     Write-Host "  Low:      $($findingsBySeverity.Low)" -ForegroundColor White
+    Write-Host "Total EOL Findings: $($allEOLFindings.Count)" -ForegroundColor White
+    if ($allEOLFindings.Count -gt 0) {
+        $eolBySeverity = @{
+            Critical = @($allEOLFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
+            High = @($allEOLFindings | Where-Object { $_.Severity -eq 'High' }).Count
+            Medium = @($allEOLFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
+            Low = @($allEOLFindings | Where-Object { $_.Severity -eq 'Low' }).Count
+        }
+        Write-Host "  Critical: $($eolBySeverity.Critical)" -ForegroundColor $(if ($eolBySeverity.Critical -gt 0) { 'Red' } else { 'Green' })
+        Write-Host "  High:     $($eolBySeverity.High)" -ForegroundColor $(if ($eolBySeverity.High -gt 0) { 'Yellow' } else { 'Green' })
+        Write-Host "  Medium:   $($eolBySeverity.Medium)" -ForegroundColor $(if ($eolBySeverity.Medium -gt 0) { 'Yellow' } else { 'Green' })
+        Write-Host "  Low:      $($eolBySeverity.Low)" -ForegroundColor $(if ($eolBySeverity.Low -gt 0) { 'Yellow' } else { 'Green' })
+    }
     
     # VM Backup summary - use efficient counting
     if ($vmInventory.Count -gt 0) {

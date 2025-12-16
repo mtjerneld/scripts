@@ -20,7 +20,7 @@
     - Findings: Array of SecurityFinding objects
     - Inventory: Array of VM inventory objects (for backup/inventory reports)
 #>
-function Get-VirtualMachineFindings {
+function Get-AzureVirtualMachineFindings {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -33,7 +33,30 @@ function Get-VirtualMachineFindings {
     )
     
     $findings = [System.Collections.Generic.List[PSObject]]::new()
+    $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
     $inventory = [System.Collections.Generic.List[PSObject]]::new()
+    
+    # Load deprecation rules for EOL checking
+    $deprecationRules = Get-DeprecationRules
+    $resourceTypeMapping = @{}
+    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
+    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
+    if (Test-Path $mappingPath) {
+        try {
+            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
+            if ($mappingJson -and $mappingJson.mappings) {
+                foreach ($mapping in $mappingJson.mappings) {
+                    if ($mapping.resourceType -eq "Microsoft.Compute/virtualMachines") {
+                        $resourceTypeMapping["Microsoft.Compute/virtualMachines"] = $mapping
+                        break
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Failed to load ResourceTypeMapping: $_"
+        }
+    }
     
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "VM" -IncludeLevel2:$IncludeLevel2
@@ -41,6 +64,7 @@ function Get-VirtualMachineFindings {
         Write-Verbose "No enabled VM controls found in configuration for subscription $SubscriptionName"
         return [PSCustomObject]@{
             Findings  = $findings
+            EOLFindings = $eolFindings
             Inventory = $inventory
         }
     }
@@ -63,6 +87,7 @@ function Get-VirtualMachineFindings {
         Write-Warning "Failed to retrieve VMs in subscription $SubscriptionName : $_"
         return [PSCustomObject]@{
             Findings  = $findings
+            EOLFindings = $eolFindings
             Inventory = $inventory
         }
     }
@@ -72,6 +97,7 @@ function Get-VirtualMachineFindings {
         Write-Verbose "No VMs found in subscription $SubscriptionName"
         return [PSCustomObject]@{
             Findings  = $findings
+            EOLFindings = $eolFindings
             Inventory = $inventory
         }
     }
@@ -432,11 +458,47 @@ function Get-VirtualMachineFindings {
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
         }
+        
+        # EOL Checking: Check if this VM matches any deprecation rules
+        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
+            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Compute/virtualMachines")) {
+                $resourceTypeMapping["Microsoft.Compute/virtualMachines"]
+            } else {
+                $null
+            }
+            
+            $eolStatus = Test-ResourceEOLStatus `
+                -Resource $vm `
+                -ResourceType "Microsoft.Compute/virtualMachines" `
+                -DeprecationRules $deprecationRules `
+                -ResourceTypeMapping @{ "Microsoft.Compute/virtualMachines" = $mapping }
+            
+            if ($eolStatus.Matched -and $eolStatus.Rule) {
+                $rule = $eolStatus.Rule
+                $eolFinding = New-EOLFinding `
+                    -SubscriptionId $SubscriptionId `
+                    -SubscriptionName $SubscriptionName `
+                    -ResourceGroup $vm.ResourceGroupName `
+                    -ResourceType "Microsoft.Compute/virtualMachines" `
+                    -ResourceName $vm.Name `
+                    -ResourceId $resourceId `
+                    -Component $rule.component `
+                    -Status $rule.status `
+                    -Deadline $eolStatus.Deadline `
+                    -Severity $eolStatus.Severity `
+                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
+                    -ActionRequired $rule.actionRequired `
+                    -MigrationGuide $rule.migrationGuide `
+                    -References $(if ($rule.references) { $rule.references } else { @() })
+                $eolFindings.Add($eolFinding)
+            }
+        }
     }
     
-    # Return both findings and inventory
+    # Return findings, EOL findings, and inventory
     return [PSCustomObject]@{
         Findings  = $findings
+        EOLFindings = $eolFindings
         Inventory = $inventory
     }
 }

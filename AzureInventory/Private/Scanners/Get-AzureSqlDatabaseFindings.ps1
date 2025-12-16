@@ -16,7 +16,7 @@
 .OUTPUTS
     Array of SecurityFinding objects.
 #>
-function Get-SqlDatabaseFindings {
+function Get-AzureSqlDatabaseFindings {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -29,12 +29,38 @@ function Get-SqlDatabaseFindings {
     )
     
     $findings = [System.Collections.Generic.List[PSObject]]::new()
+    $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
+    
+    # Load deprecation rules for EOL checking
+    $deprecationRules = Get-DeprecationRules
+    $resourceTypeMapping = @{}
+    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
+    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
+    if (Test-Path $mappingPath) {
+        try {
+            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
+            if ($mappingJson -and $mappingJson.mappings) {
+                foreach ($mapping in $mappingJson.mappings) {
+                    if ($mapping.resourceType -eq "Microsoft.Sql/servers") {
+                        $resourceTypeMapping["Microsoft.Sql/servers"] = $mapping
+                        break
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Failed to load ResourceTypeMapping: $_"
+        }
+    }
     
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "SQL" -IncludeLevel2:$IncludeLevel2
     if ($null -eq $controls -or $controls.Count -eq 0) {
         Write-Verbose "No enabled SQL controls found in configuration"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     # Create lookup hashtable for quick control access
@@ -50,12 +76,18 @@ function Get-SqlDatabaseFindings {
     }
     catch {
         Write-Warning "Failed to retrieve SQL servers in subscription $SubscriptionName : $_"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     if (-not $sqlServers) {
         Write-Verbose "No SQL servers found in subscription $SubscriptionName"
-        return $findings
+        return @{
+            Findings = $findings
+            EOLFindings = $eolFindings
+        }
     }
     
     foreach ($server in $sqlServers) {
@@ -365,9 +397,48 @@ function Get-SqlDatabaseFindings {
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
         }
+        
+        # EOL Checking: Check if this SQL Server matches any deprecation rules
+        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
+            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Sql/servers")) {
+                $resourceTypeMapping["Microsoft.Sql/servers"]
+            } else {
+                $null
+            }
+            
+            $eolStatus = Test-ResourceEOLStatus `
+                -Resource $server `
+                -ResourceType "Microsoft.Sql/servers" `
+                -DeprecationRules $deprecationRules `
+                -ResourceTypeMapping @{ "Microsoft.Sql/servers" = $mapping }
+            
+            if ($eolStatus.Matched -and $eolStatus.Rule) {
+                $rule = $eolStatus.Rule
+                $eolFinding = New-EOLFinding `
+                    -SubscriptionId $SubscriptionId `
+                    -SubscriptionName $SubscriptionName `
+                    -ResourceGroup $server.ResourceGroupName `
+                    -ResourceType "Microsoft.Sql/servers" `
+                    -ResourceName $server.ServerName `
+                    -ResourceId $server.ResourceId `
+                    -Component $rule.component `
+                    -Status $rule.status `
+                    -Deadline $eolStatus.Deadline `
+                    -Severity $eolStatus.Severity `
+                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
+                    -ActionRequired $rule.actionRequired `
+                    -MigrationGuide $rule.migrationGuide `
+                    -References $(if ($rule.references) { $rule.references } else { @() })
+                $eolFindings.Add($eolFinding)
+            }
+        }
     }
     
-    return $findings
+    # Return both security findings and EOL findings
+    return @{
+        Findings = $findings
+        EOLFindings = $eolFindings
+    }
 }
 
 

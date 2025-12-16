@@ -40,8 +40,11 @@ $functionsToRemove = @(
     'Invoke-WithSuppressedWarnings',
     'Invoke-WithErrorHandling',
     'New-SecurityFinding',
+    'New-EOLFinding',
     'Get-SubscriptionDisplayName',
     'Get-EOLFindings',
+    'Get-DeprecationRules',
+    'Test-ResourceEOLStatus',
     'Get-FindingsBySeverity',
     'Parse-ResourceId',
     'Encode-Html',
@@ -60,14 +63,15 @@ $functionsToRemove = @(
     # Config functions
     'Get-ControlDefinitions',
     # Scanner functions
-    'Get-StorageAccountFindings',
-    'Get-AppServiceFindings',
-    'Get-VirtualMachineFindings',
+    'Get-AzureStorageFindings',
+    'Get-AzureAppServiceFindings',
+    'Get-AzureVirtualMachineFindings',
     'Get-AzureArcFindings',
     'Get-AzureMonitorFindings',
-    'Get-NetworkSecurityFindings',
-    'Get-SqlDatabaseFindings',
-    'Get-KeyVaultFindings',
+    'Get-AzureNetworkFindings',
+    'Get-AzureSqlDatabaseFindings',
+    'Get-AzureKeyVaultFindings',
+    'Get-EOLStatus',
     # Collector functions
     'Get-AzureAdvisorRecommendations',
     'Get-AzureChangeTracking',
@@ -77,7 +81,8 @@ $functionsToRemove = @(
     'Format-ExtendedPropertiesDetails',
     'Get-AzureNetworkInventory',
     # Test functions
-    'Test-ChangeTracking'
+    'Test-ChangeTracking',
+    'Test-EOLTracking'
 )
 
 foreach ($funcName in $functionsToRemove) {
@@ -373,6 +378,51 @@ function Test-ChangeTracking {
         }
     } else {
         Write-Host "`nNo changes to report. Skipping HTML generation." -ForegroundColor Yellow
+    }
+}
+
+function Test-EOLTracking {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$SubscriptionIds
+    )
+
+    Write-Host "`n=== Testing EOL Tracking ===" -ForegroundColor Cyan
+
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Error "Not connected to Azure. Run Connect-AzAccount first."
+        return
+    }
+
+    # Get subscriptions in scope (reuse helper)
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $subscriptionResult = Get-SubscriptionsToScan -SubscriptionIds $SubscriptionIds -Errors $errors
+    $subscriptions = $subscriptionResult.Subscriptions
+
+    if ($subscriptions.Count -eq 0) {
+        Write-Error "No subscriptions found to scan for EOL."
+        return
+    }
+
+    $subIds = @($subscriptions.Id)
+    Write-Host "Scanning EOL status across $($subIds.Count) subscription(s)..." -ForegroundColor Cyan
+
+    try {
+        $eolStatus = Get-EOLStatus -SubscriptionIds $subIds
+        if (-not $eolStatus -or $eolStatus.Count -eq 0) {
+            Write-Host "No EOL components detected." -ForegroundColor Green
+        } else {
+            Write-Host "Found $($eolStatus.Count) EOL component(s):" -ForegroundColor Yellow
+            foreach ($item in $eolStatus) {
+                Write-Host (" - {0} [{1}] Deadline: {2} ({3}d), Resources: {4}" -f `
+                    $item.Component, $item.Severity, $item.Deadline, $item.DaysUntilDeadline, $item.AffectedResourceCount)
+            }
+        }
+    }
+    catch {
+        Write-Error "EOL tracking test failed: $_"
     }
 }
 
