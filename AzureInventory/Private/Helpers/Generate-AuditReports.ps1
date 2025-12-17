@@ -139,6 +139,20 @@ function Generate-AuditReports {
     catch {
         Write-Host " ERROR: $_" -ForegroundColor Red
     }
+
+    try {
+        Write-Host "  - Cost Tracking..." -NoNewline
+        $costReportPath = Join-Path $outputFolder "cost-tracking.html"
+        $costData = if ($AuditResult.CostTrackingData) { $AuditResult.CostTrackingData } else { @{} }
+        $costResult = Export-CostTrackingReport -CostTrackingData $costData -OutputPath $costReportPath -TenantId $tenantId
+        if ($costResult -is [hashtable]) {
+            $costTrackingReportData = $costResult
+        }
+        Write-Host " OK" -ForegroundColor Green
+    }
+    catch {
+        Write-Host " ERROR: $_" -ForegroundColor Red
+    }
     
     # Generate Dashboard last, using metadata from all detail reports
     try {

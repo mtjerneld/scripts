@@ -68,6 +68,7 @@ function Invoke-AzureSecurityAudit {
     $advisorRecommendations = [System.Collections.Generic.List[PSObject]]::new()
     $changeTrackingData = [System.Collections.Generic.List[PSObject]]::new()
     $networkInventory = [System.Collections.Generic.List[PSObject]]::new()
+    $costTrackingData = $null
     $eolStatus = [System.Collections.Generic.List[PSObject]]::new()
     $errors = [System.Collections.Generic.List[string]]::new()
     
@@ -354,6 +355,7 @@ function Invoke-AzureSecurityAudit {
         AdvisorRecommendations  = $advisorRecommendations
         ChangeTrackingData      = $changeTrackingData
         NetworkInventory        = $networkInventory
+        CostTrackingData        = $null
         ComplianceScores        = $complianceScores
         EOLStatus               = @()
         Errors                  = $errors
@@ -380,6 +382,17 @@ function Invoke-AzureSecurityAudit {
     # Update result with latest network inventory (ensure it's an array)
     $result.NetworkInventory = @($networkInventory)
     Write-Verbose "Updated result.NetworkInventory with $($networkInventory.Count) VNets"
+    
+    # Collect Cost Tracking Data
+    try {
+        $costTrackingData = Collect-CostData -Subscriptions $subscriptions -DaysToInclude 30 -Errors $errors
+        $result.CostTrackingData = $costTrackingData
+        Write-Verbose "Updated result.CostTrackingData with cost data for $($costTrackingData.SubscriptionCount) subscriptions"
+    }
+    catch {
+        Write-Warning "Failed to collect cost tracking data: $_"
+        $result.CostTrackingData = @{}
+    }
 
     # Collect EOL Status (optional)
     if ($IncludeEOLTracking.IsPresent) {

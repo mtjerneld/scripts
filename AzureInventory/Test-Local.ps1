@@ -34,6 +34,7 @@ $functionsToRemove = @(
     'Export-AdvisorReport',
     'Export-ChangeTrackingReport',
     'Export-NetworkInventoryReport',
+    'Export-CostTrackingReport',
     # Helper functions
     'Get-SubscriptionContext',
     'Invoke-AzureApiWithRetry',
@@ -58,6 +59,7 @@ $functionsToRemove = @(
     'Collect-AdvisorRecommendations',
     'Collect-ChangeTrackingData',
     'Collect-NetworkInventory',
+    'Collect-CostData',
     'Get-NsgRiskAnalysis',
     'Generate-AuditReports',
     # Config functions
@@ -80,9 +82,11 @@ $functionsToRemove = @(
     'Group-AdvisorRecommendations',
     'Format-ExtendedPropertiesDetails',
     'Get-AzureNetworkInventory',
+    'Get-AzureCostData',
     # Test functions
     'Test-ChangeTracking',
-    'Test-EOLTracking'
+    'Test-EOLTracking',
+    'Test-CostTracking'
 )
 
 foreach ($funcName in $functionsToRemove) {
@@ -546,6 +550,148 @@ function Test-NetworkInventory {
         } else {
             Write-Host "  Security Risks: 0" -ForegroundColor Green
         }
+        
+        # Verify file exists and try to open the report
+        if (Test-Path $OutputPath) {
+            $fullPath = (Resolve-Path $OutputPath).Path
+            Write-Host "`nFile verified at: $fullPath" -ForegroundColor Green
+            Write-Host "Opening report..." -ForegroundColor Cyan
+            Start-Process $fullPath -ErrorAction SilentlyContinue
+        } else {
+            Write-Warning "Report file not found at: $OutputPath"
+            Write-Host "Current directory: $(Get-Location)" -ForegroundColor Yellow
+        }
+    }
+    catch {
+        Write-Error "Failed to generate report: $_"
+        Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
+    }
+}
+
+# Add Test-CostTracking function for quick testing
+function Test-CostTracking {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$SubscriptionIds,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$DaysToInclude = 30,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$OutputPath = "cost-tracking-test.html"
+    )
+    
+    Write-Host "`n=== Testing Cost Tracking ===" -ForegroundColor Cyan
+    
+    # Check if connected to Azure
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Error "Not connected to Azure. Run Connect-AzAccount first."
+        return
+    }
+    
+    # Check if functions are loaded
+    if (-not (Get-Command -Name Collect-CostData -ErrorAction SilentlyContinue)) {
+        Write-Error "Collect-CostData function not found. Make sure Test-Local.ps1 has loaded all functions."
+        return
+    }
+    
+    if (-not (Get-Command -Name Export-CostTrackingReport -ErrorAction SilentlyContinue)) {
+        Write-Error "Export-CostTrackingReport function not found. Make sure Test-Local.ps1 has loaded all functions."
+        return
+    }
+    
+    # Get current tenant ID to filter subscriptions
+    $currentTenantId = if ($context -and $context.Tenant) { $context.Tenant.Id } else { $null }
+    
+    if (-not $currentTenantId) {
+        Write-Error "Could not determine current tenant ID. Make sure you are connected to Azure."
+        return
+    }
+    
+    # Get subscriptions
+    $subscriptions = @()
+    if ($SubscriptionIds) {
+        foreach ($subId in $SubscriptionIds) {
+            try {
+                $sub = Get-AzSubscription -SubscriptionId $subId -ErrorAction Stop -WarningAction SilentlyContinue
+                
+                # Filter out subscriptions from other tenants
+                if ($sub.TenantId -ne $currentTenantId) {
+                    Write-Warning "Skipping subscription $($sub.Name) ($subId) - belongs to different tenant. Current tenant: $currentTenantId"
+                    continue
+                }
+                
+                if ($sub.State -ne 'Enabled') {
+                    continue
+                }
+                
+                $subscriptions += $sub
+            }
+            catch {
+                Write-Warning "Could not find subscription $subId : $_"
+            }
+        }
+    } else {
+        # Get all subscriptions and filter by tenant
+        $allSubs = Get-AzSubscription -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Where-Object {
+            $_.TenantId -eq $currentTenantId -and $_.State -eq 'Enabled'
+        }
+        $subscriptions = @($allSubs)
+        
+        # If no subscriptions found, use current subscription if it's in the right tenant
+        if ($subscriptions.Count -eq 0) {
+            try {
+                $currentSub = Get-AzSubscription -SubscriptionId $context.Subscription.Id -ErrorAction Stop -WarningAction SilentlyContinue
+                if ($currentSub.State -eq 'Enabled' -and $currentSub.TenantId -eq $currentTenantId) {
+                    $subscriptions = @($currentSub)
+                }
+            }
+            catch {
+                Write-Verbose "Could not get current subscription: $_"
+            }
+        }
+    }
+    
+    if ($subscriptions.Count -eq 0) {
+        Write-Error "No enabled subscriptions found in current tenant ($currentTenantId) to test."
+        return
+    }
+    
+    Write-Host "Testing with $($subscriptions.Count) subscription(s) in tenant $currentTenantId" -ForegroundColor Cyan
+    Write-Host "Days to include: $DaysToInclude" -ForegroundColor Gray
+    
+    # Collect data
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $tenantId = $context.Tenant.Id
+    
+    Write-Host "`nCollecting cost data..." -ForegroundColor Cyan
+    $costData = Collect-CostData -Subscriptions $subscriptions -DaysToInclude $DaysToInclude -Errors $errors
+    
+    Write-Host "`nTotal cost records collected: $($costData.RawData.Count)" -ForegroundColor $(if ($costData.RawData.Count -gt 0) { 'Green' } else { 'Yellow' })
+    Write-Host "Total cost: $($costData.Currency) $([math]::Round($costData.TotalCostLocal, 2)) ($([math]::Round($costData.TotalCostUSD, 2)) USD)" -ForegroundColor Green
+    
+    # Generate HTML report
+    Write-Host "`nGenerating HTML report..." -ForegroundColor Cyan
+    
+    # Resolve full path
+    if (-not [System.IO.Path]::IsPathRooted($OutputPath)) {
+        $OutputPath = Join-Path (Get-Location).Path $OutputPath
+    }
+    Write-Host "  Output path: $OutputPath" -ForegroundColor Gray
+    
+    try {
+        $result = Export-CostTrackingReport -CostTrackingData $costData -OutputPath $OutputPath -TenantId $tenantId
+        
+        Write-Host "`n[SUCCESS] Report generated: $OutputPath" -ForegroundColor Green
+        Write-Host "  Total Cost: $($result.TotalCostLocal) ($($result.TotalCostUSD) USD)" -ForegroundColor Gray
+        Write-Host "  Subscriptions: $($result.SubscriptionCount)" -ForegroundColor Gray
+        Write-Host "  Categories: $($result.CategoryCount)" -ForegroundColor Gray
+        Write-Host "  Top Resources: $($result.ResourceCount)" -ForegroundColor Gray
         
         # Verify file exists and try to open the report
         if (Test-Path $OutputPath) {
