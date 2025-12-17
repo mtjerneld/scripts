@@ -55,32 +55,119 @@ function Export-CostTrackingReport {
     $totalCostLocal = [math]::Round($CostTrackingData.TotalCostLocal, 2)
     $totalCostUSD = [math]::Round($CostTrackingData.TotalCostUSD, 2)
     $currency = $CostTrackingData.Currency
+    
+    # Helper function to format numbers with thousand separator (space)
+    function Format-NumberWithSeparator {
+        param(
+            [double]$Number,
+            [int]$Decimals = 2
+        )
+        $rounded = [math]::Round($Number, $Decimals)
+        $formatted = $rounded.ToString("N$Decimals", [System.Globalization.CultureInfo]::InvariantCulture)
+        # Replace comma with space for thousand separator
+        return $formatted -replace ',', ' '
+    }
+    
+    # Helper function to format numbers without decimals (for cards)
+    function Format-NumberNoDecimals {
+        param([double]$Number)
+        $rounded = [math]::Round($Number, 0)
+        $formatted = $rounded.ToString("N0", [System.Globalization.CultureInfo]::InvariantCulture)
+        return $formatted -replace ',', ' '
+    }
+    
+    # Helper function to format quantity with unit of measure
+    function Format-QuantityWithUnit {
+        param(
+            [double]$Quantity,
+            [string]$UnitOfMeasure
+        )
+        if ($Quantity -gt 0 -and $UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($UnitOfMeasure)) {
+            $formattedQty = Format-NumberWithSeparator -Number $Quantity -Decimals 2
+            return "$formattedQty $UnitOfMeasure"
+        }
+        return ""
+    }
     $subscriptionCount = $CostTrackingData.SubscriptionCount
     $bySubscription = $CostTrackingData.BySubscription
     $byMeterCategory = $CostTrackingData.ByMeterCategory
-    # Sort top resources by CostUSD descending
-    $topResources = @($CostTrackingData.TopResources | Sort-Object CostUSD -Descending)
+    # Recalculate top resources from RawData to ensure we get the truly most expensive ones
+    $rawData = if ($CostTrackingData.RawData) { $CostTrackingData.RawData } else { @() }
+    if ($rawData.Count -gt 0) {
+        # Group by ResourceId and calculate totals
+        $resourceGroups = $rawData | Where-Object { $_.ResourceId -and -not [string]::IsNullOrWhiteSpace($_.ResourceId) } | Group-Object ResourceId
+        $allResources = @()
+        foreach ($resGroup in $resourceGroups) {
+            $resItems = $resGroup.Group
+            $resCostUSD = ($resItems | Measure-Object -Property CostUSD -Sum).Sum
+            $resCostLocal = ($resItems | Measure-Object -Property CostLocal -Sum).Sum
+            
+            $allResources += [PSCustomObject]@{
+                ResourceId = $resGroup.Name
+                ResourceName = $resItems[0].ResourceName
+                ResourceGroup = $resItems[0].ResourceGroup
+                ResourceType = $resItems[0].ResourceType
+                SubscriptionName = $resItems[0].SubscriptionName
+                SubscriptionId = $resItems[0].SubscriptionId
+                MeterCategory = ($resItems | Group-Object MeterCategory | Sort-Object Count -Descending | Select-Object -First 1).Name
+                CostLocal = $resCostLocal
+                CostUSD = $resCostUSD
+                ItemCount = $resItems.Count
+            }
+        }
+        # Get top 20 by CostUSD
+        $topResources = @($allResources | Sort-Object CostUSD -Descending | Select-Object -First 20)
+    } else {
+        # Fallback to pre-calculated if no raw data
+        $topResources = @($CostTrackingData.TopResources | Sort-Object { $_.CostUSD } -Descending)
+    }
     $dailyTrend = $CostTrackingData.DailyTrend
     
     # Calculate trend (compare first half vs second half of period)
+    # Remove highest and lowest day from each half to reduce outlier impact
     $trendPercent = 0
     $trendDirection = "neutral"
-    if ($dailyTrend.Count -ge 2) {
-        $midPoint = [math]::Floor($dailyTrend.Count / 2)
-        $firstHalf = ($dailyTrend[0..($midPoint - 1)] | ForEach-Object { $_.TotalCostLocal } | Measure-Object -Sum).Sum
-        $secondHalf = ($dailyTrend[$midPoint..($dailyTrend.Count - 1)] | ForEach-Object { $_.TotalCostLocal } | Measure-Object -Sum).Sum
+    if ($dailyTrend.Count -ge 4) {  # Need at least 4 days (2 per half after removing outliers)
+        $totalDays = $dailyTrend.Count
+        $daysPerHalf = [math]::Floor($totalDays / 2)
+        
+        # If odd number of days, exclude the middle day(s) to ensure equal comparison
+        # First half: first N days
+        # Second half: last N days
+        $firstHalfDays = $dailyTrend[0..($daysPerHalf - 1)]
+        $secondHalfDays = $dailyTrend[($totalDays - $daysPerHalf)..($totalDays - 1)]
+        
+        # Remove highest and lowest day from first half
+        if ($firstHalfDays.Count -ge 3) {
+            $firstHalfSorted = $firstHalfDays | Sort-Object { $_.TotalCostLocal }
+            $firstHalfFiltered = $firstHalfSorted[1..($firstHalfSorted.Count - 2)]  # Remove first (lowest) and last (highest)
+            $firstHalf = ($firstHalfFiltered | ForEach-Object { $_.TotalCostLocal } | Measure-Object -Sum).Sum
+        } else {
+            $firstHalf = ($firstHalfDays | ForEach-Object { $_.TotalCostLocal } | Measure-Object -Sum).Sum
+        }
+        
+        # Remove highest and lowest day from second half
+        if ($secondHalfDays.Count -ge 3) {
+            $secondHalfSorted = $secondHalfDays | Sort-Object { $_.TotalCostLocal }
+            $secondHalfFiltered = $secondHalfSorted[1..($secondHalfSorted.Count - 2)]  # Remove first (lowest) and last (highest)
+            $secondHalf = ($secondHalfFiltered | ForEach-Object { $_.TotalCostLocal } | Measure-Object -Sum).Sum
+        } else {
+            $secondHalf = ($secondHalfDays | ForEach-Object { $_.TotalCostLocal } | Measure-Object -Sum).Sum
+        }
         
         if ($firstHalf -gt 0) {
+            # Calculate percentage change: ((new - old) / old) * 100
             $trendPercent = [math]::Round((($secondHalf - $firstHalf) / $firstHalf) * 100, 1)
             $trendDirection = if ($trendPercent -gt 0) { "up" } elseif ($trendPercent -lt 0) { "down" } else { "neutral" }
         }
     }
     
-    # Prepare subscription data as array
-    $subscriptionsArray = @($bySubscription.Values | Sort-Object CostLocal -Descending)
+    # Prepare subscription data as array (sorted by cost descending)
+    # Note: Using { $_.CostUSD } because these are hashtables, not PSCustomObjects
+    $subscriptionsArray = @($bySubscription.Values | Sort-Object { $_.CostUSD } -Descending)
     
-    # Prepare categories data as array
-    $categoriesArray = @($byMeterCategory.Values | Sort-Object CostLocal -Descending)
+    # Prepare categories data as array (sorted by cost descending)
+    $categoriesArray = @($byMeterCategory.Values | Sort-Object { $_.CostUSD } -Descending)
     
     # Get unique meter categories, subscriptions, meters, and resources for chart
     $allCategories = @($byMeterCategory.Keys | Sort-Object)
@@ -148,6 +235,7 @@ function Export-CostTrackingReport {
             meters = @{}
             resources = @{}
             totalCostLocal = [math]::Round($day.TotalCostLocal, 2)
+            totalCostUSD = [math]::Round($day.TotalCostUSD, 2)
         }
         
         # By Category (with subscription breakdown)
@@ -353,7 +441,7 @@ function Export-CostTrackingReport {
         $subId = if ($sub.SubscriptionId) { $sub.SubscriptionId } else { "" }
         $subscriptionOptionsHtml += @"
                         <label class="subscription-checkbox">
-                            <input type="checkbox" value="$subName" data-subid="$subId" checked onchange="filterBySubscription()">
+                            <input type="checkbox" value="$subName" data-subid="$subId" onchange="filterBySubscription()">
                             <span>$subName</span>
                         </label>
 "@
@@ -363,8 +451,8 @@ function Export-CostTrackingReport {
     $subscriptionRowsHtml = ""
     foreach ($sub in $subscriptionsArray) {
         $subName = if ($sub.Name) { [System.Web.HttpUtility]::HtmlEncode($sub.Name) } else { "Unknown" }
-        $subCostLocal = [math]::Round($sub.CostLocal, 2)
-        $subCostUSD = [math]::Round($sub.CostUSD, 2)
+        $subCostLocal = Format-NumberWithSeparator -Number $sub.CostLocal
+        $subCostUSD = Format-NumberWithSeparator -Number $sub.CostUSD
         $subCount = $sub.ItemCount
         $subscriptionRowsHtml += @"
                         <tr data-subscription="$subName">
@@ -376,26 +464,113 @@ function Export-CostTrackingReport {
 "@
     }
     
-    # Generate top resources rows HTML (sorted by CostUSD)
-    $topResourcesRowsHtml = ""
+    # Generate top resources drilldown HTML (Resource > Meter Category > Meter)
+    $topResourcesSectionsHtml = ""
+    $topResourceMeterIdCounter = 0
+    
     foreach ($res in $topResources) {
+        $resId = $res.ResourceId
         $resName = if ($res.ResourceName) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceName) } else { "N/A" }
         $resGroup = if ($res.ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceGroup) } else { "N/A" }
         $resSub = if ($res.SubscriptionName) { [System.Web.HttpUtility]::HtmlEncode($res.SubscriptionName) } else { "N/A" }
         $resType = if ($res.ResourceType) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceType) } else { "N/A" }
-        $resCat = if ($res.MeterCategory) { [System.Web.HttpUtility]::HtmlEncode($res.MeterCategory) } else { "N/A" }
-        $resCostLocal = [math]::Round($res.CostLocal, 2)
-        $resCostUSD = [math]::Round($res.CostUSD, 2)
-        $topResourcesRowsHtml += @"
-                        <tr data-subscription="$resSub">
-                            <td>$resName</td>
-                            <td>$resGroup</td>
-                            <td>$resSub</td>
-                            <td>$resType</td>
-                            <td>$resCat</td>
-                            <td class="cost-value">$currency $resCostLocal</td>
-                            <td class="cost-value">`$$resCostUSD</td>
-                        </tr>
+        $resCostLocal = Format-NumberWithSeparator -Number $res.CostLocal
+        $resCostUSD = Format-NumberWithSeparator -Number $res.CostUSD
+        
+        # Get all cost data for this resource from raw data
+        $resourceData = $rawData | Where-Object { $_.ResourceId -eq $resId }
+        
+        # Group by Meter Category
+        $categoryGroups = $resourceData | Group-Object MeterCategory
+        $categoryHtml = ""
+        
+        foreach ($catGroup in ($categoryGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+            $catName = $catGroup.Name
+            if ([string]::IsNullOrWhiteSpace($catName)) {
+                $catName = "Unknown"
+            }
+            $catItems = $catGroup.Group
+            $catCostLocal = ($catItems | Measure-Object -Property CostLocal -Sum).Sum
+            $catCostUSD = ($catItems | Measure-Object -Property CostUSD -Sum).Sum
+            $catCostLocalRounded = Format-NumberWithSeparator -Number $catCostLocal
+            $catCostUSDRounded = Format-NumberWithSeparator -Number $catCostUSD
+            $catNameEncoded = [System.Web.HttpUtility]::HtmlEncode($catName)
+            
+            # Group by Meter within category
+            $meterGroups = $catItems | Group-Object Meter
+            $meterCardsHtml = ""
+            
+            foreach ($meterGroup in ($meterGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                $meterName = $meterGroup.Name
+                if ([string]::IsNullOrWhiteSpace($meterName)) {
+                    $meterName = "Unknown"
+                }
+                $meterItems = $meterGroup.Group
+                $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
+                $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
+                $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
+                $meterUnitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
+                $meterUnitOfMeasure = if ($meterUnitOfMeasureGroups.Count -gt 0) {
+                    ($meterUnitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
+                } else { "" }
+                $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
+                $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
+                $meterCostLocalRounded = Format-NumberWithSeparator -Number $meterCostLocal
+                $meterCostUSDRounded = Format-NumberWithSeparator -Number $meterCostUSD
+                $meterNameEncoded = [System.Web.HttpUtility]::HtmlEncode($meterName)
+                $meterUnitOfMeasureEncoded = if ($meterUnitOfMeasure) { [System.Web.HttpUtility]::HtmlEncode($meterUnitOfMeasure) } else { "" }
+                $meterCount = $meterItems.Count
+                $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
+                $unitPriceDisplay = if ($meterUnitPrice -gt 0) { Format-NumberWithSeparator -Number $meterUnitPrice } else { "" }
+                $unitPriceUSDDisplay = if ($meterUnitPriceUSD -gt 0) { Format-NumberWithSeparator -Number $meterUnitPriceUSD } else { "" }
+                $meterId = "topres_meter_$topResourceMeterIdCounter"
+                $topResourceMeterIdCounter++
+                
+                $meterCardsHtml += @"
+                            <div class="meter-card no-expand">
+                                <div class="meter-header">
+                                    <span class="meter-name">$meterNameEncoded</span>
+                                    <span class="meter-cost">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
+                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
+                                    $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
+                                    <span class="meter-count">$meterCount records</span>
+                                </div>
+                            </div>
+"@
+            }
+            
+            $categoryHtml += @"
+                        <div class="category-card">
+                            <div class="category-header" onclick="toggleCategory(this, event)">
+                                <span class="expand-arrow">&#9654;</span>
+                                <span class="category-title">$catNameEncoded</span>
+                                <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
+                            </div>
+                            <div class="category-content">
+$meterCardsHtml
+                            </div>
+                        </div>
+"@
+        }
+        
+        $topResourcesSectionsHtml += @"
+                    <div class="category-card resource-card" data-subscription="$resSub">
+                        <div class="category-header" onclick="toggleCategory(this, event)">
+                            <span class="expand-arrow">&#9654;</span>
+                            <span class="category-title">$resName</span>
+                            <span class="category-cost">$currency $resCostLocal (`$$resCostUSD)</span>
+                        </div>
+                        <div class="category-content">
+                            <div class="resource-info">
+                                <div>
+                                    <div><strong>Resource Group:</strong> $resGroup</div>
+                                    <div><strong>Subscription:</strong> $resSub</div>
+                                    <div><strong>Type:</strong> $resType</div>
+                                </div>
+                            </div>
+$categoryHtml
+                        </div>
+                    </div>
 "@
     }
     
@@ -404,8 +579,8 @@ function Export-CostTrackingReport {
     $meterIdCounter = 0
     foreach ($cat in $categoriesArray) {
         $catName = if ($cat.MeterCategory) { [System.Web.HttpUtility]::HtmlEncode($cat.MeterCategory) } else { "Unknown" }
-        $catCostLocal = [math]::Round($cat.CostLocal, 2)
-        $catCostUSD = [math]::Round($cat.CostUSD, 2)
+        $catCostLocal = Format-NumberWithSeparator -Number $cat.CostLocal
+        $catCostUSD = Format-NumberWithSeparator -Number $cat.CostUSD
         
         $subCatHtml = ""
         if ($cat.SubCategories -and $cat.SubCategories.Count -gt 0) {
@@ -414,8 +589,8 @@ function Export-CostTrackingReport {
             foreach ($subCatEntry in $sortedSubCats) {
                 $subCat = $subCatEntry.Value
                 $subCatName = if ($subCat.MeterSubCategory) { [System.Web.HttpUtility]::HtmlEncode($subCat.MeterSubCategory) } else { "N/A" }
-                $subCatCostLocal = [math]::Round($subCat.CostLocal, 2)
-                $subCatCostUSD = [math]::Round($subCat.CostUSD, 2)
+                $subCatCostLocal = Format-NumberWithSeparator -Number $subCat.CostLocal
+                $subCatCostUSD = Format-NumberWithSeparator -Number $subCat.CostUSD
                 
                 $meterCardsHtml = ""
                 if ($subCat.Meters -and $subCat.Meters.Count -gt 0) {
@@ -424,9 +599,14 @@ function Export-CostTrackingReport {
                     foreach ($meterEntry in $sortedMeters) {
                         $meter = $meterEntry.Value
                         $meterName = if ($meter.Meter) { [System.Web.HttpUtility]::HtmlEncode($meter.Meter) } else { "Unknown" }
-                        $meterCostLocal = [math]::Round($meter.CostLocal, 2)
-                        $meterCostUSD = [math]::Round($meter.CostUSD, 2)
+                        $meterCostLocal = Format-NumberWithSeparator -Number $meter.CostLocal
+                        $meterCostUSD = Format-NumberWithSeparator -Number $meter.CostUSD
                         $meterCount = $meter.ItemCount
+                        $meterQuantity = if ($meter.Quantity) { $meter.Quantity } else { 0 }
+                        $meterUnitOfMeasure = if ($meter.UnitOfMeasure) { [System.Web.HttpUtility]::HtmlEncode($meter.UnitOfMeasure) } else { "" }
+                        $meterUnitPrice = if ($meter.UnitPrice) { Format-NumberWithSeparator -Number $meter.UnitPrice } else { "" }
+                        $meterUnitPriceUSD = if ($meter.UnitPriceUSD) { Format-NumberWithSeparator -Number $meter.UnitPriceUSD } else { "" }
+                        $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
                         $meterId = "meter_$meterIdCounter"
                         $meterIdCounter++
                         
@@ -442,15 +622,15 @@ function Export-CostTrackingReport {
                                 $resName = if ($res.ResourceName) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceName) } else { "Unknown" }
                                 $resGroup = if ($res.ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceGroup) } else { "N/A" }
                                 $resSub = if ($res.SubscriptionName) { [System.Web.HttpUtility]::HtmlEncode($res.SubscriptionName) } else { "N/A" }
-                                $resCostLocal = [math]::Round($res.CostLocal, 2)
-                                $resCostUSD = [math]::Round($res.CostUSD, 2)
+                                $resCostLocalFormatted = Format-NumberWithSeparator -Number $res.CostLocal
+                                $resCostUSDFormatted = Format-NumberWithSeparator -Number $res.CostUSD
                                 $resourceRowsHtml += @"
                                             <tr data-subscription="$resSub">
                                                 <td>$resName</td>
                                                 <td>$resGroup</td>
                                                 <td>$resSub</td>
-                                                <td class="cost-value">$currency $resCostLocal</td>
-                                                <td class="cost-value">`$$resCostUSD</td>
+                                                <td class="cost-value text-right">$currency $resCostLocalFormatted</td>
+                                                <td class="cost-value text-right">`$$resCostUSDFormatted</td>
                                             </tr>
 "@
                             }
@@ -463,6 +643,8 @@ function Export-CostTrackingReport {
                                     <span class="expand-arrow">&#9654;</span>
                                     <span class="meter-name">$meterName</span>
                                     <span class="meter-cost">$currency $meterCostLocal (`$$meterCostUSD)</span>
+                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
+                                    $(if ($meterUnitPrice) { "<span class='meter-unit-price'>Unit: $currency $meterUnitPrice (`$$meterUnitPriceUSD)</span>" } else { "" })
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                                 <div class="meter-content">
@@ -472,8 +654,8 @@ function Export-CostTrackingReport {
                                                 <th>Resource</th>
                                                 <th>Resource Group</th>
                                                 <th>Subscription</th>
-                                                <th>Cost ($currency)</th>
-                                                <th>Cost (USD)</th>
+                                                <th class="text-right">Cost ($currency)</th>
+                                                <th class="text-right">Cost (USD)</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -489,6 +671,8 @@ $resourceRowsHtml
                                 <div class="meter-header">
                                     <span class="meter-name">$meterName</span>
                                     <span class="meter-cost">$currency $meterCostLocal (`$$meterCostUSD)</span>
+                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
+                                    $(if ($meterUnitPrice) { "<span class='meter-unit-price'>Unit: $currency $meterUnitPrice (`$$meterUnitPriceUSD)</span>" } else { "" })
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                             </div>
@@ -514,7 +698,7 @@ $meterCardsHtml
         
         $categorySectionsHtml += @"
                     <div class="category-card">
-                        <div class="category-header" onclick="toggleCategory(this)">
+                        <div class="category-header" onclick="toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$catName</span>
                             <span class="category-cost">$currency $catCostLocal (`$$catCostUSD)</span>
@@ -526,11 +710,210 @@ $subCatHtml
 "@
     }
     
-    # Build trend indicator
-    $trendIndicator = switch ($trendDirection) {
-        "up" { "<span class='trend up'>&#8593; $trendPercent% Increasing</span>" }
-        "down" { "<span class='trend down'>&#8595; $([math]::Abs($trendPercent))% Decreasing</span>" }
-        default { "<span class='trend neutral'>&#8594; Stable</span>" }
+    # Generate subscription sections HTML with drilldown (5 levels: Subscription > Category > SubCategory > Meter > Resource)
+    $subscriptionSectionsHtml = ""
+    $subscriptionMeterIdCounter = 0
+    $rawData = if ($CostTrackingData.RawData) { $CostTrackingData.RawData } else { @() }
+    
+    # Group raw data by subscription
+    if ($rawData.Count -gt 0) {
+        $subscriptionGroups = $rawData | Group-Object SubscriptionId
+        foreach ($subGroup in ($subscriptionGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+            $subId = $subGroup.Name
+            $subItems = $subGroup.Group
+            $subName = if ($subItems[0].SubscriptionName) { $subItems[0].SubscriptionName } else { "Unknown" }
+            $subCostLocal = ($subItems | Measure-Object -Property CostLocal -Sum).Sum
+            $subCostUSD = ($subItems | Measure-Object -Property CostUSD -Sum).Sum
+            $subCostLocalRounded = Format-NumberWithSeparator -Number $subCostLocal
+            $subCostUSDRounded = Format-NumberWithSeparator -Number $subCostUSD
+            $subNameEncoded = [System.Web.HttpUtility]::HtmlEncode($subName)
+            
+            # Group by category within subscription
+            $categoryGroups = $subItems | Group-Object MeterCategory
+            $categoryHtml = ""
+            
+            foreach ($catGroup in ($categoryGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                $catName = $catGroup.Name
+                if ([string]::IsNullOrWhiteSpace($catName)) {
+                    $catName = "Unknown"
+                }
+                $catItems = $catGroup.Group
+                $catCostLocal = ($catItems | Measure-Object -Property CostLocal -Sum).Sum
+                $catCostUSD = ($catItems | Measure-Object -Property CostUSD -Sum).Sum
+                $catCostLocalRounded = Format-NumberWithSeparator -Number $catCostLocal
+                $catCostUSDRounded = Format-NumberWithSeparator -Number $catCostUSD
+                $catNameEncoded = [System.Web.HttpUtility]::HtmlEncode($catName)
+                
+                # Group by subcategory within category
+                $subCatGroups = $catItems | Group-Object MeterSubCategory
+                $subCatHtml = ""
+                
+                foreach ($subCatGroup in ($subCatGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                    $subCatName = $subCatGroup.Name
+                    if ([string]::IsNullOrWhiteSpace($subCatName)) {
+                        $subCatName = "N/A"
+                    }
+                    $subCatItems = $subCatGroup.Group
+                    $subCatCostLocal = ($subCatItems | Measure-Object -Property CostLocal -Sum).Sum
+                    $subCatCostUSD = ($subCatItems | Measure-Object -Property CostUSD -Sum).Sum
+                    $subCatCostLocalRounded = [math]::Round($subCatCostLocal, 2)
+                    $subCatCostUSDRounded = [math]::Round($subCatCostUSD, 2)
+                    $subCatNameEncoded = [System.Web.HttpUtility]::HtmlEncode($subCatName)
+                    
+                    # Group by meter within subcategory
+                    $meterGroups = $subCatItems | Group-Object Meter
+                    $meterCardsHtml = ""
+                    
+                    foreach ($meterGroup in ($meterGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                        $meterName = $meterGroup.Name
+                        if ([string]::IsNullOrWhiteSpace($meterName)) {
+                            $meterName = "Unknown"
+                        }
+                        $meterItems = $meterGroup.Group
+                        $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
+                        $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
+                        $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
+                        $meterUnitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
+                        $meterUnitOfMeasure = if ($meterUnitOfMeasureGroups.Count -gt 0) {
+                            ($meterUnitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
+                        } else { "" }
+                        $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
+                        $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
+                        $meterCostLocalRounded = Format-NumberWithSeparator -Number $meterCostLocal
+                        $meterCostUSDRounded = Format-NumberWithSeparator -Number $meterCostUSD
+                        $meterNameEncoded = [System.Web.HttpUtility]::HtmlEncode($meterName)
+                        $meterUnitOfMeasureEncoded = if ($meterUnitOfMeasure) { [System.Web.HttpUtility]::HtmlEncode($meterUnitOfMeasure) } else { "" }
+                        $meterCount = $meterItems.Count
+                        $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
+                        $unitPriceDisplay = if ($meterUnitPrice -gt 0) { Format-NumberWithSeparator -Number $meterUnitPrice } else { "" }
+                        $unitPriceUSDDisplay = if ($meterUnitPriceUSD -gt 0) { Format-NumberWithSeparator -Number $meterUnitPriceUSD } else { "" }
+                        $meterId = "sub_meter_$subscriptionMeterIdCounter"
+                        $subscriptionMeterIdCounter++
+                        
+                        # Group by resource within meter
+                        $resourceGroups = $meterItems | Where-Object { $_.ResourceName -and -not [string]::IsNullOrWhiteSpace($_.ResourceName) } | Group-Object ResourceName
+                        $resourceRowsHtml = ""
+                        $hasResources = $false
+                        
+                        if ($resourceGroups.Count -gt 0) {
+                            $hasResources = $true
+                            foreach ($resGroup in ($resourceGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                                $resName = $resGroup.Name
+                                $resItems = $resGroup.Group
+                                $resCostLocal = ($resItems | Measure-Object -Property CostLocal -Sum).Sum
+                                $resCostUSD = ($resItems | Measure-Object -Property CostUSD -Sum).Sum
+                                $resCostLocalFormatted = Format-NumberWithSeparator -Number $resCostLocal
+                                $resCostUSDFormatted = Format-NumberWithSeparator -Number $resCostUSD
+                                $resNameEncoded = [System.Web.HttpUtility]::HtmlEncode($resName)
+                                $resGroupName = if ($resItems[0].ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($resItems[0].ResourceGroup) } else { "N/A" }
+                                
+                                $resourceRowsHtml += @"
+                                            <tr data-subscription="$subNameEncoded">
+                                                <td>$resNameEncoded</td>
+                                                <td>$resGroupName</td>
+                                                <td class="cost-value text-right">$currency $resCostLocalFormatted</td>
+                                                <td class="cost-value text-right">`$$resCostUSDFormatted</td>
+                                            </tr>
+"@
+                            }
+                        }
+                        
+                        if ($hasResources) {
+                            $meterCardsHtml += @"
+                            <div class="meter-card">
+                                <div class="meter-header" onclick="toggleMeter(this)">
+                                    <span class="expand-arrow">&#9654;</span>
+                                    <span class="meter-name">$meterNameEncoded</span>
+                                    <span class="meter-cost">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
+                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
+                                    $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
+                                    <span class="meter-count">$meterCount records</span>
+                                </div>
+                                <div class="meter-content">
+                                    <table class="cost-table resource-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Resource</th>
+                                                <th>Resource Group</th>
+                                                <th class="text-right">Cost ($currency)</th>
+                                                <th class="text-right">Cost (USD)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+$resourceRowsHtml
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+"@
+                        } else {
+                            $meterCardsHtml += @"
+                            <div class="meter-card no-expand">
+                                <div class="meter-header">
+                                    <span class="meter-name">$meterNameEncoded</span>
+                                    <span class="meter-cost">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
+                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
+                                    $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
+                                    <span class="meter-count">$meterCount records</span>
+                                </div>
+                            </div>
+"@
+                        }
+                    }
+                    
+                    $subCatHtml += @"
+                        <div class="subcategory-drilldown">
+                            <div class="subcategory-header" onclick="toggleSubCategory(this)">
+                                <span class="expand-arrow">&#9654;</span>
+                                <span class="subcategory-name">$subCatNameEncoded</span>
+                                <span class="subcategory-cost">$currency $subCatCostLocalRounded (`$$subCatCostUSDRounded)</span>
+                            </div>
+                            <div class="subcategory-content">
+$meterCardsHtml
+                            </div>
+                        </div>
+"@
+                }
+                
+                $categoryHtml += @"
+                        <div class="category-card">
+                            <div class="category-header" onclick="toggleCategory(this, event)">
+                                <span class="expand-arrow">&#9654;</span>
+                                <span class="category-title">$catNameEncoded</span>
+                                <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
+                            </div>
+                            <div class="category-content">
+$subCatHtml
+                            </div>
+                        </div>
+"@
+            }
+            
+            $subscriptionSectionsHtml += @"
+                    <div class="category-card subscription-card" data-subscription="$subNameEncoded">
+                        <div class="category-header" onclick="toggleCategory(this, event)">
+                            <span class="expand-arrow">&#9654;</span>
+                            <span class="category-title">$subNameEncoded</span>
+                            <span class="category-cost">$currency $subCostLocalRounded (`$$subCostUSDRounded)</span>
+                        </div>
+                        <div class="category-content">
+$categoryHtml
+                        </div>
+                    </div>
+"@
+        }
+    }
+    
+    # Build trend indicator with arrow and color class
+    $trendArrow = switch ($trendDirection) {
+        "up" { "&#8593;" }
+        "down" { "&#8595;" }
+        default { "&#8594;" }
+    }
+    $trendColorClass = switch ($trendDirection) {
+        "up" { "trend-increasing" }
+        "down" { "trend-decreasing" }
+        default { "trend-stable" }
     }
     
     # Start building HTML
@@ -600,6 +983,19 @@ $(Get-ReportStylesheet)
         .trend.neutral {
             background: rgba(136, 136, 136, 0.15);
             color: var(--text-muted);
+        }
+        
+        /* Trend color classes for summary card value */
+        .summary-card .value.trend-increasing {
+            color: #ff6b6b; /* Red for increasing */
+        }
+        
+        .summary-card .value.trend-decreasing {
+            color: #00d26a; /* Green for decreasing */
+        }
+        
+        .summary-card .value.trend-stable {
+            color: #feca57; /* Yellow for stable */
         }
         
         /* Global filter bar */
@@ -762,6 +1158,11 @@ $(Get-ReportStylesheet)
             letter-spacing: 0.5px;
         }
         
+        .cost-table th.text-right,
+        .cost-table td.text-right {
+            text-align: right;
+        }
+        
         .cost-table td {
             padding: 12px 16px;
             border-bottom: 1px solid var(--border-color);
@@ -769,6 +1170,19 @@ $(Get-ReportStylesheet)
         }
         
         .cost-table tbody tr:hover {
+            background: var(--bg-hover);
+        }
+        
+        /* Banded rows (alternating row colors) */
+        .cost-table tbody tr:nth-child(even) {
+            background: rgba(61, 61, 92, 0.3);
+        }
+        
+        .cost-table tbody tr:nth-child(odd) {
+            background: transparent;
+        }
+        
+        .cost-table tbody tr:nth-child(even):hover {
             background: var(--bg-hover);
         }
         
@@ -809,9 +1223,12 @@ $(Get-ReportStylesheet)
             font-size: 0.8rem;
             transition: transform 0.2s;
             color: var(--accent-blue);
+            display: inline-block;
+            transform: rotate(0deg);
         }
         
-        .category-card.expanded .category-header .expand-arrow {
+        /* Use direct child selector to only affect the card's own header arrow */
+        .category-card.expanded > .category-header .expand-arrow {
             transform: rotate(90deg);
         }
         
@@ -832,9 +1249,66 @@ $(Get-ReportStylesheet)
             padding: 0 20px 20px;
         }
         
-        .category-card.expanded .category-content {
+        /* Use direct child selector to only affect immediate category-content */
+        .category-card.expanded > .category-content {
             display: block;
         }
+        
+        /* Nested category cards (categories inside subscription cards) */
+        .subscription-card .category-content .category-card {
+            margin-top: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .subscription-card .category-content .category-card:first-child {
+            margin-top: 0;
+        }
+        
+        .subscription-card .category-content .category-card:last-child {
+            margin-bottom: 0;
+        }
+        
+        /* Nested category cards in subscription-card inherit the base behavior */
+        /* No override needed since we use direct child selector above */
+        
+        /* Resource cards (top resources section) */
+        .resource-card {
+            margin-bottom: 15px;
+        }
+        
+        .resource-info {
+            background: var(--bg-secondary);
+            border-radius: var(--radius-sm);
+            padding: 12px 20px;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+        }
+        
+        .resource-info div {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+        }
+        
+        .resource-info strong {
+            color: var(--text-primary);
+        }
+        
+        .resource-card .category-content .category-card {
+            margin-top: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .resource-card .category-content .category-card:first-child {
+            margin-top: 0;
+        }
+        
+        .resource-card .category-content .category-card:last-child {
+            margin-bottom: 0;
+        }
+        
+        /* Nested category cards in resource-card inherit the base behavior */
+        /* No override needed since we use direct child selector above */
         
         /* SubCategory level */
         .subcategory-drilldown {
@@ -861,6 +1335,8 @@ $(Get-ReportStylesheet)
             font-size: 0.7rem;
             transition: transform 0.2s;
             color: var(--accent-blue);
+            display: inline-block;
+            transform: rotate(0deg);
         }
         
         .subcategory-drilldown.expanded .subcategory-header .expand-arrow {
@@ -923,6 +1399,8 @@ $(Get-ReportStylesheet)
             font-size: 0.6rem;
             transition: transform 0.2s;
             color: var(--text-muted);
+            display: inline-block;
+            transform: rotate(0deg);
         }
         
         .meter-card.expanded .meter-header .expand-arrow {
@@ -948,6 +1426,20 @@ $(Get-ReportStylesheet)
             font-size: 0.8rem;
         }
         
+        .meter-quantity {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            font-family: 'Consolas', 'Monaco', monospace;
+            margin-left: 10px;
+        }
+        
+        .meter-unit-price {
+            color: var(--accent-blue);
+            font-size: 0.8rem;
+            font-family: 'Consolas', 'Monaco', monospace;
+            margin-left: 10px;
+        }
+        
         .meter-content {
             display: none;
             padding: 0 14px 14px;
@@ -965,10 +1457,29 @@ $(Get-ReportStylesheet)
         .resource-table th {
             font-size: 0.75rem;
             padding: 8px 12px;
+            text-align: left;
+        }
+        
+        .resource-table th.text-right,
+        .resource-table td.text-right {
+            text-align: right;
         }
         
         .resource-table td {
             padding: 8px 12px;
+        }
+        
+        /* Banded rows for resource tables */
+        .resource-table tbody tr:nth-child(even) {
+            background: rgba(61, 61, 92, 0.3);
+        }
+        
+        .resource-table tbody tr:nth-child(odd) {
+            background: transparent;
+        }
+        
+        .resource-table tbody tr:nth-child(even):hover {
+            background: var(--bg-hover);
         }
         
         .filter-bar {
@@ -1021,25 +1532,24 @@ $subscriptionOptionsHtml
         
         <div class="summary-cards">
             <div class="summary-card">
-                <div class="value">$totalCostLocal</div>
+                <div class="value" id="summary-total-cost-local">$(Format-NumberNoDecimals -Number $totalCostLocal)</div>
                 <div class="label">Total Cost ($currency)</div>
             </div>
             <div class="summary-card">
-                <div class="value">$totalCostUSD</div>
+                <div class="value" id="summary-total-cost-usd">$(Format-NumberNoDecimals -Number $totalCostUSD)</div>
                 <div class="label">Total Cost (USD)</div>
             </div>
             <div class="summary-card">
-                <div class="value">$subscriptionCount</div>
+                <div class="value" id="summary-subscription-count">$subscriptionCount</div>
                 <div class="label">Subscriptions</div>
             </div>
             <div class="summary-card">
-                <div class="value">$($byMeterCategory.Count)</div>
+                <div class="value" id="summary-category-count">$($byMeterCategory.Count)</div>
                 <div class="label">Meter Categories</div>
             </div>
             <div class="summary-card">
-                <div class="value">$([math]::Abs($trendPercent))%</div>
+                <div class="value $trendColorClass" id="summary-trend-percent">$trendArrow $([math]::Abs($trendPercent))%</div>
                 <div class="label">Cost Trend</div>
-                $trendIndicator
             </div>
         </div>
         
@@ -1065,19 +1575,7 @@ $subscriptionOptionsHtml
         <div class="section">
             <h2 onclick="toggleSection(this)"><span class="expand-arrow">&#9654;</span> Cost by Subscription</h2>
             <div class="section-content">
-                <table class="cost-table" id="subscriptionTable">
-                    <thead>
-                        <tr>
-                            <th>Subscription</th>
-                            <th>Cost ($currency)</th>
-                            <th>Cost (USD)</th>
-                            <th>Records</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-$subscriptionRowsHtml
-                    </tbody>
-                </table>
+$subscriptionSectionsHtml
             </div>
         </div>
         
@@ -1095,22 +1593,7 @@ $categorySectionsHtml
                     <label>Search:</label>
                     <input type="text" id="resourceSearch" placeholder="Filter resources..." oninput="filterResources()">
                 </div>
-                <table class="cost-table" id="resourcesTable">
-                    <thead>
-                        <tr>
-                            <th>Resource Name</th>
-                            <th>Resource Group</th>
-                            <th>Subscription</th>
-                            <th>Type</th>
-                            <th>Category</th>
-                            <th>Cost ($currency)</th>
-                            <th>Cost (USD)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-$topResourcesRowsHtml
-                    </tbody>
-                </table>
+$topResourcesSectionsHtml
             </div>
         </div>
     </div>
@@ -1159,6 +1642,26 @@ $datasetsByResourceJsonString
         let currentCategoryFilter = 'all';
         let selectedSubscriptions = new Set();
         
+        // Store original summary card values
+        const originalSummaryValues = {
+            totalCostLocal: null,
+            totalCostUSD: null,
+            subscriptionCount: null,
+            categoryCount: null,
+            trendPercent: null,
+            trendColorClass: null
+        };
+        
+        // Helper function to format numbers with thousand separator (space) and round to nearest integer
+        function formatNumberNoDecimals(number) {
+            return Math.round(number).toLocaleString('en-US').replace(/,/g, ' ');
+        }
+        
+        // Helper function to format numbers with thousand separator (space) and 2 decimals
+        function formatNumberWithDecimals(number) {
+            return number.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+        }
+        
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
             // Initialize selected subscriptions from checkboxes
@@ -1167,6 +1670,29 @@ $datasetsByResourceJsonString
                     selectedSubscriptions.add(cb.value);
                 }
             });
+            
+            // Store original summary values
+            const totalCostLocalEl = document.getElementById('summary-total-cost-local');
+            const totalCostUsdEl = document.getElementById('summary-total-cost-usd');
+            const subscriptionCountEl = document.getElementById('summary-subscription-count');
+            const categoryCountEl = document.getElementById('summary-category-count');
+            const trendPercentEl = document.getElementById('summary-trend-percent');
+            
+            if (totalCostLocalEl) originalSummaryValues.totalCostLocal = totalCostLocalEl.textContent;
+            if (totalCostUsdEl) originalSummaryValues.totalCostUSD = totalCostUsdEl.textContent;
+            if (subscriptionCountEl) originalSummaryValues.subscriptionCount = subscriptionCountEl.textContent;
+            if (categoryCountEl) originalSummaryValues.categoryCount = categoryCountEl.textContent;
+            if (trendPercentEl) {
+                originalSummaryValues.trendPercent = trendPercentEl.innerHTML; // Store HTML to preserve arrow entity
+                // Store the color class
+                if (trendPercentEl.classList.contains('trend-increasing')) {
+                    originalSummaryValues.trendColorClass = 'trend-increasing';
+                } else if (trendPercentEl.classList.contains('trend-decreasing')) {
+                    originalSummaryValues.trendColorClass = 'trend-decreasing';
+                } else if (trendPercentEl.classList.contains('trend-stable')) {
+                    originalSummaryValues.trendColorClass = 'trend-stable';
+                }
+            }
             
             initChart();
             populateCategoryFilter();
@@ -1326,6 +1852,94 @@ $datasetsByResourceJsonString
                 });
             });
             
+            // Calculate totals for each key based on current filters (for top 15 selection)
+            const keyTotals = [];
+            allKeys.forEach(key => {
+                // Skip if subscription filter active and this is subscriptions dimension
+                if (dimension === 'subscriptions' && selectedSubscriptions.size > 0 && !selectedSubscriptions.has(key)) {
+                    return;
+                }
+                
+                // Skip if category filter active and this is categories dimension (key IS the category)
+                if (dimension === 'categories' && categoryFilter !== 'all' && key !== categoryFilter) {
+                    return;
+                }
+                
+                let totalCost = 0;
+                rawDailyData.forEach((day, dayIndex) => {
+                    const dimData = day[dimension] && day[dimension][key];
+                    if (!dimData) return;
+                    
+                    let value = 0;
+                    
+                    // Apply filters based on dimension type
+                    if (dimension === 'categories') {
+                        // When dimension is categories, key IS the category name
+                        // Apply subscription filter only
+                        if (selectedSubscriptions.size === 0) {
+                            value = dimData.total || 0;
+                        } else {
+                            selectedSubscriptions.forEach(sub => {
+                                value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                            });
+                        }
+                    } else if (dimension === 'subscriptions') {
+                        // When dimension is subscriptions, apply category filter
+                        if (categoryFilter === 'all') {
+                            value = dimData.total || 0;
+                        } else {
+                            value = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
+                        }
+                    } else {
+                        // For meters and resources, apply both filters
+                        if (categoryFilter === 'all') {
+                            // No category filter - use total and apply subscription filter
+                            if (selectedSubscriptions.size === 0) {
+                                value = dimData.total || 0;
+                            } else {
+                                selectedSubscriptions.forEach(sub => {
+                                    value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                });
+                            }
+                        } else {
+                            // Category filter active - get value for this category
+                            const catValue = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
+                            if (catValue > 0) {
+                                // This meter/resource has costs in the filtered category
+                                // For category-filtered values, we can't break down by subscription
+                                // So we use the category value proportionally based on subscription filter
+                                if (selectedSubscriptions.size === 0) {
+                                    value = catValue;
+                                } else {
+                                    // Estimate: use category value proportionally based on subscription share of total
+                                    const totalValue = dimData.total || 0;
+                                    if (totalValue > 0) {
+                                        let subscriptionShare = 0;
+                                        selectedSubscriptions.forEach(sub => {
+                                            subscriptionShare += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                        });
+                                        // Apply the same proportion to the category value
+                                        value = catValue * (subscriptionShare / totalValue);
+                                    } else {
+                                        value = 0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    totalCost += value;
+                });
+                
+                if (totalCost > 0) {
+                    keyTotals.push({ key: key, totalCost: totalCost });
+                }
+            });
+            
+            // Sort by total cost and get top 15 for meter/resource views
+            keyTotals.sort((a, b) => b.totalCost - a.totalCost);
+            const topKeys = includeOther ? keyTotals.slice(0, 15).map(item => item.key) : keyTotals.map(item => item.key);
+            
             const datasets = [];
             let colorIndex = 0;
             let otherData = null;
@@ -1334,38 +1948,66 @@ $datasetsByResourceJsonString
                 otherData = rawDailyData.map(() => 0);
             }
             
-            allKeys.forEach(key => {
-                // Skip if subscription filter active and this is subscriptions dimension
-                if (dimension === 'subscriptions' && selectedSubscriptions.size > 0 && !selectedSubscriptions.has(key)) {
-                    return;
-                }
-                
+            topKeys.forEach(key => {
                 const data = rawDailyData.map((day, dayIndex) => {
                     const dimData = day[dimension] && day[dimension][key];
                     if (!dimData) return 0;
                     
                     let value = 0;
                     
-                    // Apply subscription filter
-                    if (selectedSubscriptions.size === 0 || dimension === 'subscriptions') {
-                        // No subscription filter or we're viewing by subscription
+                    // Apply filters based on dimension type
+                    if (dimension === 'categories') {
+                        // When dimension is categories, key IS the category name
+                        // Apply subscription filter only
+                        if (selectedSubscriptions.size === 0) {
+                            value = dimData.total || 0;
+                        } else {
+                            selectedSubscriptions.forEach(sub => {
+                                value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                            });
+                        }
+                    } else if (dimension === 'subscriptions') {
+                        // When dimension is subscriptions, apply category filter
                         if (categoryFilter === 'all') {
                             value = dimData.total || 0;
                         } else {
                             value = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
                         }
                     } else {
-                        // Subscription filter active - sum only selected subscriptions
+                        // For meters and resources, apply both filters
                         if (categoryFilter === 'all') {
-                            selectedSubscriptions.forEach(sub => {
-                                value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
-                            });
+                            // No category filter - use total and apply subscription filter
+                            if (selectedSubscriptions.size === 0) {
+                                value = dimData.total || 0;
+                            } else {
+                                selectedSubscriptions.forEach(sub => {
+                                    value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                });
+                            }
                         } else {
-                            // Both category and subscription filter - this is complex
-                            // For simplicity, just filter by subscription total within category
-                            selectedSubscriptions.forEach(sub => {
-                                value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
-                            });
+                            // Category filter active - get value for this category
+                            const catValue = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
+                            if (catValue > 0) {
+                                // This meter/resource has costs in the filtered category
+                                // For category-filtered values, we can't break down by subscription
+                                // So we use the category value proportionally based on subscription filter
+                                if (selectedSubscriptions.size === 0) {
+                                    value = catValue;
+                                } else {
+                                    // Estimate: use category value proportionally based on subscription share of total
+                                    const totalValue = dimData.total || 0;
+                                    if (totalValue > 0) {
+                                        let subscriptionShare = 0;
+                                        selectedSubscriptions.forEach(sub => {
+                                            subscriptionShare += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                        });
+                                        // Apply the same proportion to the category value
+                                        value = catValue * (subscriptionShare / totalValue);
+                                    } else {
+                                        value = 0;
+                                    }
+                                }
+                            }
                         }
                     }
                     
@@ -1456,15 +2098,181 @@ $datasetsByResourceJsonString
                 selectedSubscriptions.add(cb.value);
             });
             
-            // Filter tables
-            filterTableBySubscription('subscriptionTable');
-            filterTableBySubscription('resourcesTable');
-            
-            // Filter category sections
+            // Filter category sections, subscription sections, and resource sections
             filterCategorySections();
+            
+            // Also update resource search filter to respect subscription filter
+            filterResources();
+            
+            // Update summary cards with filtered data
+            updateSummaryCards();
             
             // Update chart with new subscription filter
             updateChart();
+        }
+        
+        function updateSummaryCards() {
+            const totalCostLocalEl = document.getElementById('summary-total-cost-local');
+            const totalCostUsdEl = document.getElementById('summary-total-cost-usd');
+            const subscriptionCountEl = document.getElementById('summary-subscription-count');
+            const categoryCountEl = document.getElementById('summary-category-count');
+            const trendPercentEl = document.getElementById('summary-trend-percent');
+            
+            if (selectedSubscriptions.size === 0) {
+                // No filter - restore original values
+                if (totalCostLocalEl && originalSummaryValues.totalCostLocal !== null) {
+                    totalCostLocalEl.textContent = originalSummaryValues.totalCostLocal;
+                }
+                if (totalCostUsdEl && originalSummaryValues.totalCostUSD !== null) {
+                    totalCostUsdEl.textContent = originalSummaryValues.totalCostUSD;
+                }
+                if (subscriptionCountEl && originalSummaryValues.subscriptionCount !== null) {
+                    subscriptionCountEl.textContent = originalSummaryValues.subscriptionCount;
+                }
+                if (categoryCountEl && originalSummaryValues.categoryCount !== null) {
+                    categoryCountEl.textContent = originalSummaryValues.categoryCount;
+                }
+                if (trendPercentEl && originalSummaryValues.trendPercent !== null) {
+                    trendPercentEl.innerHTML = originalSummaryValues.trendPercent; // Restore HTML to preserve arrow entity
+                    // Restore color class
+                    trendPercentEl.classList.remove('trend-increasing', 'trend-decreasing', 'trend-stable');
+                    if (originalSummaryValues.trendColorClass) {
+                        trendPercentEl.classList.add(originalSummaryValues.trendColorClass);
+                    }
+                }
+                return;
+            }
+            
+            // Calculate filtered totals from rawDailyData
+            let filteredTotalCostLocal = 0;
+            let filteredTotalCostUSD = 0;
+            const filteredSubscriptions = new Set();
+            const filteredCategories = new Set();
+            
+            rawDailyData.forEach(day => {
+                // Sum costs for selected subscriptions
+                Object.entries(day.subscriptions || {}).forEach(([subName, subData]) => {
+                    if (selectedSubscriptions.has(subName)) {
+                        const subCostLocal = subData.total || 0;
+                        filteredTotalCostLocal += subCostLocal;
+                        
+                        // Calculate USD proportionally based on the day's total
+                        let subCostUSD = 0;
+                        if (day.totalCostLocal > 0 && day.totalCostUSD !== undefined) {
+                            subCostUSD = (day.totalCostUSD / day.totalCostLocal) * subCostLocal;
+                        }
+                        filteredTotalCostUSD += subCostUSD;
+                        filteredSubscriptions.add(subName);
+                        
+                        // Get categories for this subscription
+                        Object.keys(subData.byCategory || {}).forEach(cat => {
+                            filteredCategories.add(cat);
+                        });
+                    }
+                });
+            });
+            
+            // Update summary card values (rounded to nearest integer with thousand separator)
+            if (totalCostLocalEl) {
+                totalCostLocalEl.textContent = formatNumberNoDecimals(filteredTotalCostLocal);
+            }
+            if (totalCostUsdEl) {
+                totalCostUsdEl.textContent = formatNumberNoDecimals(filteredTotalCostUSD);
+            }
+            if (subscriptionCountEl) {
+                subscriptionCountEl.textContent = filteredSubscriptions.size;
+            }
+            if (categoryCountEl) {
+                categoryCountEl.textContent = filteredCategories.size;
+            }
+            
+            // Calculate trend for filtered data
+            // Remove highest and lowest day from each half to reduce outlier impact
+            if (rawDailyData.length >= 4) {  // Need at least 4 days (2 per half after removing outliers)
+                const totalDays = rawDailyData.length;
+                const daysPerHalf = Math.floor(totalDays / 2);
+                
+                // If odd number of days, exclude the middle day(s) to ensure equal comparison
+                // First half: first N days
+                // Second half: last N days
+                
+                // Build first half data with costs
+                const firstHalfDays = [];
+                for (let i = 0; i < daysPerHalf; i++) {
+                    const day = rawDailyData[i];
+                    let dayCost = 0;
+                    Object.entries(day.subscriptions || {}).forEach(([subName, subData]) => {
+                        if (selectedSubscriptions.has(subName)) {
+                            dayCost += subData.total || 0;
+                        }
+                    });
+                    firstHalfDays.push({ index: i, cost: dayCost });
+                }
+                
+                // Build second half data with costs
+                const secondHalfDays = [];
+                for (let i = totalDays - daysPerHalf; i < totalDays; i++) {
+                    const day = rawDailyData[i];
+                    let dayCost = 0;
+                    Object.entries(day.subscriptions || {}).forEach(([subName, subData]) => {
+                        if (selectedSubscriptions.has(subName)) {
+                            dayCost += subData.total || 0;
+                        }
+                    });
+                    secondHalfDays.push({ index: i, cost: dayCost });
+                }
+                
+                // Remove highest and lowest day from first half
+                let firstHalf = 0;
+                if (firstHalfDays.length >= 3) {
+                    firstHalfDays.sort((a, b) => a.cost - b.cost);  // Sort by cost ascending
+                    const firstHalfFiltered = firstHalfDays.slice(1, -1);  // Remove first (lowest) and last (highest)
+                    firstHalf = firstHalfFiltered.reduce((sum, day) => sum + day.cost, 0);
+                } else {
+                    firstHalf = firstHalfDays.reduce((sum, day) => sum + day.cost, 0);
+                }
+                
+                // Remove highest and lowest day from second half
+                let secondHalf = 0;
+                if (secondHalfDays.length >= 3) {
+                    secondHalfDays.sort((a, b) => a.cost - b.cost);  // Sort by cost ascending
+                    const secondHalfFiltered = secondHalfDays.slice(1, -1);  // Remove first (lowest) and last (highest)
+                    secondHalf = secondHalfFiltered.reduce((sum, day) => sum + day.cost, 0);
+                } else {
+                    secondHalf = secondHalfDays.reduce((sum, day) => sum + day.cost, 0);
+                }
+                
+                let trendPercent = 0;
+                let trendDirection = 'neutral';
+                if (firstHalf > 0) {
+                    // Calculate percentage change: ((new - old) / old) * 100
+                    trendPercent = ((secondHalf - firstHalf) / firstHalf) * 100;
+                    trendDirection = trendPercent > 0 ? 'up' : (trendPercent < 0 ? 'down' : 'neutral');
+                }
+                
+                const trendPercentEl = document.getElementById('summary-trend-percent');
+                
+                if (trendPercentEl) {
+                    // Determine arrow and color class
+                    let arrow = '&#8594;'; // Default: stable
+                    let colorClass = 'trend-stable';
+                    
+                    if (trendDirection === 'up') {
+                        arrow = '&#8593;';
+                        colorClass = 'trend-increasing';
+                    } else if (trendDirection === 'down') {
+                        arrow = '&#8595;';
+                        colorClass = 'trend-decreasing';
+                    }
+                    
+                    // Update content with arrow (using innerHTML to render HTML entities)
+                    trendPercentEl.innerHTML = arrow + ' ' + Math.abs(trendPercent).toFixed(1) + '%';
+                    
+                    // Update color class
+                    trendPercentEl.classList.remove('trend-increasing', 'trend-decreasing', 'trend-stable');
+                    trendPercentEl.classList.add(colorClass);
+                }
+            }
         }
         
         function filterTableBySubscription(tableId) {
@@ -1480,6 +2288,16 @@ $datasetsByResourceJsonString
         }
         
         function filterCategorySections() {
+            // Filter subscription cards first (for subscription drilldown section)
+            document.querySelectorAll('.subscription-card').forEach(subCard => {
+                const subscription = subCard.getAttribute('data-subscription');
+                if (subscription && selectedSubscriptions.size > 0) {
+                    subCard.classList.toggle('filtered-out', !selectedSubscriptions.has(subscription));
+                } else {
+                    subCard.classList.remove('filtered-out');
+                }
+            });
+            
             // Filter resource rows within meter sections by subscription
             document.querySelectorAll('.resource-table tbody tr').forEach(row => {
                 const subscription = row.getAttribute('data-subscription');
@@ -1512,14 +2330,24 @@ $datasetsByResourceJsonString
                 }
             });
             
-            // Update visibility of category cards based on visible subcategories
-            document.querySelectorAll('.category-card').forEach(cat => {
+            // Update visibility of category cards based on visible subcategories (but not subscription cards or resource cards)
+            document.querySelectorAll('.category-card:not(.subscription-card):not(.resource-card)').forEach(cat => {
                 const visibleSubcats = cat.querySelectorAll('.subcategory-drilldown:not(.filtered-out)');
                 const totalSubcats = cat.querySelectorAll('.subcategory-drilldown');
                 if (totalSubcats.length > 0 && selectedSubscriptions.size > 0) {
                     cat.classList.toggle('filtered-out', visibleSubcats.length === 0);
                 } else {
                     cat.classList.remove('filtered-out');
+                }
+            });
+            
+            // Filter resource cards by subscription
+            document.querySelectorAll('.resource-card').forEach(resCard => {
+                const subscription = resCard.getAttribute('data-subscription');
+                if (subscription && selectedSubscriptions.size > 0) {
+                    resCard.classList.toggle('filtered-out', !selectedSubscriptions.has(subscription));
+                } else {
+                    resCard.classList.remove('filtered-out');
                 }
             });
         }
@@ -1542,29 +2370,46 @@ $datasetsByResourceJsonString
             element.classList.toggle('expanded');
         }
         
-        function toggleCategory(element) {
-            element.parentElement.classList.toggle('expanded');
+        function toggleCategory(element, event) {
+            // Stop event propagation to prevent parent category cards from toggling
+            if (event) {
+                event.stopPropagation();
+            }
+            const categoryCard = element.parentElement;
+            if (categoryCard && categoryCard.classList.contains('category-card')) {
+                categoryCard.classList.toggle('expanded');
+            }
         }
         
         function toggleSubCategory(element) {
-            element.parentElement.classList.toggle('expanded');
+            const subcategoryDrilldown = element.parentElement;
+            if (subcategoryDrilldown && subcategoryDrilldown.classList.contains('subcategory-drilldown')) {
+                subcategoryDrilldown.classList.toggle('expanded');
+            }
         }
         
         function toggleMeter(element) {
-            element.parentElement.classList.toggle('expanded');
+            const meterCard = element.parentElement;
+            if (meterCard && meterCard.classList.contains('meter-card')) {
+                meterCard.classList.toggle('expanded');
+            }
         }
         
         function filterResources() {
             const searchText = document.getElementById('resourceSearch').value.toLowerCase();
-            const rows = document.querySelectorAll('#resourcesTable tbody tr');
+            const resourceCards = document.querySelectorAll('.resource-card');
             
-            rows.forEach(row => {
-                const text = row.textContent.toLowerCase();
-                const matchesSearch = text.includes(searchText);
-                const subscription = row.getAttribute('data-subscription');
+            resourceCards.forEach(card => {
+                const text = card.textContent.toLowerCase();
+                const matchesSearch = searchText === '' || text.includes(searchText);
+                const subscription = card.getAttribute('data-subscription');
                 const matchesSubscription = selectedSubscriptions.size === 0 || selectedSubscriptions.has(subscription);
                 
-                row.style.display = (matchesSearch && matchesSubscription) ? '' : 'none';
+                if (matchesSearch && matchesSubscription) {
+                    card.classList.remove('filtered-out');
+                } else {
+                    card.classList.add('filtered-out');
+                }
             });
         }
     </script>
@@ -1583,8 +2428,12 @@ $datasetsByResourceJsonString
             TotalCostUSD = $totalCostUSD
             Currency = $currency
             SubscriptionCount = $subscriptionCount
+            CategoryCount = $byMeterCategory.Count
             MeterCategoryCount = $byMeterCategory.Count
             ResourceCount = $topResources.Count
+            TrendPercent = $trendPercent
+            TrendDirection = $trendDirection
+            DaysIncluded = $CostTrackingData.DaysToInclude
         }
     }
     catch {

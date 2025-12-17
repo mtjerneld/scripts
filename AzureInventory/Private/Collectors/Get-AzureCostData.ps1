@@ -16,7 +16,7 @@
     End date for the cost query (DateTime).
 
 .OUTPUTS
-    Array of PSCustomObject with cost data: Date, MeterCategory, MeterSubCategory, Meter, ResourceId, ResourceName, ResourceGroup, ResourceType, CostLocal, CostUSD, Currency
+    Array of PSCustomObject with cost data: Date, MeterCategory, MeterSubCategory, Meter, ResourceId, ResourceName, ResourceGroup, ResourceType, CostLocal, CostUSD, Currency, Quantity, UnitOfMeasure, UnitPrice, UnitPriceUSD
 #>
 function Get-AzureCostData {
     [CmdletBinding()]
@@ -74,42 +74,86 @@ function Get-AzureCostData {
         $allRows = [System.Collections.Generic.List[PSObject]]::new()
         $nextLink = $null
         $pageCount = 0
-        $maxPages = 50  # Prevent infinite loops
+        $maxPages = 200  # Increased to handle large datasets (200 pages * 5000 records = 1M records)
+        $maxRetriesPerPage = 5  # Maximum retries for rate limiting per page
+        $baseRetryDelay = 5  # Base delay in seconds for exponential backoff
+        $stopPagination = $false  # Flag to stop pagination loop
         
         do {
             $pageCount++
             Write-Verbose "Fetching cost data page $pageCount..."
             
-            # Use Invoke-AzRestMethod for automatic auth handling
-            try {
-                if ($nextLink) {
-                    # Follow nextLink for pagination
-                    $response = Invoke-AzRestMethod -Method GET -Uri $nextLink -ErrorAction Stop
-                } else {
-                    # Initial POST request
-                    $response = Invoke-AzRestMethod -Method POST -Uri $uri -Payload $requestBody -ErrorAction Stop
+            $retryCount = 0
+            $pageRetrieved = $false
+            
+            # Retry loop for rate limiting
+            while (-not $pageRetrieved -and $retryCount -lt $maxRetriesPerPage -and -not $stopPagination) {
+                # Use Invoke-AzRestMethod for automatic auth handling
+                try {
+                    if ($nextLink) {
+                        # Follow nextLink for pagination - Azure Cost Management API requires POST with same body
+                        $response = Invoke-AzRestMethod -Method POST -Uri $nextLink -Payload $requestBody -ErrorAction Stop
+                    } else {
+                        # Initial POST request
+                        $response = Invoke-AzRestMethod -Method POST -Uri $uri -Payload $requestBody -ErrorAction Stop
+                    }
+                    
+                    # Check for rate limiting in response status code
+                    if ($response.StatusCode -eq 429) {
+                        $retryCount++
+                        $retryDelay = $baseRetryDelay * [math]::Pow(2, $retryCount - 1)  # Exponential backoff: 5, 10, 20, 40, 80 seconds
+                        Write-Warning "Rate limited (429) on page $pageCount. Retry $retryCount/$maxRetriesPerPage. Waiting $retryDelay seconds..."
+                        Start-Sleep -Seconds $retryDelay
+                        continue  # Retry the same page
+                    }
+                    
+                    # If we get here, we have a valid response (or non-429 error)
+                    $pageRetrieved = $true
+                }
+                catch {
+                    # Handle rate limiting (429) in exception message
+                    if ($_.Exception.Message -match '429|throttl|TooManyRequests') {
+                        $retryCount++
+                        $retryDelay = $baseRetryDelay * [math]::Pow(2, $retryCount - 1)  # Exponential backoff
+                        Write-Warning "Rate limited (429) on page $pageCount. Retry $retryCount/$maxRetriesPerPage. Waiting $retryDelay seconds..."
+                        Start-Sleep -Seconds $retryDelay
+                        continue  # Retry the same page
+                    }
+                    elseif ($_.Exception.Message -match '405|MethodNotAllowed') {
+                        Write-Warning "Method not allowed (405) for subscription $SubscriptionId. This may indicate a pagination issue."
+                        Write-Verbose "Error: $($_.Exception.Message)"
+                        if ($nextLink) {
+                            Write-Verbose "Attempted to use nextLink: $nextLink"
+                        }
+                        # Stop pagination loop but return what we have so far
+                        $stopPagination = $true
+                        break
+                    }
+                    elseif ($_.Exception.Message -match '400|BadRequest') {
+                        Write-Warning "Bad Request for subscription $SubscriptionId. Cost data may not be available or query parameters invalid."
+                        Write-Verbose "Error: $($_.Exception.Message)"
+                        return @()  # Return empty array instead of throwing
+                    }
+                    elseif ($_.Exception.Message -match '404|NotFound') {
+                        Write-Verbose "Cost Management API not available for subscription $SubscriptionId (404). Skipping."
+                        return @()  # Return empty array
+                    }
+                    else {
+                        Write-Warning "Failed to fetch cost data for subscription ${SubscriptionId}: $($_.Exception.Message)"
+                        throw
+                    }
                 }
             }
-            catch {
-                # Handle rate limiting (429) and other errors
-                if ($_.Exception.Message -match '429|throttl|TooManyRequests') {
-                    Write-Warning "Rate limited. Waiting before retry..."
-                    Start-Sleep -Seconds 5
-                    continue
-                }
-                elseif ($_.Exception.Message -match '400|BadRequest') {
-                    Write-Warning "Bad Request for subscription $SubscriptionId. Cost data may not be available or query parameters invalid."
-                    Write-Verbose "Error: $($_.Exception.Message)"
-                    return @()  # Return empty array instead of throwing
-                }
-                elseif ($_.Exception.Message -match '404|NotFound') {
-                    Write-Verbose "Cost Management API not available for subscription $SubscriptionId (404). Skipping."
-                    return @()  # Return empty array
-                }
-                else {
-                    Write-Warning "Failed to fetch cost data for subscription ${SubscriptionId}: $($_.Exception.Message)"
-                    throw
-                }
+            
+            # If we exhausted retries, break and return what we have
+            if (-not $pageRetrieved -and -not $stopPagination) {
+                Write-Warning "Exhausted retry attempts for page $pageCount due to rate limiting. Returning $($allRows.Count) records collected so far."
+                break
+            }
+            
+            # If stop flag is set, break from pagination
+            if ($stopPagination) {
+                break
             }
             
             if ($response.StatusCode -eq 200 -and $response.Content) {
@@ -129,6 +173,12 @@ function Get-AzureCostData {
                     $meterIndex = -1
                     $resourceIdIndex = -1
                     $currencyIndex = -1
+                    $quantityIndex = -1
+                    $unitOfMeasureIndex = -1
+                    
+                    # Log all available columns for debugging
+                    $availableColumns = $columns | ForEach-Object { $_.name }
+                    Write-Verbose "Available columns in API response: $($availableColumns -join ', ')"
                     
                     for ($i = 0; $i -lt $columns.Count; $i++) {
                         $colName = $columns[$i].name
@@ -141,6 +191,8 @@ function Get-AzureCostData {
                             "Meter" { $meterIndex = $i }
                             "ResourceId" { $resourceIdIndex = $i }
                             "Currency" { $currencyIndex = $i }
+                            "Quantity" { $quantityIndex = $i }
+                            "UnitOfMeasure" { $unitOfMeasureIndex = $i }
                         }
                     }
                     
@@ -160,6 +212,8 @@ function Get-AzureCostData {
                         $meter = if ($meterIndex -ge 0) { [string]$row[$meterIndex] } else { "" }
                         $resourceId = if ($resourceIdIndex -ge 0) { [string]$row[$resourceIdIndex] } else { "" }
                         $currency = if ($currencyIndex -ge 0) { [string]$row[$currencyIndex] } else { "" }
+                        $quantity = if ($quantityIndex -ge 0) { [decimal]$row[$quantityIndex] } else { 0 }
+                        $unitOfMeasure = if ($unitOfMeasureIndex -ge 0) { [string]$row[$unitOfMeasureIndex] } else { "" }
                         
                         # Parse UsageDate (format: YYYYMMDD as integer)
                         $dateObj = $null
@@ -192,6 +246,10 @@ function Get-AzureCostData {
                             } else { "" }
                         }
                         
+                        # Calculate unit price if quantity is available
+                        $unitPrice = if ($quantity -gt 0) { $costLocal / $quantity } else { 0 }
+                        $unitPriceUSD = if ($quantity -gt 0) { $costUSD / $quantity } else { 0 }
+                        
                         # Create cost object
                         $costObj = [PSCustomObject]@{
                             Date = $dateObj
@@ -205,6 +263,10 @@ function Get-AzureCostData {
                             CostLocal = $costLocal
                             CostUSD = $costUSD
                             Currency = $currency
+                            Quantity = $quantity
+                            UnitOfMeasure = if ([string]::IsNullOrWhiteSpace($unitOfMeasure)) { "" } else { $unitOfMeasure }
+                            UnitPrice = $unitPrice
+                            UnitPriceUSD = $unitPriceUSD
                             SubscriptionId = $SubscriptionId
                         }
                         
@@ -212,6 +274,9 @@ function Get-AzureCostData {
                     }
                     
                     Write-Verbose "Retrieved $($rows.Count) rows from page $pageCount (total: $($allRows.Count))"
+                    if ($pageCount % 10 -eq 0) {
+                        Write-Host "    Progress: $pageCount pages, $($allRows.Count) records collected..." -ForegroundColor Gray
+                    }
                 }
                 else {
                     Write-Verbose "No cost data in response (empty result set)"
@@ -231,11 +296,23 @@ function Get-AzureCostData {
                     break
                 }
             }
-            else {
-                Write-Warning "Unexpected response status: $($response.StatusCode)"
+            elseif ($response.StatusCode -eq 429) {
+                # This should have been caught in the retry loop, but handle it here as a fallback
+                Write-Warning "Rate limited (429) on page $pageCount after retries. Returning $($allRows.Count) records collected so far."
                 break
             }
-        } while ($nextLink)
+            else {
+                if ($response.StatusCode -eq 405) {
+                    Write-Warning "Method not allowed (405) for subscription $SubscriptionId. Pagination may have failed."
+                    if ($nextLink) {
+                        Write-Verbose "Attempted to use nextLink: $nextLink"
+                    }
+                } else {
+                    Write-Warning "Unexpected response status: $($response.StatusCode) for subscription $SubscriptionId"
+                }
+                break
+            }
+        } while ($nextLink -and -not $stopPagination)
         
         Write-Verbose "Total cost rows retrieved: $($allRows.Count)"
         return @($allRows)

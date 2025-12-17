@@ -46,9 +46,10 @@ function Collect-CostData {
         $DaysToInclude = 1
     }
     
-    # Calculate date range
-    $endDate = Get-Date -Hour 0 -Minute 0 -Second 0 -Millisecond 0
-    $startDate = $endDate.AddDays(-$DaysToInclude)
+    # Calculate date range (exclude today - end date is yesterday)
+    # If DaysToInclude is 31, we want yesterday through 31 days ago (31 days total, excluding today)
+    $endDate = (Get-Date -Hour 0 -Minute 0 -Second 0 -Millisecond 0).AddDays(-1)
+    $startDate = $endDate.AddDays(-($DaysToInclude - 1))
     
     Write-Host "`n=== Collecting Cost Data ===" -ForegroundColor Cyan
     Write-Host "Period: $($startDate.ToString('yyyy-MM-dd')) to $($endDate.ToString('yyyy-MM-dd')) ($DaysToInclude days)" -ForegroundColor Gray
@@ -190,6 +191,15 @@ function Collect-CostData {
                     $meterItems = $meterGroup.Group
                     $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
                     $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
+                    $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
+                    # Get most common UnitOfMeasure for this meter
+                    $unitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
+                    $meterUnitOfMeasure = if ($unitOfMeasureGroups.Count -gt 0) {
+                        ($unitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
+                    } else { "" }
+                    # Calculate average unit price
+                    $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
+                    $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
                     
                     # Group by resource within meter
                     $meterResourceGroups = $meterItems | Where-Object { $_.ResourceName } | Group-Object ResourceName
@@ -216,6 +226,10 @@ function Collect-CostData {
                         Meter = $meter
                         CostLocal = $meterCostLocal
                         CostUSD = $meterCostUSD
+                        Quantity = $meterQuantity
+                        UnitOfMeasure = $meterUnitOfMeasure
+                        UnitPrice = $meterUnitPrice
+                        UnitPriceUSD = $meterUnitPriceUSD
                         ItemCount = $meterItems.Count
                         Resources = $meterResources
                     }
@@ -454,7 +468,7 @@ function Collect-CostData {
         Currency = $currency
         BySubscription = $bySubscription
         ByMeterCategory = $byMeterCategory
-        TopResources = @($byResource.Values | Sort-Object CostUSD -Descending | Select-Object -First 20)
+        TopResources = @($byResource.Values | Sort-Object { $_.CostUSD } -Descending | Select-Object -First 20)
         DailyTrend = @($dailyTrend.Values | Sort-Object Date)
         RawData = $allCostData
         SubscriptionCount = $Subscriptions.Count

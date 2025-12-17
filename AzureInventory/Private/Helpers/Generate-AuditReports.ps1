@@ -158,7 +158,7 @@ function Generate-AuditReports {
     try {
         Write-Host "  - Dashboard..." -NoNewline
         $dashboardPath = Join-Path $outputFolder "index.html"
-        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -SecurityReportData $securityReportData -VMBackupReportData $vmBackupReportData -AdvisorReportData $advisorReportData -ChangeTrackingReportData $changeTrackingReportData -NetworkInventoryReportData $networkInventoryReportData -OutputPath $dashboardPath -TenantId $tenantId
+        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -SecurityReportData $securityReportData -VMBackupReportData $vmBackupReportData -AdvisorReportData $advisorReportData -ChangeTrackingReportData $changeTrackingReportData -NetworkInventoryReportData $networkInventoryReportData -CostTrackingReportData $costTrackingReportData -OutputPath $dashboardPath -TenantId $tenantId
         Write-Host " OK" -ForegroundColor Green
     }
     catch {

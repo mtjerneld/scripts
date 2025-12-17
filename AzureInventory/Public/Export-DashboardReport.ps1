@@ -52,6 +52,9 @@ function Export-DashboardReport {
         
         [Parameter(Mandatory = $false)]
         [hashtable]$NetworkInventoryReportData = $null,
+        
+        [Parameter(Mandatory = $false)]
+        [hashtable]$CostTrackingReportData = $null,
 
         [Parameter(Mandatory = $true)]
         [string]$OutputPath,
@@ -154,6 +157,40 @@ function Export-DashboardReport {
             }
         }
     }
+    
+    # Cost Tracking metrics
+    if ($CostTrackingReportData) {
+        $costTotalLocal = $CostTrackingReportData.TotalCostLocal
+        $costTotalUSD = $CostTrackingReportData.TotalCostUSD
+        $costCurrency = $CostTrackingReportData.Currency
+        $costSubscriptionCount = $CostTrackingReportData.SubscriptionCount
+        $costCategoryCount = $CostTrackingReportData.CategoryCount
+        $costTrendPercent = $CostTrackingReportData.TrendPercent
+        $costTrendDirection = $CostTrackingReportData.TrendDirection
+        $costDays = $CostTrackingReportData.DaysIncluded
+    } else {
+        # Fallback: Try to get from AuditResult.CostTrackingData
+        $costTotalLocal = 0
+        $costTotalUSD = 0
+        $costCurrency = "SEK"
+        $costSubscriptionCount = 0
+        $costCategoryCount = 0
+        $costTrendPercent = 0
+        $costTrendDirection = "neutral"
+        $costDays = 30
+        if ($AuditResult.CostTrackingData -and $AuditResult.CostTrackingData.TotalCostLocal) {
+            $costTotalLocal = $AuditResult.CostTrackingData.TotalCostLocal
+            $costTotalUSD = $AuditResult.CostTrackingData.TotalCostUSD
+            $costCurrency = if ($AuditResult.CostTrackingData.Currency) { $AuditResult.CostTrackingData.Currency } else { "SEK" }
+            $costSubscriptionCount = if ($AuditResult.CostTrackingData.SubscriptionCount) { $AuditResult.CostTrackingData.SubscriptionCount } else { 0 }
+            $costCategoryCount = if ($AuditResult.CostTrackingData.ByMeterCategory) { $AuditResult.CostTrackingData.ByMeterCategory.Count } else { 0 }
+            $costDays = if ($AuditResult.CostTrackingData.DaysToInclude) { $AuditResult.CostTrackingData.DaysToInclude } else { 30 }
+        }
+    }
+    
+    # Format cost for display
+    $costTotalLocalFormatted = [math]::Round($costTotalLocal, 0).ToString("N0") -replace ',', ' '
+    $costTotalUSDFormatted = [math]::Round($costTotalUSD, 0).ToString("N0") -replace ',', ' '
     
     # Subscription count
     $subscriptionCount = ($AuditResult.SubscriptionsScanned | Measure-Object).Count
@@ -327,6 +364,32 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                     </div>
                 </div>
             </div>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Cost Tracking ($costDays days)</span>
+                    <a href="cost-tracking.html" class="card-link">View Details &rarr;</a>
+                </div>
+                <div class="card-body">
+                    <div class="score-display">
+                        <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, var(--bg-surface), var(--bg-hover));">
+                            <span class="score-value" style="color: var(--accent-green); font-size: 1.4rem;">$costCurrency $costTotalLocalFormatted</span>
+                            <span class="score-label">Total Cost</span>
+                        </div>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">USD Equivalent</span>
+                        <span class="metric-value">`$$costTotalUSDFormatted</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Subscriptions</span>
+                        <span class="metric-value">$costSubscriptionCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Cost Categories</span>
+                        <span class="metric-value">$costCategoryCount</span>
+                    </div>
+                </div>
+            </div>
         </div>
         
         <h2 style="margin-bottom: 20px; font-size: 1.3rem;">Detailed Reports</h2>
@@ -364,6 +427,13 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="report-info">
                     <h3>Change Tracking</h3>
                     <p>$changeTrackingTotal changes | $changeTrackingSecurityAlerts security alerts</p>
+                </div>
+            </a>
+            <a href="cost-tracking.html" class="report-link">
+                <div class="report-icon" style="background: rgba(46, 204, 113, 0.15); color: var(--accent-green);">&curren;</div>
+                <div class="report-info">
+                    <h3>Cost Tracking</h3>
+                    <p>$costCurrency $costTotalLocalFormatted ($costDays days) | $costSubscriptionCount subscriptions</p>
                 </div>
             </a>
         </div>
