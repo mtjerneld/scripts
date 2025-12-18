@@ -13,6 +13,9 @@
 !Config/ControlDefinitions.json
 !Config/DeprecationRules.json
 
+# EOL cache (downloaded files, not committed)
+Config/EOLCache/
+
 # Output directories
 output/
 reports/

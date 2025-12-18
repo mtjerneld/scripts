@@ -89,7 +89,7 @@ function New-EOLFinding {
         [string]$Component,
         
         [Parameter(Mandatory = $true)]
-        [ValidateSet('Deprecated', 'Retiring', 'RETIRED')]
+        [ValidateSet('Deprecated', 'Retiring', 'RETIRED', 'DEPRECATED', 'ANNOUNCED', 'UNKNOWN')]
         [string]$Status,
         
         [Parameter(Mandatory = $true)]
