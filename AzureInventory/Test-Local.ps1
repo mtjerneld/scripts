@@ -86,7 +86,10 @@ $functionsToRemove = @(
     # Test functions
     'Test-ChangeTracking',
     'Test-EOLTracking',
-    'Test-CostTracking'
+    'Test-CostTracking',
+    'Test-SecurityReport',
+    'Test-Advisor',
+    'Test-VMBackup'
 )
 
 foreach ($funcName in $functionsToRemove) {
@@ -173,41 +176,6 @@ Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | S
 }
 
 Write-Host "`n[OK] All functions loaded! Ready to test." -ForegroundColor Green
-Write-Host "Available functions:" -ForegroundColor Cyan
-$loadedFunctions = @()
-
-# Check Public functions
-Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" | ForEach-Object {
-    $funcName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
-    if (Get-Command $funcName -ErrorAction SilentlyContinue) {
-        Write-Host "  - $funcName [OK]" -ForegroundColor Green
-        $loadedFunctions += $funcName
-    } else {
-        Write-Host "  - $funcName [MISSING]" -ForegroundColor Red
-    }
-}
-
-# Check Collector functions (like Export-AdvisorReport)
-Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" | ForEach-Object {
-    $funcName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
-    if (Get-Command $funcName -ErrorAction SilentlyContinue) {
-        Write-Host "  - $funcName [OK]" -ForegroundColor Green
-        $loadedFunctions += $funcName
-    } else {
-        Write-Host "  - $funcName [MISSING]" -ForegroundColor Red
-    }
-}
-
-if ($loadedFunctions.Count -eq 0) {
-    Write-Host "`n[WARNING] No functions were loaded!" -ForegroundColor Yellow
-    Write-Host "Make sure you run this script with: . .\Test-Local.ps1" -ForegroundColor Yellow
-    Write-Host "(Note the dot and space before the script name)" -ForegroundColor Yellow
-} else {
-    Write-Host "`nTip: You can also define this function in your PowerShell profile:" -ForegroundColor Cyan
-    Write-Host '  function Reload-Audit { . .\Test-Local.ps1 }' -ForegroundColor Gray
-    Write-Host "Then just run: Reload-Audit" -ForegroundColor Gray
-}
-
 # Add Test-ChangeTracking function for quick testing
 function Test-ChangeTracking {
     [CmdletBinding()]
@@ -436,6 +404,339 @@ function Test-EOLTracking {
     }
 }
 
+# Quick test wrapper for Security report (only security scanners + EOL, then Export-SecurityReport)
+function Test-SecurityReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$SubscriptionIds,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Categories = @('All'),
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLevel2,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeEOLTracking,
+
+        [Parameter(Mandatory = $false)]
+        [string]$OutputFolder = "security-audit-test"
+    )
+
+    Write-Host "`n=== Testing Security Report (Security page only) ===" -ForegroundColor Cyan
+
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Error "Not connected to Azure. Run Connect-AzAccount first."
+        return
+    }
+
+    # Validate required helpers
+    foreach ($fn in @('Get-SubscriptionsToScan','Invoke-ScannerForSubscription','Export-SecurityReport')) {
+        if (-not (Get-Command -Name $fn -ErrorAction SilentlyContinue)) {
+            Write-Error "$fn function not found. Make sure Test-Local.ps1 has loaded all functions."
+            return
+        }
+    }
+
+    # Resolve output folder to absolute path
+    if (-not [System.IO.Path]::IsPathRooted($OutputFolder)) {
+        $OutputFolder = Join-Path (Get-Location).Path $OutputFolder
+    }
+    if (-not (Test-Path $OutputFolder)) {
+        New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
+    }
+
+    Write-Host "Output folder: $OutputFolder" -ForegroundColor Gray
+
+    # Get subscriptions in scope (reuse standard helper)
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $subscriptionResult = Get-SubscriptionsToScan -SubscriptionIds $SubscriptionIds -Errors $errors
+    $subscriptions = $subscriptionResult.Subscriptions
+
+    if ($subscriptions.Count -eq 0) {
+        Write-Error "No subscriptions found to scan for Security report."
+        return
+    }
+
+    # Map categories like Invoke-AzureSecurityAudit
+    $allScannerCategories = @('Storage','AppService','VM','ARC','Monitor','Network','SQL','KeyVault')
+    if ('All' -in $Categories) {
+        $categoriesToScan = $allScannerCategories
+    } else {
+        $categoriesToScan = $Categories
+    }
+
+    # Define scanners hashtable compatible with Invoke-ScannerForSubscription
+    $scanners = @{
+        'Storage'    = { 
+            param($subId, $subName, $includeL2) 
+            Get-AzureStorageFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 -CriticalStorageAccounts @()
+        }
+        'AppService' = { param($subId, $subName, $includeL2) Get-AzureAppServiceFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'VM'         = { param($subId, $subName, $includeL2) Get-AzureVirtualMachineFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'ARC'        = { param($subId, $subName, $includeL2) Get-AzureArcFindings -SubscriptionId $subId -SubscriptionName $subName }
+        'Monitor'    = { param($subId, $subName, $includeL2) Get-AzureMonitorFindings -SubscriptionId $subId -SubscriptionName $subName }
+        'Network'    = { param($subId, $subName, $includeL2) Get-AzureNetworkFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'SQL'        = { param($subId, $subName, $includeL2) Get-AzureSqlDatabaseFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+        'KeyVault'   = { param($subId, $subName, $includeL2) Get-AzureKeyVaultFindings -SubscriptionId $subId -SubscriptionName $subName -IncludeLevel2:$includeL2 }
+    }
+
+    # Collections just like Invoke-AzureSecurityAudit
+    $allFindings    = [System.Collections.Generic.List[PSObject]]::new()
+    $allEOLFindings = [System.Collections.Generic.List[PSObject]]::new()
+    $vmInventory    = [System.Collections.Generic.List[PSObject]]::new()
+
+    # Scan each subscription (security scanners only)
+    $total = $subscriptions.Count
+    $current = 0
+
+    foreach ($sub in $subscriptions) {
+        $current++
+        $subDisplayName = Get-SubscriptionDisplayName -Subscription $sub
+        Write-Host "`n[$current/$total] Scanning for Security: $subDisplayName ($($sub.Id))" -ForegroundColor Yellow
+
+        Invoke-ScannerForSubscription `
+            -Subscription $sub `
+            -CategoriesToScan $categoriesToScan `
+            -Scanners $scanners `
+            -IncludeLevel2:$IncludeLevel2 `
+            -AllFindings $allFindings `
+            -AllEOLFindings $allEOLFindings `
+            -VMInventory $vmInventory `
+            -Errors $errors
+    }
+
+    # Build minimal AuditResult object for Export-SecurityReport
+    $tenantId = $context.Tenant.Id
+    $auditResult = [PSCustomObject]@{
+        TenantId            = $tenantId
+        Findings            = @($allFindings)
+        EOLFindings         = @($allEOLFindings)
+        VMInventory         = $vmInventory
+        AdvisorRecommendations = @()   # not used by Security page
+        ChangeTrackingData  = @()
+        NetworkInventory    = [System.Collections.Generic.List[PSObject]]::new()
+        CostTrackingData    = @{}     # empty
+        ScanStart           = (Get-Date)
+        ScanEnd             = (Get-Date)
+        Errors              = $errors
+    }
+
+    # Security report output path
+    $securityPath = Join-Path $OutputFolder "security.html"
+
+    Write-Host "`nGenerating Security HTML report..." -ForegroundColor Cyan
+    try {
+        $null = Export-SecurityReport -AuditResult $auditResult -OutputPath $securityPath
+
+        if (Test-Path $securityPath) {
+            $fullPath = (Resolve-Path $securityPath).Path
+            Write-Host "`n[SUCCESS] Security report generated: $fullPath" -ForegroundColor Green
+            Write-Host "Opening security report..." -ForegroundColor Cyan
+            Start-Process $fullPath -ErrorAction SilentlyContinue
+        } else {
+            Write-Warning "Security report not found at: $securityPath"
+            Write-Host "Check the output in: $OutputFolder" -ForegroundColor Yellow
+        }
+    }
+    catch {
+        Write-Error "Security report test failed: $_"
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
+    }
+}
+
+# Quick test wrapper for Advisor report
+function Test-Advisor {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$SubscriptionIds,
+
+        [Parameter(Mandatory = $false)]
+        [string]$OutputPath = "advisor-test.html"
+    )
+
+    Write-Host "`n=== Testing Advisor Report ===" -ForegroundColor Cyan
+
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Error "Not connected to Azure. Run Connect-AzAccount first."
+        return
+    }
+
+    if (-not (Get-Command -Name Collect-AdvisorRecommendations -ErrorAction SilentlyContinue)) {
+        Write-Error "Collect-AdvisorRecommendations function not found. Make sure Test-Local.ps1 has loaded all functions."
+        return
+    }
+
+    if (-not (Get-Command -Name Export-AdvisorReport -ErrorAction SilentlyContinue)) {
+        Write-Error "Export-AdvisorReport function not found. Make sure Test-Local.ps1 has loaded all functions."
+        return
+    }
+
+    # Get subscriptions in scope
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $subscriptionResult = Get-SubscriptionsToScan -SubscriptionIds $SubscriptionIds -Errors $errors
+    $subscriptions = $subscriptionResult.Subscriptions
+
+    if ($subscriptions.Count -eq 0) {
+        Write-Error "No subscriptions found to scan for Advisor recommendations."
+        return
+    }
+
+    Write-Host "Collecting Advisor recommendations from $($subscriptions.Count) subscription(s)..." -ForegroundColor Cyan
+
+    $advisorRecs = [System.Collections.Generic.List[PSObject]]::new()
+    Collect-AdvisorRecommendations -Subscriptions $subscriptions -AdvisorRecommendations $advisorRecs -Errors $errors
+
+    Write-Host "`nTotal Advisor recommendations collected: $($advisorRecs.Count)" -ForegroundColor $(if ($advisorRecs.Count -gt 0) { 'Green' } else { 'Yellow' })
+
+    # Resolve full path
+    if (-not [System.IO.Path]::IsPathRooted($OutputPath)) {
+        $OutputPath = Join-Path (Get-Location).Path $OutputPath
+    }
+    Write-Host "Generating Advisor HTML report at: $OutputPath" -ForegroundColor Gray
+
+    $tenantId = if ($context.Tenant) { $context.Tenant.Id } else { "Unknown" }
+
+    try {
+        $null = Export-AdvisorReport -AdvisorRecommendations $advisorRecs -OutputPath $OutputPath -TenantId $tenantId
+
+        Write-Host "`n[SUCCESS] Advisor report generated: $OutputPath" -ForegroundColor Green
+
+        if (Test-Path $OutputPath) {
+            $fullPath = (Resolve-Path $OutputPath).Path
+            Write-Host "Opening Advisor report..." -ForegroundColor Cyan
+            Start-Process $fullPath -ErrorAction SilentlyContinue
+        } else {
+            Write-Warning "Advisor report file not found at: $OutputPath"
+        }
+    }
+    catch {
+        Write-Error "Failed to generate Advisor report: $_"
+        Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
+    }
+}
+
+# Quick test wrapper for VM Backup report
+function Test-VMBackup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$SubscriptionIds,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeLevel2,
+
+        [Parameter(Mandatory = $false)]
+        [string]$OutputPath = "vm-backup-test.html"
+    )
+
+    Write-Host "`n=== Testing VM Backup Report ===" -ForegroundColor Cyan
+
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Error "Not connected to Azure. Run Connect-AzAccount first."
+        return
+    }
+
+    if (-not (Get-Command -Name Get-AzureVirtualMachineFindings -ErrorAction SilentlyContinue)) {
+        Write-Error "Get-AzureVirtualMachineFindings function not found. Make sure Test-Local.ps1 has loaded all functions."
+        return
+    }
+
+    if (-not (Get-Command -Name Export-VMBackupReport -ErrorAction SilentlyContinue)) {
+        Write-Error "Export-VMBackupReport function not found. Make sure Test-Local.ps1 has loaded all functions."
+        return
+    }
+
+    # Get subscriptions in scope
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $subscriptionResult = Get-SubscriptionsToScan -SubscriptionIds $SubscriptionIds -Errors $errors
+    $subscriptions = $subscriptionResult.Subscriptions
+
+    if ($subscriptions.Count -eq 0) {
+        Write-Error "No subscriptions found to scan for VM backup."
+        return
+    }
+
+    $vmInventory = [System.Collections.Generic.List[PSObject]]::new()
+    $tenantId = if ($context.Tenant) { $context.Tenant.Id } else { "Unknown" }
+
+    Write-Host "Collecting VM inventory from $($subscriptions.Count) subscription(s)..." -ForegroundColor Cyan
+
+    foreach ($sub in $subscriptions) {
+        $subName = Get-SubscriptionDisplayName -Subscription $sub
+        Write-Host "`nCollecting from: $subName ($($sub.Id))" -ForegroundColor Yellow
+
+        try {
+            # Ensure correct context
+            $currentTenantId = if ($context.Tenant) { $context.Tenant.Id } else { $null }
+            Invoke-WithSuppressedWarnings {
+                if ($currentTenantId) {
+                    Set-AzContext -SubscriptionId $sub.Id -TenantId $currentTenantId -ErrorAction Stop | Out-Null
+                } else {
+                    Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
+                }
+            }
+
+            $result = Get-AzureVirtualMachineFindings -SubscriptionId $sub.Id -SubscriptionName $subName -IncludeLevel2:$IncludeLevel2
+
+            if ($result -and $result.Inventory) {
+                $added = 0
+                foreach ($vm in $result.Inventory) {
+                    if ($null -ne $vm) {
+                        $vmInventory.Add($vm)
+                        $added++
+                    }
+                }
+                Write-Host "  Added $added VM(s) to inventory" -ForegroundColor Green
+            } else {
+                Write-Host "  No VMs found in this subscription" -ForegroundColor Yellow
+            }
+        }
+        catch {
+            Write-Warning "Failed to collect VM inventory from $subName : $_"
+        }
+    }
+
+    Write-Host "`nTotal VMs in inventory: $($vmInventory.Count)" -ForegroundColor $(if ($vmInventory.Count -gt 0) { 'Green' } else { 'Yellow' })
+
+    # Resolve full path
+    if (-not [System.IO.Path]::IsPathRooted($OutputPath)) {
+        $OutputPath = Join-Path (Get-Location).Path $OutputPath
+    }
+    Write-Host "Generating VM Backup HTML report at: $OutputPath" -ForegroundColor Gray
+
+    try {
+        $null = Export-VMBackupReport -VMInventory $vmInventory -OutputPath $OutputPath -TenantId $tenantId
+
+        Write-Host "`n[SUCCESS] VM Backup report generated: $OutputPath" -ForegroundColor Green
+
+        if (Test-Path $OutputPath) {
+            $fullPath = (Resolve-Path $OutputPath).Path
+            Write-Host "Opening VM Backup report..." -ForegroundColor Cyan
+            Start-Process $fullPath -ErrorAction SilentlyContinue
+        } else {
+            Write-Warning "VM Backup report file not found at: $OutputPath"
+        }
+    }
+    catch {
+        Write-Error "Failed to generate VM Backup report: $_"
+        Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
+    }
+}
+
 # Add Test-NetworkInventory function for quick testing
 function Test-NetworkInventory {
     [CmdletBinding()]
@@ -591,7 +892,7 @@ function Test-CostTracking {
         [string]$OutputPath = "cost-tracking-test.html"
     )
     
-    Write-Host "`n=== Testing Cost Tracking ===" -ForegroundColor Cyan
+Write-Host \"`n=== Testing Cost Tracking ===\" -ForegroundColor Cyan
     
     # Check if connected to Azure
     $context = Get-AzContext
@@ -718,3 +1019,59 @@ function Test-CostTracking {
         }
     }
 }
+
+# Summary of loaded functions (backend + interactive) – printed last so that all Test-* are defined
+Write-Host "`nBackend / core functions (auto-loaded):" -ForegroundColor Cyan
+$backendFunctions = @()
+
+# Public exports
+Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object {
+    $funcName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+    $backendFunctions += $funcName
+}
+
+# Collector entrypoints
+Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object {
+    $funcName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+    $backendFunctions += $funcName
+}
+
+$backendFunctions = $backendFunctions | Sort-Object -Unique
+foreach ($funcName in $backendFunctions) {
+    if (Get-Command $funcName -ErrorAction SilentlyContinue) {
+        Write-Host "  - $funcName [OK]" -ForegroundColor Green
+    } else {
+        Write-Host "  - $funcName [MISSING]" -ForegroundColor Red
+    }
+}
+
+Write-Host "`nInteractive / test functions:" -ForegroundColor Cyan
+
+$userFunctions = @(
+    'Connect-AuditEnvironment',
+    'Invoke-AzureSecurityAudit',
+    'Test-SecurityReport',
+    'Test-ChangeTracking',
+    'Test-NetworkInventory',
+    'Test-VMBackup',
+    'Test-Advisor',
+    'Test-EOLTracking',
+    'Test-CostTracking'
+)
+
+foreach ($funcName in $userFunctions) {
+    if (Get-Command $funcName -ErrorAction SilentlyContinue) {
+        Write-Host "  - $funcName [OK]" -ForegroundColor Green
+    } else {
+        Write-Host "  - $funcName [MISSING]" -ForegroundColor Red
+    }
+}
+
+Write-Host "`nTip: Common test commands:" -ForegroundColor Cyan
+Write-Host "  - Connect-AuditEnvironment            # Sign in to Azure and select tenant/subscription" -ForegroundColor Gray
+Write-Host "  - Test-SecurityReport                 # Run security report (can take -SubscriptionIds/-Categories)" -ForegroundColor Gray
+Write-Host "  - Test-ChangeTracking                 # Generate Change Tracking report" -ForegroundColor Gray
+Write-Host "  - Test-NetworkInventory               # Generate Network Inventory report" -ForegroundColor Gray
+Write-Host "  - Test-VMBackup                       # Generate VM Backup report" -ForegroundColor Gray
+Write-Host "  - Test-Advisor                        # Generate Advisor report" -ForegroundColor Gray
+Write-Host "  - Test-CostTracking                   # Generate Cost Tracking report" -ForegroundColor Gray
