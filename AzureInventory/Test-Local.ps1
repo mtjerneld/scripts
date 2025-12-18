@@ -389,7 +389,10 @@ function Test-EOLTracking {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [string[]]$SubscriptionIds
+        [string[]]$SubscriptionIds,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$ForceRefresh
     )
 
     Write-Host "`n=== Testing EOL Tracking ===" -ForegroundColor Cyan
@@ -412,9 +415,12 @@ function Test-EOLTracking {
 
     $subIds = @($subscriptions.Id)
     Write-Host "Scanning EOL status across $($subIds.Count) subscription(s)..." -ForegroundColor Cyan
+    if ($ForceRefresh) {
+        Write-Host "Force refreshing EOL data from GitHub..." -ForegroundColor Yellow
+    }
 
     try {
-        $eolStatus = Get-EOLStatus -SubscriptionIds $subIds
+        $eolStatus = Get-EOLStatus -SubscriptionIds $subIds -ForceRefresh:$ForceRefresh
         if (-not $eolStatus -or $eolStatus.Count -eq 0) {
             Write-Host "No EOL components detected." -ForegroundColor Green
         } else {
