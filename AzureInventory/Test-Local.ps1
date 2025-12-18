@@ -358,12 +358,12 @@ function Test-EOLTracking {
     param(
         [Parameter(Mandatory = $false)]
         [string[]]$SubscriptionIds,
-        
+
         [Parameter(Mandatory = $false)]
-        [switch]$ForceRefresh
+        [string]$OutputFolder = "eol-test"
     )
 
-    Write-Host "`n=== Testing EOL Tracking ===" -ForegroundColor Cyan
+    Write-Host "`n=== Testing EOL Tracking (EOL page only) ===" -ForegroundColor Cyan
 
     $context = Get-AzContext
     if (-not $context) {
@@ -371,36 +371,210 @@ function Test-EOLTracking {
         return
     }
 
-    # Get subscriptions in scope (reuse helper)
+    # Check required core functions
+    foreach ($fn in @('Invoke-ScannerForSubscription','Get-SubscriptionsToScan','Export-EOLReport')) {
+        if (-not (Get-Command -Name $fn -ErrorAction SilentlyContinue)) {
+            Write-Error "$fn function not found. Make sure Test-Local.ps1 has loaded all functions."
+            return
+        }
+    }
+
+    # Resolve output folder to absolute path
+    if (-not [System.IO.Path]::IsPathRooted($OutputFolder)) {
+        $OutputFolder = Join-Path (Get-Location).Path $OutputFolder
+    }
+    if (-not (Test-Path $OutputFolder)) {
+        New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
+    }
+    Write-Host "Output folder: $OutputFolder" -ForegroundColor Gray
+
     $errors = [System.Collections.Generic.List[string]]::new()
+
+    # Get subscriptions in scope
     $subscriptionResult = Get-SubscriptionsToScan -SubscriptionIds $SubscriptionIds -Errors $errors
     $subscriptions = $subscriptionResult.Subscriptions
 
     if ($subscriptions.Count -eq 0) {
-        Write-Error "No subscriptions found to scan for EOL."
+        Write-Error "No enabled subscriptions found to test EOL report."
         return
     }
 
-    $subIds = @($subscriptions.Id)
-    Write-Host "Scanning EOL status across $($subIds.Count) subscription(s)..." -ForegroundColor Cyan
-    if ($ForceRefresh) {
-        Write-Host "Force refreshing EOL data from GitHub..." -ForegroundColor Yellow
+    # Define scanner functions (same set as Security/Test-SecurityReport)
+    $scanners = @{
+        'Storage'    = {
+            param($subId, $subName)
+            Get-AzureStorageFindings -SubscriptionId $subId -SubscriptionName $subName
+        }
+        'AppService' = {
+            param($subId, $subName)
+            Get-AzureAppServiceFindings -SubscriptionId $subId -SubscriptionName $subName
+        }
+        'VM'         = {
+            param($subId, $subName)
+            Get-AzureVirtualMachineFindings -SubscriptionId $subId -SubscriptionName $subName
+        }
+        'ARC'        = {
+            param($subId, $subName)
+            Get-AzureArcFindings -SubscriptionId $subId -SubscriptionName $subName
+        }
+        'Monitor'    = {
+            param($subId, $subName)
+            Get-AzureMonitorFindings -SubscriptionId $subId -SubscriptionName $subName
+        }
+        'Network'    = {
+            param($subId, $subName)
+            Get-AzureNetworkFindings -SubscriptionId $subId -SubscriptionName $subName
+        }
+        'SQL'        = {
+            param($subId, $subName)
+            Get-AzureSqlDatabaseFindings -SubscriptionId $subId -SubscriptionName $subName
+        }
+        'KeyVault'   = {
+            param($subId, $subName)
+            Get-AzureKeyVaultFindings -SubscriptionId $subId -SubscriptionName $subName
+        }
     }
 
-    try {
-        $eolStatus = Get-EOLStatus -SubscriptionIds $subIds -ForceRefresh:$ForceRefresh
-        if (-not $eolStatus -or $eolStatus.Count -eq 0) {
-            Write-Host "No EOL components detected." -ForegroundColor Green
-        } else {
-            Write-Host "Found $($eolStatus.Count) EOL component(s):" -ForegroundColor Yellow
-            foreach ($item in $eolStatus) {
-                Write-Host (" - {0} [{1}] Deadline: {2} ({3}d), Resources: {4}" -f `
-                    $item.Component, $item.Severity, $item.Deadline, $item.DaysUntilDeadline, $item.AffectedResourceCount)
+    $allEOLFindings = [System.Collections.Generic.List[PSObject]]::new()
+    $totalSubs = $subscriptions.Count
+    $currentSubIndex = 0
+
+    foreach ($sub in $subscriptions) {
+        $currentSubIndex++
+        $subDisplayName = Get-SubscriptionDisplayName -Subscription $sub
+        Write-Host "`n[$currentSubIndex/$totalSubs] Scanning for EOL: $subDisplayName ($($sub.Id))" -ForegroundColor Yellow
+
+        $dummyFindings = [System.Collections.Generic.List[PSObject]]::new()
+        $dummyVMInventory = [System.Collections.Generic.List[PSObject]]::new()
+
+        Invoke-ScannerForSubscription `
+            -Subscription $sub `
+            -CategoriesToScan $scanners.Keys `
+            -Scanners $scanners `
+            -IncludeLevel2:$false `
+            -AllFindings $dummyFindings `
+            -AllEOLFindings $allEOLFindings `
+            -VMInventory $dummyVMInventory `
+            -Errors $errors
+    }
+
+    Write-Host "`nTotal EOL findings collected: $($allEOLFindings.Count)" -ForegroundColor Cyan
+
+    # Convert List to array for Export-EOLReport (same as Invoke-AzureSecurityAudit)
+    # Use a temporary List to avoid array += performance issues, then convert to array
+    $tempList = [System.Collections.Generic.List[PSObject]]::new()
+    
+    if ($allEOLFindings -and $allEOLFindings.Count -gt 0) {
+        Write-Host "Test-EOLTracking: Converting EOL findings - Type: $($allEOLFindings.GetType().FullName), Count: $($allEOLFindings.Count)" -ForegroundColor Gray
+        
+        if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
+            # Convert List to array by iterating and adding to temp list
+            Write-Host "Test-EOLTracking: Converting List[PSObject] to array..." -ForegroundColor Gray
+            foreach ($finding in $allEOLFindings) {
+                if ($null -ne $finding) {
+                    $tempList.Add($finding)
+                    # Debug first finding
+                    if ($tempList.Count -eq 1) {
+                        Write-Host "Test-EOLTracking: First finding type: $($finding.GetType().FullName)" -ForegroundColor Gray
+                        if ($finding.PSObject.Properties.Name) {
+                            Write-Host "Test-EOLTracking: First finding properties: $($finding.PSObject.Properties.Name -join ', ')" -ForegroundColor Gray
+                            if ($finding.PSObject.Properties.Name -contains 'Component') {
+                                Write-Host "Test-EOLTracking: First finding Component: $($finding.Component)" -ForegroundColor Gray
+                            }
+                        }
+                    }
+                }
             }
+        } elseif ($allEOLFindings -is [System.Array]) {
+            Write-Host "Test-EOLTracking: Already an array, converting to List then array..." -ForegroundColor Gray
+            foreach ($finding in $allEOLFindings) {
+                if ($null -ne $finding) {
+                    $tempList.Add($finding)
+                }
+            }
+        } elseif ($allEOLFindings -is [System.Collections.IEnumerable] -and $allEOLFindings -isnot [string]) {
+            Write-Host "Test-EOLTracking: Converting IEnumerable to array..." -ForegroundColor Gray
+            foreach ($finding in $allEOLFindings) {
+                if ($null -ne $finding) {
+                    $tempList.Add($finding)
+                }
+            }
+        } else {
+            Write-Host "Test-EOLTracking: Single object, converting to array..." -ForegroundColor Gray
+            if ($null -ne $allEOLFindings) {
+                $tempList.Add($allEOLFindings)
+            }
+        }
+        
+        Write-Host "Test-EOLTracking: Converted to temp List - Count: $($tempList.Count)" -ForegroundColor Gray
+    } else {
+        Write-Host "Test-EOLTracking: No EOL findings to convert" -ForegroundColor Yellow
+    }
+    
+    # Convert temp List to array - always iterate manually to ensure proper conversion
+    # PowerShell's ToArray() and @() can sometimes have issues with PSObject collections
+    $eolFindingsArray = @()
+    foreach ($finding in $tempList) {
+        if ($null -ne $finding) {
+            $eolFindingsArray += $finding
+        }
+    }
+    Write-Host "Test-EOLTracking: Converted List to array by iteration, count = $($eolFindingsArray.Count)" -ForegroundColor Gray
+    
+    # Verify the array is properly constructed
+    if ($eolFindingsArray.Count -gt 0) {
+        Write-Host "Test-EOLTracking: Array verification - Type: $($eolFindingsArray.GetType().FullName), First element type: $($eolFindingsArray[0].GetType().FullName)" -ForegroundColor Gray
+    }
+    
+    # Debug: Log first finding if available
+    if ($eolFindingsArray.Count -gt 0) {
+        $firstFinding = $eolFindingsArray[0]
+        Write-Host "Test-EOLTracking: First EOL finding - Component: $($firstFinding.Component), Severity: $($firstFinding.Severity), ResourceName: $($firstFinding.ResourceName)" -ForegroundColor Gray
+    } else {
+        Write-Host "Test-EOLTracking: WARNING - Array is empty after conversion!" -ForegroundColor Yellow
+    }
+
+    $eolOutputPath = Join-Path $OutputFolder "eol.html"
+
+    # CRITICAL FIX: Convert List to Array before calling Export-EOLReport
+    # PowerShell parameter binding works correctly with [PSObject[]] when we pass an actual array
+    Write-Host "`n=== PRE-EXPORT DEBUG ===" -ForegroundColor Cyan
+    Write-Host "Type before conversion: $($tempList.GetType().FullName)" -ForegroundColor Gray
+    Write-Host "Count before conversion: $($tempList.Count)" -ForegroundColor Gray
+    
+    # Convert List to Array using @() operator
+    $eolArray = @($tempList)
+    
+    Write-Host "Type after conversion: $($eolArray.GetType().FullName)" -ForegroundColor Gray
+    Write-Host "Count after conversion: $($eolArray.Count)" -ForegroundColor Gray
+    if ($eolArray.Count -gt 0) {
+        Write-Host "First item type: $($eolArray[0].GetType().FullName)" -ForegroundColor Gray
+        Write-Host "First item Component: $($eolArray[0].Component)" -ForegroundColor Gray
+    }
+    Write-Host "=======================" -ForegroundColor Cyan
+
+    try {
+        # Pass the array directly - [PSObject[]] parameter type handles this correctly
+        $summary = Export-EOLReport -EOLFindings $eolArray -OutputPath $eolOutputPath -TenantId $context.Tenant.Id
+
+        if (Test-Path $eolOutputPath) {
+            $fullPath = (Resolve-Path $eolOutputPath).Path
+            Write-Host "`n[SUCCESS] EOL report generated: $fullPath" -ForegroundColor Green
+            if ($summary -is [hashtable]) {
+                Write-Host "  Components: $($summary.ComponentCount)  |  Critical: $($summary.CriticalCount)  High: $($summary.HighCount)  Medium: $($summary.MediumCount)  Low: $($summary.LowCount)" -ForegroundColor Gray
+            }
+            Write-Host "Opening EOL report..." -ForegroundColor Cyan
+            Start-Process $fullPath -ErrorAction SilentlyContinue
+        }
+        else {
+            Write-Warning "EOL report not found at: $eolOutputPath"
         }
     }
     catch {
-        Write-Error "EOL tracking test failed: $_"
+        Write-Error "Failed to generate EOL report: $_"
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
     }
 }
 
@@ -488,6 +662,9 @@ function Test-SecurityReport {
     $allEOLFindings = [System.Collections.Generic.List[PSObject]]::new()
     $vmInventory    = [System.Collections.Generic.List[PSObject]]::new()
 
+    # Track scan timing and subscription summary for metadata
+    $scanStartTime = Get-Date
+
     # Scan each subscription (security scanners only)
     $total = $subscriptions.Count
     $current = 0
@@ -508,20 +685,43 @@ function Test-SecurityReport {
             -Errors $errors
     }
 
+    $scanEndTime = Get-Date
+
+    # Build subscription summary similar to Invoke-AzureSecurityAudit
+    $subscriptionsScanned = @()
+    foreach ($sub in $subscriptions) {
+        $subName = Get-SubscriptionDisplayName -Subscription $sub
+        $subscriptionsScanned += [PSCustomObject]@{
+            Id   = $sub.Id
+            Name = $subName
+        }
+    }
+
+    # Compute unique resource count from findings
+    $uniqueResourceIds = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($finding in $allFindings) {
+        if ($finding.ResourceId) {
+            [void]$uniqueResourceIds.Add($finding.ResourceId)
+        }
+    }
+    $totalResources = $uniqueResourceIds.Count
+
     # Build minimal AuditResult object for Export-SecurityReport
     $tenantId = $context.Tenant.Id
     $auditResult = [PSCustomObject]@{
-        TenantId            = $tenantId
-        Findings            = @($allFindings)
-        EOLFindings         = @($allEOLFindings)
-        VMInventory         = $vmInventory
+        TenantId             = $tenantId
+        Findings             = @($allFindings)
+        EOLFindings          = @($allEOLFindings)
+        VMInventory          = $vmInventory
         AdvisorRecommendations = @()   # not used by Security page
-        ChangeTrackingData  = @()
-        NetworkInventory    = [System.Collections.Generic.List[PSObject]]::new()
-        CostTrackingData    = @{}     # empty
-        ScanStart           = (Get-Date)
-        ScanEnd             = (Get-Date)
-        Errors              = $errors
+        ChangeTrackingData   = @()
+        NetworkInventory     = [System.Collections.Generic.List[PSObject]]::new()
+        CostTrackingData     = @{}     # empty
+        ScanStartTime        = $scanStartTime
+        ScanEndTime          = $scanEndTime
+        SubscriptionsScanned = $subscriptionsScanned
+        TotalResources       = $totalResources
+        Errors               = $errors
     }
 
     # Security report output path

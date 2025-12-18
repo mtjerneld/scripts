@@ -153,6 +153,55 @@ function Generate-AuditReports {
     catch {
         Write-Host " ERROR: $_" -ForegroundColor Red
     }
+
+    # EOL / Deprecated Components report
+    try {
+        Write-Host "  - EOL Tracking..." -NoNewline
+        $eolReportPath = Join-Path $outputFolder "eol.html"
+        
+        # Normalize EOLFindings - handle List, Array, or null
+        $eolFindings = @()
+        if ($AuditResult.EOLFindings) {
+            Write-Verbose "Generate-AuditReports: EOLFindings type = $($AuditResult.EOLFindings.GetType().FullName), Count = $($AuditResult.EOLFindings.Count)"
+            
+            # If it's a List, convert to array
+            if ($AuditResult.EOLFindings -is [System.Collections.Generic.List[PSObject]]) {
+                $eolFindings = @($AuditResult.EOLFindings)
+            }
+            # If it's already an array
+            elseif ($AuditResult.EOLFindings -is [System.Array]) {
+                $eolFindings = $AuditResult.EOLFindings
+            }
+            # If it's IEnumerable (but not string)
+            elseif ($AuditResult.EOLFindings -is [System.Collections.IEnumerable] -and $AuditResult.EOLFindings -isnot [string]) {
+                $eolFindings = @($AuditResult.EOLFindings)
+            }
+            # Single object
+            else {
+                $eolFindings = @($AuditResult.EOLFindings)
+            }
+            
+            Write-Verbose "Generate-AuditReports: Normalized EOLFindings count = $($eolFindings.Count)"
+        } else {
+            Write-Verbose "Generate-AuditReports: No EOLFindings found in AuditResult"
+        }
+        
+        # Convert List to Array before calling Export-EOLReport (PowerShell parameter binding fix)
+        $eolFindingsArray = @($eolFindings)
+        $eolReportData = Export-EOLReport -EOLFindings $eolFindingsArray -OutputPath $eolReportPath -TenantId $tenantId
+        if ($eolReportData -is [hashtable]) {
+            # Attach a small EOL summary back to AuditResult for Dashboard use if needed
+            $AuditResult | Add-Member -MemberType NoteProperty -Name "EOLSummary" -Value $eolReportData -Force
+        }
+        Write-Host " OK" -ForegroundColor Green
+    }
+    catch {
+        Write-Host " ERROR: $_" -ForegroundColor Red
+        Write-Verbose "Generate-AuditReports: EOL report error details: $($_.Exception.Message)"
+        if ($_.Exception.InnerException) {
+            Write-Verbose "Generate-AuditReports: Inner exception: $($_.Exception.InnerException.Message)"
+        }
+    }
     
     # Generate Dashboard last, using metadata from all detail reports
     try {

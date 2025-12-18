@@ -242,3 +242,4 @@ function Get-EOLStatus {
     Write-Verbose "Generated $($results.Count) EOL component results"
     return $results
 }
+

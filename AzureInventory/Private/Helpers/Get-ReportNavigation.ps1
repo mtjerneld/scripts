@@ -15,18 +15,19 @@ function Get-ReportNavigation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Dashboard', 'Security', 'Network', 'VMBackup', 'Advisor', 'ChangeTracking', 'CostTracking')]
+        [ValidateSet('Dashboard', 'Security', 'Network', 'VMBackup', 'Advisor', 'ChangeTracking', 'CostTracking', 'EOL')]
         [string]$ActivePage = 'Dashboard'
     )
     
     $navItems = @(
-        @{ Name = 'Dashboard'; Href = 'index.html'; Page = 'Dashboard' }
-        @{ Name = 'Security Audit'; Href = 'security.html'; Page = 'Security' }
-        @{ Name = 'Network Inventory'; Href = 'network.html'; Page = 'Network' }
-        @{ Name = 'VM Backup'; Href = 'vm-backup.html'; Page = 'VMBackup' }
-        @{ Name = 'Advisor'; Href = 'advisor.html'; Page = 'Advisor' }
-        @{ Name = 'Change Tracking'; Href = 'change-tracking.html'; Page = 'ChangeTracking' }
-        @{ Name = 'Cost Tracking'; Href = 'cost-tracking.html'; Page = 'CostTracking' }
+        @{ Name = 'Dashboard';         Href = 'index.html';           Page = 'Dashboard' }
+        @{ Name = 'Security Audit';    Href = 'security.html';        Page = 'Security' }
+        @{ Name = 'Network Inventory'; Href = 'network.html';         Page = 'Network' }
+        @{ Name = 'VM Backup';         Href = 'vm-backup.html';       Page = 'VMBackup' }
+        @{ Name = 'Advisor';           Href = 'advisor.html';         Page = 'Advisor' }
+        @{ Name = 'Change Tracking';   Href = 'change-tracking.html'; Page = 'ChangeTracking' }
+        @{ Name = 'Cost Tracking';     Href = 'cost-tracking.html';   Page = 'CostTracking' }
+        @{ Name = 'EOL Tracking';      Href = 'eol.html';             Page = 'EOL' }
     )
     
     $navHtml = @"

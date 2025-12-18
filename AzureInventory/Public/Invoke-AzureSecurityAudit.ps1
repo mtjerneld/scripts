@@ -331,14 +331,34 @@ function Invoke-AzureSecurityAudit {
     $complianceScores = Calculate-CisComplianceScore -Findings $allFindings -IncludeLevel2:$IncludeLevel2
     
     # Ensure EOLFindings is converted to array for proper serialization
-    $eolFindingsArray = if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
-        @($allEOLFindings)
-    } elseif ($allEOLFindings) {
-        @($allEOLFindings)
-    } else {
-        @()
+    $eolFindingsArray = @()
+    if ($allEOLFindings -and $allEOLFindings.Count -gt 0) {
+        if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
+            # Convert List to array by iterating
+            foreach ($finding in $allEOLFindings) {
+                if ($null -ne $finding) {
+                    $eolFindingsArray += $finding
+                }
+            }
+        } elseif ($allEOLFindings -is [System.Array]) {
+            $eolFindingsArray = $allEOLFindings
+        } elseif ($allEOLFindings -is [System.Collections.IEnumerable] -and $allEOLFindings -isnot [string]) {
+            foreach ($finding in $allEOLFindings) {
+                if ($null -ne $finding) {
+                    $eolFindingsArray += $finding
+                }
+            }
+        } else {
+            $eolFindingsArray = @($allEOLFindings)
+        }
     }
     Write-Verbose "Converting EOLFindings: List count=$($allEOLFindings.Count), Array count=$($eolFindingsArray.Count)"
+    
+    # Debug: Log first finding if available
+    if ($eolFindingsArray.Count -gt 0) {
+        $firstFinding = $eolFindingsArray[0]
+        Write-Verbose "Invoke-AzureSecurityAudit: First EOL finding - Component: $($firstFinding.Component), Severity: $($firstFinding.Severity), ResourceName: $($firstFinding.ResourceName)"
+    }
     
     $result = [PSCustomObject]@{
         ScanStartTime           = $scanStart

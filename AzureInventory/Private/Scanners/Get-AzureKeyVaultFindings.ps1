@@ -36,6 +36,10 @@ function Get-AzureKeyVaultFindings {
     $findings = [System.Collections.Generic.List[PSObject]]::new()
     $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
     
+    # Track metadata for consolidated output
+    $uniqueResourcesScanned = @{}
+    $controlsEvaluated = 0
+    
     # Load deprecation rules for EOL checking
     $deprecationRules = Get-DeprecationRules
     $resourceTypeMapping = @{}
@@ -65,6 +69,10 @@ function Get-AzureKeyVaultFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     Write-Verbose "Loaded $($controls.Count) KeyVault control(s) from configuration"
@@ -85,6 +93,10 @@ function Get-AzureKeyVaultFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -93,15 +105,26 @@ function Get-AzureKeyVaultFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
     foreach ($vault in $vaults) {
         Write-Verbose "Scanning Key Vault: $($vault.VaultName)"
         
+        # Track this resource as scanned
+        $resourceKey = if ($vault.Id) { $vault.Id } else { "$($vault.ResourceGroupName)/$($vault.VaultName)" }
+        if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+            $uniqueResourcesScanned[$resourceKey] = $true
+        }
+        
         # 1. Purge Protection
         $purgeControl = $controlLookup["Key Vault Purge Protection"]
         if ($purgeControl) {
+            $controlsEvaluated++
             $purgeProtection = if ($vault.EnablePurgeProtection) { $true } else { $false }
             $status = if ($purgeProtection) { "PASS" } else { "FAIL" }
             
@@ -130,6 +153,7 @@ function Get-AzureKeyVaultFindings {
         # 2. Soft Delete
         $softDeleteControl = $controlLookup["Key Vault Soft Delete"]
         if ($softDeleteControl) {
+            $controlsEvaluated++
             # Soft delete is enabled by default in newer API versions and can't be disabled, 
             # but older vaults might not have it. The property is usually EnableSoftDelete.
             $softDelete = if ($vault.EnableSoftDelete) { $true } else { $false }
@@ -160,6 +184,7 @@ function Get-AzureKeyVaultFindings {
         # 3. RBAC Authorization
         $rbacControl = $controlLookup["Key Vault RBAC"]
         if ($rbacControl) {
+            $controlsEvaluated++
             $rbac = if ($vault.EnableRbacAuthorization) { $true } else { $false }
             $status = if ($rbac) { "PASS" } else { "FAIL" }
             
@@ -188,6 +213,7 @@ function Get-AzureKeyVaultFindings {
         # 4. Firewall (Network Acls)
         $firewallControl = $controlLookup["Key Vault Firewall"]
         if ($firewallControl) {
+            $controlsEvaluated++
             $defaultAction = if ($vault.NetworkRuleSet -and $vault.NetworkRuleSet.DefaultAction) { $vault.NetworkRuleSet.DefaultAction } else { "Allow" }
             $status = if ($defaultAction -eq "Deny") { "PASS" } else { "FAIL" }
             
@@ -249,10 +275,17 @@ function Get-AzureKeyVaultFindings {
         }
     }
     
-    # Return both security findings and EOL findings
+    # Calculate failure count
+    $failureCount = @($findings | Where-Object { $_.Status -eq 'FAIL' }).Count
+    
+    # Return both security findings and EOL findings with metadata
     return @{
         Findings = $findings
         EOLFindings = $eolFindings
+        ResourceCount = $uniqueResourcesScanned.Count
+        ControlCount = $controlsEvaluated
+        FailureCount = $failureCount
+        EOLCount = $eolFindings.Count
     }
 }
 

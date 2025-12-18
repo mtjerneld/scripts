@@ -31,6 +31,10 @@ function Get-AzureAppServiceFindings {
     $findings = [System.Collections.Generic.List[PSObject]]::new()
     $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
     
+    # Track metadata for consolidated output
+    $uniqueResourcesScanned = @{}
+    $controlsEvaluated = 0
+    
     # Load deprecation rules for EOL checking
     $deprecationRules = Get-DeprecationRules
     $resourceTypeMapping = @{}
@@ -60,6 +64,10 @@ function Get-AzureAppServiceFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     Write-Verbose "Loaded $($controls.Count) AppService control(s) from configuration"
@@ -114,6 +122,10 @@ function Get-AzureAppServiceFindings {
             return @{
                 Findings = $findings
                 EOLFindings = $eolFindings
+                ResourceCount = 0
+                ControlCount = 0
+                FailureCount = 0
+                EOLCount = 0
             }
         }
     }
@@ -124,6 +136,10 @@ function Get-AzureAppServiceFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -137,6 +153,10 @@ function Get-AzureAppServiceFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -161,6 +181,8 @@ function Get-AzureAppServiceFindings {
     foreach ($app in $webApps) {
         Write-Verbose "Scanning web app: $($app.Name)"
         
+        # Track this resource as scanned (after we get resourceGroupName)
+        
         # Get ResourceGroupName from property or extract from ResourceId
         $resourceGroupName = $app.ResourceGroupName
         if ([string]::IsNullOrWhiteSpace($resourceGroupName) -and $app.Id) {
@@ -176,6 +198,12 @@ function Get-AzureAppServiceFindings {
         }
         
         $processedCount++
+        
+        # Track this resource as scanned
+        $resourceKey = if ($app.Id) { $app.Id } else { "$resourceGroupName/$($app.Name)" }
+        if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+            $uniqueResourcesScanned[$resourceKey] = $true
+        }
         
         # Get web app configuration - REQUIRED for TLS version
         # Use REST API directly since Get-AzWebAppConfig doesn't exist
@@ -237,6 +265,7 @@ function Get-AzureAppServiceFindings {
         # Control: Minimum TLS 1.2
         $tlsControl = $controlLookup["App Service - Minimum TLS 1.2"]
         if ($tlsControl) {
+            $controlsEvaluated++
             # MinTlsVersion is in SiteConfig.MinTlsVersion property
             $minTlsVersion = $null
             
@@ -306,6 +335,7 @@ function Get-AzureAppServiceFindings {
         # Control: HTTPS Only
         $httpsControl = $controlLookup["App Service - HTTPS Only"]
         if ($httpsControl) {
+            $controlsEvaluated++
             $httpsOnly = if ($app.HttpsOnly -ne $null) { $app.HttpsOnly } else { $false }
             $httpsStatus = if ($httpsOnly) { "PASS" } else { "FAIL" }
             
@@ -334,6 +364,7 @@ function Get-AzureAppServiceFindings {
         # Control: FTP Disabled
         $ftpControl = $controlLookup["App Service - FTP Disabled"]
         if ($ftpControl) {
+            $controlsEvaluated++
             $ftpsState = $null
             if ($webAppConfig -and $webAppConfig.SiteConfig) {
                 $ftpsState = $webAppConfig.SiteConfig.FtpsState
@@ -374,6 +405,7 @@ function Get-AzureAppServiceFindings {
         # Control: Remote Debugging Disabled
         $remoteDebugControl = $controlLookup["App Service - Remote Debugging Disabled"]
         if ($remoteDebugControl) {
+            $controlsEvaluated++
             $remoteDebugging = if ($webAppConfig -and $webAppConfig.SiteConfig -and $webAppConfig.SiteConfig.RemoteDebuggingEnabled) { 
                 $webAppConfig.SiteConfig.RemoteDebuggingEnabled 
             } else { 
@@ -506,10 +538,17 @@ function Get-AzureAppServiceFindings {
         Write-Verbose "AppService scan completed: $($findings.Count) findings, $($eolFindings.Count) EOL findings from $processedCount web app(s)"
     }
     
-    # Return both security findings and EOL findings
+    # Calculate failure count
+    $failureCount = @($findings | Where-Object { $_.Status -eq 'FAIL' }).Count
+    
+    # Return both security findings and EOL findings with metadata
     return @{
         Findings = $findings
         EOLFindings = $eolFindings
+        ResourceCount = $uniqueResourcesScanned.Count
+        ControlCount = $controlsEvaluated
+        FailureCount = $failureCount
+        EOLCount = $eolFindings.Count
     }
 }
 

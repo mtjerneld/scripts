@@ -31,8 +31,10 @@ function Get-AzureNetworkFindings {
     # Suppress Azure PowerShell module warnings about unapproved verbs
     $findings = [System.Collections.Generic.List[PSObject]]::new()
     $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
-    $resourcesChecked = 0
-    $checksPerformed = 0
+    
+    # Track metadata for consolidated output
+    $uniqueResourcesScanned = @{}
+    $controlsEvaluated = 0
     
     # Load deprecation rules for EOL checking
     $deprecationRules = Get-DeprecationRules
@@ -67,6 +69,10 @@ function Get-AzureNetworkFindings {
             return @{
                 Findings = $findings
                 EOLFindings = $eolFindings
+                ResourceCount = 0
+                ControlCount = 0
+                FailureCount = 0
+                EOLCount = 0
             }
         }
         Write-Verbose "Loaded $($controls.Count) Network control(s) from configuration"
@@ -77,6 +83,10 @@ function Get-AzureNetworkFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -101,9 +111,14 @@ function Get-AzureNetworkFindings {
     }
     
     if ($nsgs -and $nsgs.Count -gt 0) {
-        $resourcesChecked += $nsgs.Count
         foreach ($nsg in $nsgs) {
             Write-Verbose "Scanning NSG: $($nsg.Name)"
+            
+            # Track this resource as scanned
+            $resourceKey = if ($nsg.Id) { $nsg.Id } else { "$($nsg.ResourceGroupName)/$($nsg.Name)" }
+            if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+                $uniqueResourcesScanned[$resourceKey] = $true
+            }
             
             # Track if we found issues for each control per NSG
             $rdpControl = $controlLookup["No RDP from Internet"]
@@ -167,7 +182,7 @@ function Get-AzureNetworkFindings {
                 # Create findings per NSG (not per rule) - one finding per control
                 # Control 6.1: No RDP from Internet
                 if ($rdpControl) {
-                    $checksPerformed++
+                    $controlsEvaluated++
                     if ($hasRdpIssue) {
                         $remediationCmd = $rdpControl.remediationCommand -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName
                         $finding = New-SecurityFinding `
@@ -216,7 +231,7 @@ function Get-AzureNetworkFindings {
                 
                 # Control 6.2: No SSH from Internet
                 if ($sshControl) {
-                    $checksPerformed++
+                    $controlsEvaluated++
                     $descAndRefs = Get-ControlDescriptionAndReferences -Control $sshControl
                     $description = $descAndRefs.Description
                     $references = $descAndRefs.References
@@ -271,7 +286,7 @@ function Get-AzureNetworkFindings {
                 
                 # Control: No Any-to-Any Rules
                 if ($anyToAnyControl) {
-                    $checksPerformed++
+                    $controlsEvaluated++
                     if ($hasAnyToAnyIssue) {
                         $remediationCmd = $anyToAnyControl.remediationCommand -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName
                         $finding = New-SecurityFinding `
@@ -333,10 +348,16 @@ function Get-AzureNetworkFindings {
             }
             
             if ($vnets -and $vnets.Count -gt 0) {
-                $resourcesChecked += $vnets.Count
+                # Track VNets as resources scanned
+                foreach ($vnet in $vnets) {
+                    $resourceKey = if ($vnet.Id) { $vnet.Id } else { "$($vnet.ResourceGroupName)/$($vnet.Name)" }
+                    if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+                        $uniqueResourcesScanned[$resourceKey] = $true
+                    }
+                }
                 $regions = $vnets | Select-Object -ExpandProperty Location -Unique
                 foreach ($region in $regions) {
-                    $checksPerformed++
+                    $controlsEvaluated++
                     try {
                         $networkWatcher = Invoke-AzureApiWithRetry {
                             Get-AzNetworkWatcher -Location $region -ErrorAction SilentlyContinue
@@ -387,15 +408,20 @@ function Get-AzureNetworkFindings {
             }
             
             if ($gatewayResources -and $gatewayResources.Count -gt 0) {
-                $resourcesChecked += $gatewayResources.Count
                 foreach ($gwResource in $gatewayResources) {
+                    # Track gateway as resource scanned
+                    $resourceKey = if ($gwResource.Id) { $gwResource.Id } else { "$($gwResource.ResourceGroupName)/$($gwResource.Name)" }
+                    if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+                        $uniqueResourcesScanned[$resourceKey] = $true
+                    }
+                    
                     try {
                         $gateway = Invoke-AzureApiWithRetry {
                             Get-AzVirtualNetworkGateway -ResourceGroupName $gwResource.ResourceGroupName -Name $gwResource.Name -ErrorAction SilentlyContinue
                         }
                         
                         if ($gateway) {
-                            $checksPerformed++
+                            $controlsEvaluated++
                             $skuName = if ($gateway.Sku) { $gateway.Sku.Name } else { "Unknown" }
                             
                             # Check if SKU is deprecated (VpnGw1-5 without AZ suffix, but not ExpressRoute SKUs)
@@ -518,7 +544,12 @@ function Get-AzureNetworkFindings {
             
             if ($vnets -and $vnets.Count -gt 0) {
                 foreach ($vnet in $vnets) {
-                    $checksPerformed++
+                    # Track VNet as resource scanned
+                    $resourceKey = if ($vnet.Id) { $vnet.Id } else { "$($vnet.ResourceGroupName)/$($vnet.Name)" }
+                    if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+                        $uniqueResourcesScanned[$resourceKey] = $true
+                    }
+                    $controlsEvaluated++
                     $ddosEnabled = if ($vnet.EnableDdosProtection) { $vnet.EnableDdosProtection } else { $false }
                     
                     # Create finding for both PASS and FAIL to show all checks performed
@@ -563,9 +594,13 @@ function Get-AzureNetworkFindings {
             Write-Verbose "Found $($firewalls.Count) Azure Firewall(s) for Threat Intel check"
             
             if ($firewalls -and $firewalls.Count -gt 0) {
-                $resourcesChecked += $firewalls.Count
                 foreach ($firewall in $firewalls) {
-                    $checksPerformed++
+                    # Track firewall as resource scanned
+                    $resourceKey = if ($firewall.Id) { $firewall.Id } else { "$($firewall.ResourceGroupName)/$($firewall.Name)" }
+                    if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+                        $uniqueResourcesScanned[$resourceKey] = $true
+                    }
+                    $controlsEvaluated++
                     try {
                         $policy = Invoke-AzureApiWithRetry {
                             Get-AzFirewallPolicy -ResourceId $firewall.FirewallPolicy.Id -ErrorAction SilentlyContinue
@@ -612,17 +647,24 @@ function Get-AzureNetworkFindings {
         Write-Verbose "Control 'Azure Firewall Threat Intel' not found in controlLookup or not enabled"
     }
     
-    Write-Verbose "Network scan completed. Resources checked: $resourcesChecked, Checks performed: $checksPerformed, Total findings: $($findings.Count), EOL findings: $($eolFindings.Count)"
+    Write-Verbose "Network scan completed. Resources scanned: $($uniqueResourcesScanned.Count), Controls evaluated: $controlsEvaluated, Total findings: $($findings.Count), EOL findings: $($eolFindings.Count)"
     
     # If no resources were found but controls are enabled, log a warning
-    if ($resourcesChecked -eq 0 -and $controls.Count -gt 0) {
+    if ($uniqueResourcesScanned.Count -eq 0 -and $controls.Count -gt 0) {
         Write-Verbose "No Network resources (NSGs, VNets, Firewalls) found in subscription $SubscriptionName, but $($controls.Count) control(s) are enabled"
     }
     
-    # Return both security findings and EOL findings
+    # Calculate failure count
+    $failureCount = @($findings | Where-Object { $_.Status -eq 'FAIL' }).Count
+    
+    # Return both security findings and EOL findings with metadata
     return @{
         Findings = $findings
         EOLFindings = $eolFindings
+        ResourceCount = $uniqueResourcesScanned.Count
+        ControlCount = $controlsEvaluated
+        FailureCount = $failureCount
+        EOLCount = $eolFindings.Count
     }
 }
 

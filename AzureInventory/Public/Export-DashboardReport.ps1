@@ -64,32 +64,48 @@ function Export-DashboardReport {
     
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     
-    # Security metrics - MUST come from Security Report (no inventory/calculation of counts)
+    # Security metrics - MUST come from Security Report (no additional inventory)
     if ($SecurityReportData) {
-        $securityScore = $SecurityReportData.SecurityScore
-        $totalChecks = $SecurityReportData.TotalChecks
-        $passedChecks = $SecurityReportData.PassedChecks
-        $criticalCount = $SecurityReportData.CriticalCount
-        $highCount = $SecurityReportData.HighCount
-        $mediumCount = $SecurityReportData.MediumCount
-        $lowCount = $SecurityReportData.LowCount
-        $deprecatedCount = $SecurityReportData.DeprecatedCount
-        $pastDueCount = $SecurityReportData.PastDueCount
-        # Simple sum calculation (allowed - not inventoring, just summing provided values)
+        $securityScore   = $SecurityReportData.SecurityScore
+        $totalChecks     = $SecurityReportData.TotalChecks
+        $passedChecks    = $SecurityReportData.PassedChecks
+        $criticalCount   = $SecurityReportData.CriticalCount
+        $highCount       = $SecurityReportData.HighCount
+        $mediumCount     = $SecurityReportData.MediumCount
+        $lowCount        = $SecurityReportData.LowCount
         $totalFailedFindings = $criticalCount + $highCount + $mediumCount + $lowCount
     } else {
         # Fallback: Set defaults if Security Report data not available
-        $securityScore = 0
-        $totalChecks = 0
-        $passedChecks = 0
-        $criticalCount = 0
-        $highCount = 0
-        $mediumCount = 0
-        $lowCount = 0
+        $securityScore   = 0
+        $totalChecks     = 0
+        $passedChecks    = 0
+        $criticalCount   = 0
+        $highCount       = 0
+        $mediumCount     = 0
+        $lowCount        = 0
         $totalFailedFindings = 0
-        $deprecatedCount = 0
-        $pastDueCount = 0
     }
+
+    # EOL / Deprecated components metrics (from EOLSummary on AuditResult or defaults)
+    $eolTotalFindings   = 0
+    $eolComponentCount  = 0
+    $eolCriticalCount   = 0
+    $eolHighCount       = 0
+    $eolMediumCount     = 0
+    $eolLowCount        = 0
+    $eolSoonestDeadline = $null
+    
+    if ($AuditResult.PSObject.Properties.Name -contains 'EOLSummary' -and $AuditResult.EOLSummary) {
+        $eolSummary = $AuditResult.EOLSummary
+        if ($eolSummary.TotalFindings)   { $eolTotalFindings  = $eolSummary.TotalFindings }
+        if ($eolSummary.ComponentCount)  { $eolComponentCount = $eolSummary.ComponentCount }
+        if ($eolSummary.CriticalCount)   { $eolCriticalCount  = $eolSummary.CriticalCount }
+        if ($eolSummary.HighCount)       { $eolHighCount      = $eolSummary.HighCount }
+        if ($eolSummary.MediumCount)     { $eolMediumCount    = $eolSummary.MediumCount }
+        if ($eolSummary.LowCount)        { $eolLowCount       = $eolSummary.LowCount }
+        if ($eolSummary.SoonestDeadline) { $eolSoonestDeadline = $eolSummary.SoonestDeadline }
+    }
+    $eolSoonestDeadlineText = if ($eolSoonestDeadline) { $eolSoonestDeadline } else { "N/A" }
     
     # VM Backup metrics - use pre-calculated data from VM Backup Report if available
     if ($VMBackupReportData) {
@@ -243,9 +259,9 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="value">$subscriptionCount</div>
                 <div class="label">Subscriptions Scanned</div>
             </div>
-            <div class="quick-stat" style="$(if ($deprecatedCount -gt 0) { 'border-color: var(--accent-red);' })">
-                <div class="value" style="$(if ($deprecatedCount -gt 0) { 'color: var(--accent-red);' })">$(if ($deprecatedCount) { $deprecatedCount } else { 0 })</div>
-                <div class="label">Deprecated Components</div>
+            <div class="quick-stat" style="$(if ($eolTotalFindings -gt 0) { 'border-color: var(--accent-red);' })">
+                <div class="value" style="$(if ($eolTotalFindings -gt 0) { 'color: var(--accent-red);' })">$eolTotalFindings</div>
+                <div class="label">EOL / Deprecated Resources (Components: $eolComponentCount, Next: $eolSoonestDeadlineText)</div>
             </div>
             <div class="quick-stat">
                 <div class="value">$totalFailedFindings</div>
@@ -399,6 +415,13 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="report-info">
                     <h3>Security Audit Report</h3>
                     <p>$($failedFindings.Count) issues across $(@($failedFindings | Select-Object -ExpandProperty Category -Unique).Count) categories</p>
+                </div>
+            </a>
+            <a href="eol.html" class="report-link">
+                <div class="report-icon" style="background: rgba(231, 76, 60, 0.15); color: #ff6b6b;">&#9888;</div>
+                <div class="report-info">
+                    <h3>EOL / Deprecated Components</h3>
+                    <p>$eolTotalFindings resources | $eolComponentCount components | Next deadline: $eolSoonestDeadlineText</p>
                 </div>
             </a>
             <a href="vm-backup.html" class="report-link">

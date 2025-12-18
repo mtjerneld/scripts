@@ -31,44 +31,6 @@ function Export-SecurityReport {
     $findings = if ($AuditResult.Findings) { @($AuditResult.Findings) } else { @() }
     $failedFindings = @($findings | Where-Object { $_.Status -eq 'FAIL' })
     
-    # Get EOL findings from separate EOLFindings collection (new structure)
-    $eolFindings = @()
-    if ($AuditResult.EOLFindings) {
-        # Handle both List and Array types
-        if ($AuditResult.EOLFindings -is [System.Collections.Generic.List[PSObject]]) {
-            $eolFindings = @($AuditResult.EOLFindings)
-        } elseif ($AuditResult.EOLFindings -is [System.Array]) {
-            $eolFindings = @($AuditResult.EOLFindings)
-        } elseif ($AuditResult.EOLFindings -is [System.Collections.IEnumerable] -and $AuditResult.EOLFindings -isnot [string]) {
-            $eolFindings = @($AuditResult.EOLFindings)
-        } else {
-            # Single object or null
-            if ($AuditResult.EOLFindings) {
-                $eolFindings = @($AuditResult.EOLFindings)
-            }
-        }
-    }
-    Write-Verbose "EOL Findings count: $($eolFindings.Count)"
-    Write-Verbose "Total security findings count: $($findings.Count)"
-    
-    # Debug: Log EOL findings details
-    if ($eolFindings.Count -gt 0) {
-        Write-Verbose "EOL Findings sample (first 3):"
-        $eolFindings | Select-Object -First 3 | ForEach-Object {
-            Write-Verbose "  - $($_.ResourceName) ($($_.ResourceType)): $($_.Component), Severity=$($_.Severity), DaysUntil=$($_.DaysUntilDeadline)"
-        }
-    } else {
-        Write-Verbose "WARNING: No EOL findings found in AuditResult.EOLFindings"
-        if ($AuditResult.EOLFindings) {
-            Write-Verbose "AuditResult.EOLFindings type: $($AuditResult.EOLFindings.GetType().FullName)"
-            Write-Verbose "AuditResult.EOLFindings is null: $($null -eq $AuditResult.EOLFindings)"
-            Write-Verbose "AuditResult.EOLFindings count: $($AuditResult.EOLFindings.Count)"
-            Write-Verbose "AuditResult.EOLFindings value: $($AuditResult.EOLFindings | ConvertTo-Json -Depth 2)"
-        } else {
-            Write-Verbose "AuditResult.EOLFindings is null or empty"
-        }
-    }
-    
     # Create output directory if needed
     $outputDir = Split-Path -Parent $OutputPath
     if ($outputDir -and -not (Test-Path $outputDir)) {
@@ -109,19 +71,9 @@ function Export-SecurityReport {
             $securityScore = if ($totalChecks -gt 0) { [math]::Round(($passedChecks / $totalChecks) * 100, 1) } else { 0 }
         }
         
-        # Calculate deprecated components counts (using new EOLFindings structure)
-        $deprecatedCount = $eolFindings.Count
-        $pastDueCount = if ($deprecatedCount -gt 0) {
-            @($eolFindings | Where-Object { 
-                $_.DaysUntilDeadline -lt 0
-            }).Count
-        } else { 0 }
-        
-        # Count by severity for EOL findings
-        $eolCriticalCount = @($eolFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
-        $eolHighCount = @($eolFindings | Where-Object { $_.Severity -eq 'High' }).Count
-        $eolMediumCount = @($eolFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
-        $eolLowCount = @($eolFindings | Where-Object { $_.Severity -eq 'Low' }).Count
+        # Deprecated components are now tracked on the dedicated EOL report, not on the Security page
+        $deprecatedCount = 0
+        $pastDueCount = 0
         
         # Build HTML
         $html = @"
@@ -239,106 +191,6 @@ $(Get-ReportNavigation -ActivePage "Security")
             </div>
         </div>
 "@
-        }
-        
-        # EOL/Deprecated Components Alert - Always show heading (using new EOLFindings structure)
-        $eolCount = $deprecatedCount
-        $upcomingCount = $eolCount - $pastDueCount
-        
-        $html += @"
-        <h2>Deprecated Components Requiring Action</h2>
-        <div class="subscription-box" id="deprecated-components-box" data-always-visible="true" style="border-color: var(--danger); display: block !important; visibility: visible !important;">
-            <div class="subscription-header collapsed" data-subscription-id="deprecated-components" style="cursor: pointer; background-color: rgba(255, 107, 107, 0.1); display: flex !important;">
-                <span class="expand-icon"></span>
-                <h3 style="color: var(--danger); margin: 0;">Deprecated Components$(if ($eolCount -gt 0) { " Found ($eolCount items)" } else { "" })</h3>
-                $(if ($eolCount -gt 0) {
-                    "<span class=`"header-severity-summary`">
-                        <span class=`"severity-count critical`">$eolCriticalCount Critical</span>
-                        <span class=`"severity-count high`">$eolHighCount High</span>
-                        <span class=`"severity-count medium`">$eolMediumCount Medium</span>
-                        <span class=`"severity-count low`">$eolLowCount Low</span>
-                    </span>"
-                } else { "" })
-            </div>
-            <div class="subscription-content" id="deprecated-components" style="display: none;">
-"@
-        if ($eolCount -gt 0) {
-            # Sort by severity (Critical first), then days until deadline
-            $severityOrder = @{ "Critical" = 0; "High" = 1; "Medium" = 2; "Low" = 3 }
-            $sortedEolFindings = $eolFindings | Sort-Object {
-                $sev = if ($severityOrder.ContainsKey($_.Severity)) { $severityOrder[$_.Severity] } else { 99 }
-                $days = if ($_.DaysUntilDeadline -ne $null) { $_.DaysUntilDeadline } else { 99999 }
-                "$sev|$days"
-            }
-            
-            $html += @"
-                <table class="resource-summary-table">
-                    <thead>
-                        <tr>
-                            <th>Severity</th>
-                            <th>Subscription</th>
-                            <th>Resource Group</th>
-                            <th>Resource</th>
-                            <th>Component</th>
-                            <th>Deadline</th>
-                            <th>Days Until</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-"@
-            foreach ($eolFinding in $sortedEolFindings) {
-                $severity = $eolFinding.Severity
-                $severityLower = $severity.ToLower()
-                $daysUntil = $eolFinding.DaysUntilDeadline
-                $deadline = $eolFinding.Deadline
-                $status = $eolFinding.Status
-                $statusLower = $status.ToLower()
-                
-                $daysText = if ($daysUntil -ne $null) {
-                    if ($daysUntil -lt 0) { "Past due ($([math]::Abs($daysUntil)) days)" } else { "$daysUntil days" }
-                } else {
-                    "N/A"
-                }
-                
-                $statusClass = if ($daysUntil -lt 0) { "status-fail" } elseif ($daysUntil -lt 90) { "status-fail" } elseif ($daysUntil -lt 180) { "status-warn" } else { "status-info" }
-                
-                $subscriptionName = if ($eolFinding.SubscriptionName) { $eolFinding.SubscriptionName } else { $eolFinding.SubscriptionId }
-                $resourceGroup = if ($eolFinding.ResourceGroup) { $eolFinding.ResourceGroup } else { "N/A" }
-                
-                $html += @"
-                        <tr>
-                            <td><span class="badge severity-$severityLower">$severity</span></td>
-                            <td>$(Encode-Html $subscriptionName)</td>
-                            <td>$(Encode-Html $resourceGroup)</td>
-                            <td>$(Encode-Html $eolFinding.ResourceName)</td>
-                            <td>$(Encode-Html $eolFinding.Component)</td>
-                            <td>$(Encode-Html $deadline)</td>
-                            <td>$daysText</td>
-                            <td class="$statusClass"><span class="badge status-$statusLower">$status</span></td>
-                        </tr>
-"@
-            }
-            $html += @"
-                    </tbody>
-                </table>
-"@
-        } else {
-            $html += @"
-                <div style="padding: 20px; text-align: center; color: var(--text-secondary);">
-                    <p style="margin: 0; font-size: 1.1em;">No resources with deprecation currently in the inventory.</p>
-                </div>
-"@
-        }
-        $html += @"
-            </div>
-        </div>
-"@
-
-        # New EOL Tracking section (based on Azure EOL repository rules)
-        if ($AuditResult.EOLStatus) {
-            $eolSectionHtml = Get-EOLReportSection -EOLStatus $AuditResult.EOLStatus
-            $html += $eolSectionHtml
         }
         
         # Get unique categories and severities for filter dropdowns

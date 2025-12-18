@@ -29,6 +29,10 @@ function Get-AzureMonitorFindings {
     $findings = [System.Collections.Generic.List[PSObject]]::new()
     $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
     
+    # Track metadata for consolidated output
+    $uniqueResourcesScanned = @{}
+    $controlsEvaluated = 0
+    
     # Load deprecation rules for EOL checking
     $deprecationRules = Get-DeprecationRules
     $resourceTypeMapping = @{}
@@ -57,6 +61,10 @@ function Get-AzureMonitorFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     Write-Verbose "Loaded $($controls.Count) Monitor control(s) from configuration"
@@ -79,6 +87,12 @@ function Get-AzureMonitorFindings {
             
             if ($workspaces) {
                 foreach ($workspace in $workspaces) {
+                    # Track workspace as resource scanned
+                    $resourceKey = if ($workspace.Id) { $workspace.Id } else { "$($workspace.ResourceGroupName)/$($workspace.Name)" }
+                    if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+                        $uniqueResourcesScanned[$resourceKey] = $true
+                    }
+                    
                     try {
                         # Skip if ResourceGroupName is empty
                         if ([string]::IsNullOrWhiteSpace($workspace.ResourceGroupName)) {
@@ -163,6 +177,7 @@ function Get-AzureMonitorFindings {
     # Control: Diagnostic Settings Enabled
     $diagControl = $controlLookup["Diagnostic Settings Enabled"]
     if ($diagControl) {
+        $controlsEvaluated++
         try {
             # Check diagnostic settings on subscription level resources
             # This is a simplified check - in production, you'd check all resources
@@ -229,6 +244,7 @@ function Get-AzureMonitorFindings {
     # Control: DCR Associations
     $dcrControl = $controlLookup["DCR Associations"]
     if ($dcrControl) {
+        $controlsEvaluated++
         try {
             $dcrs = Invoke-AzureApiWithRetry {
                 Get-AzDataCollectionRule -ErrorAction SilentlyContinue
@@ -318,10 +334,17 @@ function Get-AzureMonitorFindings {
         }
     }
     
-    # Return both security findings and EOL findings
+    # Calculate failure count
+    $failureCount = @($findings | Where-Object { $_.Status -eq 'FAIL' }).Count
+    
+    # Return both security findings and EOL findings with metadata
     return @{
         Findings = $findings
         EOLFindings = $eolFindings
+        ResourceCount = $uniqueResourcesScanned.Count
+        ControlCount = $controlsEvaluated
+        FailureCount = $failureCount
+        EOLCount = $eolFindings.Count
     }
 }
 

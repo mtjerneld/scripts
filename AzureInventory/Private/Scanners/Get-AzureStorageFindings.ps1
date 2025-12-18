@@ -39,6 +39,10 @@ function Get-AzureStorageFindings {
     $findings = [System.Collections.Generic.List[PSObject]]::new()
     $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
     
+    # Track metadata for consolidated output
+    $uniqueResourcesScanned = @{}
+    $controlsEvaluated = 0
+    
     # Load deprecation rules for EOL checking
     $deprecationRules = Get-DeprecationRules
     $resourceTypeMapping = @{}
@@ -68,6 +72,10 @@ function Get-AzureStorageFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     Write-Verbose "Loaded $($controls.Count) Storage control(s) from configuration"
@@ -89,6 +97,10 @@ function Get-AzureStorageFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -98,6 +110,10 @@ function Get-AzureStorageFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -109,6 +125,12 @@ function Get-AzureStorageFindings {
         }
         
         Write-Verbose "Scanning storage account: $($sa.StorageAccountName)"
+        
+        # Track this resource as scanned
+        $resourceKey = if ($sa.Id) { $sa.Id } else { "$($sa.ResourceGroupName)/$($sa.StorageAccountName)" }
+        if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+            $uniqueResourcesScanned[$resourceKey] = $true
+        }
         
         # Construct ResourceId if missing
         $resourceId = $sa.Id
@@ -132,6 +154,7 @@ function Get-AzureStorageFindings {
         # Control: Minimum TLS Version 1.2
         $tlsControl = $controlLookup["Minimum TLS Version 1.2"]
         if ($tlsControl) {
+            $controlsEvaluated++
             # Define valid TLS versions explicitly to avoid any scope/loading issues with constants
             $validTlsVersions = @("TLS1_2", "TLS1_3")
             
@@ -168,6 +191,7 @@ function Get-AzureStorageFindings {
         # Control: Secure Transfer Required
         $httpsControl = $controlLookup["Secure Transfer Required"]
         if ($httpsControl) {
+            $controlsEvaluated++
             $httpsOnly = if ($sa.EnableHttpsTrafficOnly) { $sa.EnableHttpsTrafficOnly } else { $false }
             $httpsStatus = if ($httpsOnly) { "PASS" } else { "FAIL" }
             
@@ -196,6 +220,7 @@ function Get-AzureStorageFindings {
         # Control: Public Blob Access
         $publicAccessControl = $controlLookup["Public Blob Access"]
         if ($publicAccessControl) {
+            $controlsEvaluated++
             $publicAccess = if ($null -ne $sa.AllowBlobPublicAccess) { $sa.AllowBlobPublicAccess } else { $true }
             $publicStatus = if (-not $publicAccess) { "PASS" } else { "FAIL" }
             
@@ -224,6 +249,7 @@ function Get-AzureStorageFindings {
         # Control: Soft Delete for Blobs
         $softDeleteControl = $controlLookup["Soft Delete for Blobs"]
         if ($softDeleteControl) {
+            $controlsEvaluated++
             $softDeleteEnabled = $false
             try {
                 $blobProps = Invoke-AzureApiWithRetry {
@@ -264,6 +290,7 @@ function Get-AzureStorageFindings {
         # Control: Default Network Access
         $networkControl = $controlLookup["Default Network Access"]
         if ($networkControl) {
+            $controlsEvaluated++
             $defaultAction = if ($networkRules) { $networkRules.DefaultAction } else { "Allow" }
             $networkStatus = if ($defaultAction -eq "Deny") { "PASS" } else { "FAIL" }
             
@@ -292,6 +319,7 @@ function Get-AzureStorageFindings {
         # Control: Storage Account Kind (Legacy Detection)
         $kindControl = $controlLookup["Storage Account Kind (Legacy Detection)"]
         if ($kindControl) {
+            $controlsEvaluated++
             $kindStatus = if ($sa.Kind -eq "StorageV2") { "PASS" } else { "FAIL" }
             
             $remediationCmd = $kindControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
@@ -355,6 +383,7 @@ function Get-AzureStorageFindings {
         # Control: Infrastructure Encryption
         $infraEncryptionControl = $controlLookup["Infrastructure Encryption"]
         if ($infraEncryptionControl) {
+            $controlsEvaluated++
             try {
                 $encryption = Invoke-AzureApiWithRetry {
                     Get-AzStorageAccountEncryption -ResourceGroupName $sa.ResourceGroupName -Name $sa.StorageAccountName -ErrorAction SilentlyContinue
@@ -394,6 +423,7 @@ function Get-AzureStorageFindings {
         # Control: Azure Services Bypass
         $bypassControl = $controlLookup["Azure Services Bypass"]
         if ($bypassControl) {
+            $controlsEvaluated++
             $bypass = if ($networkRules) { $networkRules.Bypass } else { "None" }
             $azureServicesBypass = $bypass -match "AzureServices"
             $bypassStatus = if ($azureServicesBypass) { "PASS" } else { "FAIL" }
@@ -423,6 +453,7 @@ function Get-AzureStorageFindings {
         # Control: Customer-Managed Keys (for critical data only)
         $cmkControl = $controlLookup["Customer-Managed Keys"]
         if ($cmkControl) {
+            $controlsEvaluated++
             # Only check if no CriticalStorageAccounts specified, or if this account is in the list
             $shouldCheckCMK = $true
             if ($CriticalStorageAccounts.Count -gt 0) {
@@ -472,9 +503,16 @@ function Get-AzureStorageFindings {
         }
     }
     
-    # Return both security findings and EOL findings
+    # Calculate failure count
+    $failureCount = @($findings | Where-Object { $_.Status -eq 'FAIL' }).Count
+    
+    # Return both security findings and EOL findings with metadata
     return @{
         Findings = $findings
         EOLFindings = $eolFindings
+        ResourceCount = $uniqueResourcesScanned.Count
+        ControlCount = $controlsEvaluated
+        FailureCount = $failureCount
+        EOLCount = $eolFindings.Count
     }
 }

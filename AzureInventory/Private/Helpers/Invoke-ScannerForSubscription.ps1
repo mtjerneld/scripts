@@ -137,6 +137,10 @@ function Invoke-ScannerForSubscription {
             # Handle scanners that return structured results (Findings + EOLFindings or Findings + Inventory)
             $findings = $null
             $eolFindings = $null
+            $resourceCount = 0
+            $controlCount = 0
+            $failureCount = 0
+            $eolCount = 0
             
             if ($scanResult -is [hashtable]) {
                 # Scanners return hashtable with Findings and EOLFindings (Storage, Network, AppService, SQL, KeyVault, Monitor, ARC)
@@ -146,7 +150,20 @@ function Invoke-ScannerForSubscription {
                 if ($scanResult.ContainsKey('EOLFindings')) {
                     $eolFindings = $scanResult['EOLFindings']
                 }
-                Write-Verbose "Scanner $category returned hashtable: Findings=$($findings.Count), EOLFindings=$($eolFindings.Count)"
+                # Extract metadata if available
+                if ($scanResult.ContainsKey('ResourceCount')) {
+                    $resourceCount = $scanResult['ResourceCount']
+                }
+                if ($scanResult.ContainsKey('ControlCount')) {
+                    $controlCount = $scanResult['ControlCount']
+                }
+                if ($scanResult.ContainsKey('FailureCount')) {
+                    $failureCount = $scanResult['FailureCount']
+                }
+                if ($scanResult.ContainsKey('EOLCount')) {
+                    $eolCount = $scanResult['EOLCount']
+                }
+                Write-Verbose "Scanner $category returned hashtable: Findings=$($findings.Count), EOLFindings=$($eolFindings.Count), Resources=$resourceCount, Controls=$controlCount, Failures=$failureCount, EOL=$eolCount"
             }
             elseif ($category -eq 'VM' -and $scanResult -is [PSCustomObject] -and $scanResult.PSObject.Properties.Name -contains 'Findings') {
                 $findings = $scanResult.Findings
@@ -160,7 +177,20 @@ function Invoke-ScannerForSubscription {
                 if ($scanResult.PSObject.Properties.Name -contains 'EOLFindings') {
                     $eolFindings = $scanResult.EOLFindings
                 }
-                Write-Verbose "Scanner $category returned PSCustomObject: Findings=$($findings.Count), EOLFindings=$($eolFindings.Count)"
+                # Extract metadata if available
+                if ($scanResult.PSObject.Properties.Name -contains 'ResourceCount') {
+                    $resourceCount = $scanResult.ResourceCount
+                }
+                if ($scanResult.PSObject.Properties.Name -contains 'ControlCount') {
+                    $controlCount = $scanResult.ControlCount
+                }
+                if ($scanResult.PSObject.Properties.Name -contains 'FailureCount') {
+                    $failureCount = $scanResult.FailureCount
+                }
+                if ($scanResult.PSObject.Properties.Name -contains 'EOLCount') {
+                    $eolCount = $scanResult.EOLCount
+                }
+                Write-Verbose "Scanner $category returned PSCustomObject: Findings=$($findings.Count), EOLFindings=$($eolFindings.Count), Resources=$resourceCount, Controls=$controlCount, Failures=$failureCount, EOL=$eolCount"
             } else {
                 $findings = $scanResult
                 Write-Verbose "Scanner $category returned simple array: Findings=$($findings.Count)"
@@ -209,59 +239,78 @@ function Invoke-ScannerForSubscription {
                 Write-Verbose "Added $eolFindingsAdded EOL findings from $category scan. Total EOL findings in collection: $($AllEOLFindings.Count)"
             }
             
-            # Filter out null findings
-            $validFindings = @($findings | Where-Object { $null -ne $_ })
-            
-            # Count unique resources and unique controls using hashtables
-            $uniqueResourceIds = @{}
-            $uniqueControls = @{}
-            $failCount = 0
-            
-            foreach ($finding in $validFindings) {
-                # Count unique resources by ResourceId or ResourceName+ResourceGroup
-                $resourceKey = $null
-                if ($finding.PSObject.Properties.Name -contains 'ResourceId' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceId)) {
-                    $resourceKey = $finding.ResourceId
-                }
-                elseif ($finding.PSObject.Properties.Name -contains 'ResourceName' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceName)) {
-                    $rg = if ($finding.PSObject.Properties.Name -contains 'ResourceGroup') { $finding.ResourceGroup } else { "" }
-                    $resourceKey = "$($finding.ResourceName)|$rg"
-                }
+            # Format output message using metadata from scanner if available, otherwise fallback to calculating from findings
+            if ($resourceCount -gt 0 -or $controlCount -gt 0) {
+                # Use metadata from scanner
+                $color = if ($failureCount -gt 0) { 'Red' } else { 'Green' }
+                $resourceWord = if ($resourceCount -eq 1) { "resource" } else { "resources" }
+                $checkWord = if ($controlCount -eq 1) { "check" } else { "checks" }
+                $failureWord = if ($failureCount -eq 1) { "failure" } else { "failures" }
                 
-                if ($resourceKey -and -not $uniqueResourceIds.ContainsKey($resourceKey)) {
-                    $uniqueResourceIds[$resourceKey] = $true
+                $outputMsg = " $resourceCount $resourceWord evaluated against $controlCount $checkWord ($failureCount $failureWord"
+                if ($eolCount -gt 0) {
+                    $eolWord = if ($eolCount -eq 1) { "EOL" } else { "EOL" }
+                    $outputMsg += ", $eolCount $eolWord"
                 }
+                $outputMsg += ")"
                 
-                # Count unique controls by Category + ControlId
-                $controlKey = $null
-                if ($finding.PSObject.Properties.Name -contains 'Category' -and $finding.PSObject.Properties.Name -contains 'ControlId') {
-                    $cat = if ($finding.Category) { $finding.Category } else { "Unknown" }
-                    $ctrlId = if ($finding.ControlId) { $finding.ControlId } else { "Unknown" }
-                    $controlKey = "$cat|$ctrlId"
-                }
-                
-                if ($controlKey -and -not $uniqueControls.ContainsKey($controlKey)) {
-                    $uniqueControls[$controlKey] = $true
-                }
-                
-                # Count failures
-                if ($finding.PSObject.Properties.Name -contains 'Status' -and $finding.Status -eq 'FAIL') {
-                    $failCount++
-                }
-            }
-            
-            $uniqueResources = $uniqueResourceIds.Count
-            $uniqueChecks = $uniqueControls.Count
-            
-            # Format output message
-            $color = if ($failCount -gt 0) { 'Red' } else { 'Green' }
-            if ($uniqueChecks -eq 0) {
-                Write-Host " 0 resources (0 checks)" -ForegroundColor Gray
+                Write-Host $outputMsg -ForegroundColor $color
             }
             else {
-                $resourceWord = if ($uniqueResources -eq 1) { "resource" } else { "resources" }
-                $checkWord = if ($uniqueChecks -eq 1) { "check" } else { "checks" }
-                Write-Host " $uniqueResources $resourceWord evaluated against $uniqueChecks $checkWord ($failCount failures)" -ForegroundColor $color
+                # Fallback: Calculate from findings if metadata not available
+                $validFindings = @($findings | Where-Object { $null -ne $_ })
+                
+                # Count unique resources and unique controls using hashtables
+                $uniqueResourceIds = @{}
+                $uniqueControls = @{}
+                $failCount = 0
+                
+                foreach ($finding in $validFindings) {
+                    # Count unique resources by ResourceId or ResourceName+ResourceGroup
+                    $resourceKey = $null
+                    if ($finding.PSObject.Properties.Name -contains 'ResourceId' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceId)) {
+                        $resourceKey = $finding.ResourceId
+                    }
+                    elseif ($finding.PSObject.Properties.Name -contains 'ResourceName' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceName)) {
+                        $rg = if ($finding.PSObject.Properties.Name -contains 'ResourceGroup') { $finding.ResourceGroup } else { "" }
+                        $resourceKey = "$($finding.ResourceName)|$rg"
+                    }
+                    
+                    if ($resourceKey -and -not $uniqueResourceIds.ContainsKey($resourceKey)) {
+                        $uniqueResourceIds[$resourceKey] = $true
+                    }
+                    
+                    # Count unique controls by Category + ControlId
+                    $controlKey = $null
+                    if ($finding.PSObject.Properties.Name -contains 'Category' -and $finding.PSObject.Properties.Name -contains 'ControlId') {
+                        $cat = if ($finding.Category) { $finding.Category } else { "Unknown" }
+                        $ctrlId = if ($finding.ControlId) { $finding.ControlId } else { "Unknown" }
+                        $controlKey = "$cat|$ctrlId"
+                    }
+                    
+                    if ($controlKey -and -not $uniqueControls.ContainsKey($controlKey)) {
+                        $uniqueControls[$controlKey] = $true
+                    }
+                    
+                    # Count failures
+                    if ($finding.PSObject.Properties.Name -contains 'Status' -and $finding.Status -eq 'FAIL') {
+                        $failCount++
+                    }
+                }
+                
+                $uniqueResources = $uniqueResourceIds.Count
+                $uniqueChecks = $uniqueControls.Count
+                
+                # Format output message
+                $color = if ($failCount -gt 0) { 'Red' } else { 'Green' }
+                if ($uniqueChecks -eq 0) {
+                    Write-Host " 0 resources (0 checks)" -ForegroundColor Gray
+                }
+                else {
+                    $resourceWord = if ($uniqueResources -eq 1) { "resource" } else { "resources" }
+                    $checkWord = if ($uniqueChecks -eq 1) { "check" } else { "checks" }
+                    Write-Host " $uniqueResources $resourceWord evaluated against $uniqueChecks $checkWord ($failCount failures)" -ForegroundColor $color
+                }
             }
         }
         catch {

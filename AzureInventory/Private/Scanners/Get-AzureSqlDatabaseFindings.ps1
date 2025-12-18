@@ -31,6 +31,10 @@ function Get-AzureSqlDatabaseFindings {
     $findings = [System.Collections.Generic.List[PSObject]]::new()
     $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
     
+    # Track metadata for consolidated output
+    $uniqueResourcesScanned = @{}
+    $controlsEvaluated = 0
+    
     # Load deprecation rules for EOL checking
     $deprecationRules = Get-DeprecationRules
     $resourceTypeMapping = @{}
@@ -60,6 +64,10 @@ function Get-AzureSqlDatabaseFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -79,6 +87,10 @@ function Get-AzureSqlDatabaseFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -87,15 +99,26 @@ function Get-AzureSqlDatabaseFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
     foreach ($server in $sqlServers) {
         Write-Verbose "Scanning SQL server: $($server.ServerName)"
         
+        # Track this resource as scanned
+        $resourceKey = if ($server.Id) { $server.Id } else { "$($server.ResourceGroupName)/$($server.ServerName)" }
+        if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+            $uniqueResourcesScanned[$resourceKey] = $true
+        }
+        
         # Control: SQL Server - TLS Version
         $tlsControl = $controlLookup["SQL Server - TLS Version"]
         if ($tlsControl) {
+            $controlsEvaluated++
             $minTlsVersion = if ($server.MinimalTlsVersion) { $server.MinimalTlsVersion } else { "1.0" }
             $tlsStatus = if ($minTlsVersion -ge "1.2") { "PASS" } else { "FAIL" }
             
@@ -127,6 +150,7 @@ function Get-AzureSqlDatabaseFindings {
         # 2. Allow Azure Services rule (0.0.0.0-0.0.0.0) - Medium risk (still a security concern)
         $firewallControl = $controlLookup["SQL Firewall - No Allow All"]
         if ($firewallControl) {
+            $controlsEvaluated++
             try {
                 $firewallRules = Invoke-AzureApiWithRetry {
                     Get-AzSqlServerFirewallRule -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction SilentlyContinue
@@ -205,6 +229,7 @@ function Get-AzureSqlDatabaseFindings {
         # Control 4.1.1: SQL Auditing Enabled
         $auditControl = $controlLookup["SQL Auditing Enabled"]
         if ($auditControl) {
+            $controlsEvaluated++
             try {
                 $auditing = Invoke-AzureApiWithRetry {
                     Get-AzSqlServerAuditing -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction SilentlyContinue
@@ -242,6 +267,7 @@ function Get-AzureSqlDatabaseFindings {
         # Control 4.1.5: Transparent Data Encryption (TDE) (check databases)
         $tdeControl = $controlLookup["Transparent Data Encryption (TDE)"]
         if ($tdeControl) {
+            $controlsEvaluated++
             try {
                 $databases = Invoke-AzureApiWithRetry {
                     Get-AzSqlDatabase -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction SilentlyContinue
@@ -302,6 +328,7 @@ function Get-AzureSqlDatabaseFindings {
         # Control: Azure AD Admin Configured
         $adAdminControl = $controlLookup["Azure AD Admin Configured"]
         if ($adAdminControl) {
+            $controlsEvaluated++
             $adAdminStatus = if ($adAdminConfigured) { "PASS" } else { "FAIL" }
             $remediationCmd = $adAdminControl.remediationCommand -replace '\{rg\}', $server.ResourceGroupName -replace '\{serverName\}', $server.ServerName
             
@@ -364,6 +391,7 @@ function Get-AzureSqlDatabaseFindings {
         # Control: Azure AD-Only Authentication
         $adOnlyControl = $controlLookup["Azure AD-Only Authentication"]
         if ($adOnlyControl) {
+            $controlsEvaluated++
             try {
                 $adOnlyAuth = Invoke-AzureApiWithRetry {
                     Get-AzSqlServerActiveDirectoryOnlyAuthentication -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction SilentlyContinue
@@ -434,10 +462,17 @@ function Get-AzureSqlDatabaseFindings {
         }
     }
     
-    # Return both security findings and EOL findings
+    # Calculate failure count
+    $failureCount = @($findings | Where-Object { $_.Status -eq 'FAIL' }).Count
+    
+    # Return both security findings and EOL findings with metadata
     return @{
         Findings = $findings
         EOLFindings = $eolFindings
+        ResourceCount = $uniqueResourcesScanned.Count
+        ControlCount = $controlsEvaluated
+        FailureCount = $failureCount
+        EOLCount = $eolFindings.Count
     }
 }
 

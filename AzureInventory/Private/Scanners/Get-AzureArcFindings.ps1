@@ -29,6 +29,10 @@ function Get-AzureArcFindings {
     $findings = [System.Collections.Generic.List[PSObject]]::new()
     $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
     
+    # Track metadata for consolidated output
+    $uniqueResourcesScanned = @{}
+    $controlsEvaluated = 0
+    
     # Load deprecation rules for EOL checking
     $deprecationRules = Get-DeprecationRules
     $resourceTypeMapping = @{}
@@ -58,6 +62,10 @@ function Get-AzureArcFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     Write-Verbose "Loaded $($controls.Count) ARC control(s) from configuration"
@@ -79,6 +87,10 @@ function Get-AzureArcFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -87,6 +99,10 @@ function Get-AzureArcFindings {
         return @{
             Findings = $findings
             EOLFindings = $eolFindings
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -99,9 +115,16 @@ function Get-AzureArcFindings {
             continue
         }
         
+        # Track this resource as scanned
+        $resourceKey = if ($machine.Id) { $machine.Id } else { "$($machine.ResourceGroupName)/$($machine.Name)" }
+        if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+            $uniqueResourcesScanned[$resourceKey] = $true
+        }
+        
         # Control: Agent Version Current
         $versionControl = $controlLookup["ARC Agent Version Current"]
         if ($versionControl) {
+            $controlsEvaluated++
             $agentVersion = if ($machine.AgentVersion) { $machine.AgentVersion } else { "Unknown" }
             $versionCurrent = $true  # Simplified - in production, parse version and check against known current versions
             $versionStatus = if ($versionCurrent) { "PASS" } else { "FAIL" }
@@ -134,6 +157,7 @@ function Get-AzureArcFindings {
         # Control: Connection Status
         $connectionControl = $controlLookup["ARC Connection Status"]
         if ($connectionControl) {
+            $controlsEvaluated++
             $connectionStatus = if ($machine.Status) { $machine.Status } else { "Unknown" }
             $connectedStatus = if ($connectionStatus -eq "Connected") { "PASS" } else { "FAIL" }
             
@@ -165,6 +189,7 @@ function Get-AzureArcFindings {
         # Control: AMA Extension Installed
         $amaControl = $controlLookup["ARC AMA Extension Installed"]
         if ($amaControl) {
+            $controlsEvaluated++
             try {
                 $extensions = Invoke-AzureApiWithRetry {
                     Get-AzConnectedMachineExtension -ResourceGroupName $machine.ResourceGroupName -MachineName $machine.Name -ErrorAction SilentlyContinue
@@ -214,6 +239,7 @@ function Get-AzureArcFindings {
         # Control: Automatic Upgrade Enabled
         $upgradeControl = $controlLookup["ARC Automatic Upgrade Enabled"]
         if ($upgradeControl) {
+            $controlsEvaluated++
             try {
                 $upgradeSettings = $machine.AgentUpgrade
                 $autoUpgrade = if ($upgradeSettings) { $upgradeSettings.EnableAutomaticUpgrade } else { $false }
@@ -285,10 +311,17 @@ function Get-AzureArcFindings {
         }
     }
     
-    # Return both security findings and EOL findings
+    # Calculate failure count
+    $failureCount = @($findings | Where-Object { $_.Status -eq 'FAIL' }).Count
+    
+    # Return both security findings and EOL findings with metadata
     return @{
         Findings = $findings
         EOLFindings = $eolFindings
+        ResourceCount = $uniqueResourcesScanned.Count
+        ControlCount = $controlsEvaluated
+        FailureCount = $failureCount
+        EOLCount = $eolFindings.Count
     }
 }
 

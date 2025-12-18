@@ -36,6 +36,10 @@ function Get-AzureVirtualMachineFindings {
     $eolFindings = [System.Collections.Generic.List[PSObject]]::new()
     $inventory = [System.Collections.Generic.List[PSObject]]::new()
     
+    # Track metadata for consolidated output
+    $uniqueResourcesScanned = @{}
+    $controlsEvaluated = 0
+    
     # Load deprecation rules for EOL checking
     $deprecationRules = Get-DeprecationRules
     $resourceTypeMapping = @{}
@@ -66,6 +70,10 @@ function Get-AzureVirtualMachineFindings {
             Findings  = $findings
             EOLFindings = $eolFindings
             Inventory = $inventory
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     Write-Verbose "Loaded $($controls.Count) VM control(s) from configuration"
@@ -89,6 +97,10 @@ function Get-AzureVirtualMachineFindings {
             Findings  = $findings
             EOLFindings = $eolFindings
             Inventory = $inventory
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -99,6 +111,10 @@ function Get-AzureVirtualMachineFindings {
             Findings  = $findings
             EOLFindings = $eolFindings
             Inventory = $inventory
+            ResourceCount = 0
+            ControlCount = 0
+            FailureCount = 0
+            EOLCount = 0
         }
     }
     
@@ -316,6 +332,7 @@ function Get-AzureVirtualMachineFindings {
         # Control: NO Legacy MMA/OMS Agent (RETIRED)
         $legacyMmaControl = $controlLookup["NO Legacy MMA/OMS Agent (RETIRED)"]
         if ($legacyMmaControl) {
+            $controlsEvaluated++
             $legacyMmaPresent = $false
             $legacyExtensionName = $null
             if ($extensions) {
@@ -358,6 +375,7 @@ function Get-AzureVirtualMachineFindings {
         # Control: Azure Monitor Agent (AMA) Installed
         $amaControl = $controlLookup["Azure Monitor Agent (AMA) Installed"]
         if ($amaControl) {
+            $controlsEvaluated++
             $amaInstalled = $false
             if ($extensions) {
                 foreach ($ext in $extensions) {
@@ -395,6 +413,7 @@ function Get-AzureVirtualMachineFindings {
         # Control: Antimalware Extension (Level 2)
         $antimalwareControl = $controlLookup["Antimalware Extension"]
         if ($antimalwareControl -and $extensions) {
+            $controlsEvaluated++
             $antimalwareInstalled = $false
             foreach ($ext in $extensions) {
                 if ($ext.ExtensionType -eq "IaaSAntimalware") {
@@ -430,6 +449,7 @@ function Get-AzureVirtualMachineFindings {
         # Control: VM Backup Enabled (ASB)
         $backupControl = $controlLookup["VM Backup Enabled"]
         if ($backupControl) {
+            $controlsEvaluated++
             $currentValue = if ($backupEnabled) {
                 $lastBackup = if ($backupInfo.LastBackupTime) { $backupInfo.LastBackupTime.ToString("yyyy-MM-dd HH:mm") } else { "N/A" }
                 "Protected by $($backupInfo.VaultName) (Last: $lastBackup)"
@@ -506,10 +526,17 @@ function Get-AzureVirtualMachineFindings {
         }
     }
     
-    # Return findings, EOL findings, and inventory
+    # Calculate failure count
+    $failureCount = @($findings | Where-Object { $_.Status -eq 'FAIL' }).Count
+    
+    # Return findings, EOL findings, and inventory with metadata
     return [PSCustomObject]@{
         Findings  = $findings
         EOLFindings = $eolFindings
         Inventory = $inventory
+        ResourceCount = $uniqueResourcesScanned.Count
+        ControlCount = $controlsEvaluated
+        FailureCount = $failureCount
+        EOLCount = $eolFindings.Count
     }
 }
