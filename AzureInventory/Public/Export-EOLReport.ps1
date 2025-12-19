@@ -332,7 +332,16 @@ function Export-EOLReport {
             data = $subData
         }
     }
-    $subscriptionSeriesJson = ($subscriptionDatasets | ConvertTo-Json -Compress)
+    if ($subscriptionDatasets.Count -eq 0) {
+        $subscriptionSeriesJson = "[]"
+    } else {
+        # Ensure it's always an array by wrapping in @() and converting to JSON
+        $subscriptionSeriesJson = (@($subscriptionDatasets) | ConvertTo-Json -Compress -Depth 10)
+        # Verify it starts with [ to ensure it's an array
+        if (-not $subscriptionSeriesJson.StartsWith('[')) {
+            $subscriptionSeriesJson = "[$subscriptionSeriesJson]"
+        }
+    }
     
     # Build data for Category (Component)-stacked view
     $categoryDataByMonth = @{}
@@ -369,7 +378,20 @@ function Export-EOLReport {
             data = $compData
         }
     }
-    $categorySeriesJson = ($categoryDatasets | ConvertTo-Json -Compress)
+    if ($categoryDatasets.Count -eq 0) {
+        $categorySeriesJson = "[]"
+    } else {
+        # Ensure it's always an array by wrapping in @() and converting to JSON
+        $categorySeriesJson = (@($categoryDatasets) | ConvertTo-Json -Compress -Depth 10)
+        # Verify it starts with [ to ensure it's an array
+        if (-not $categorySeriesJson.StartsWith('[')) {
+            $categorySeriesJson = "[$categorySeriesJson]"
+        }
+    }
+    
+    # Escape JSON strings for safe JavaScript injection (escape single quotes and backslashes)
+    $subscriptionSeriesJsonEscaped = $subscriptionSeriesJson -replace "\\", "\\\\" -replace "'", "\'" -replace "`r`n", " " -replace "`n", " "
+    $categorySeriesJsonEscaped = $categorySeriesJson -replace "\\", "\\\\" -replace "'", "\'" -replace "`r`n", " " -replace "`n", " "
 
     # Prepare component HTML
     $componentCardsHtml = ""
@@ -424,7 +446,7 @@ function Export-EOLReport {
             
             $guideHtml = if ($guideUrl) { 
                 $escapedUrl = [System.Web.HttpUtility]::HtmlAttributeEncode($guideUrl)
-                "<a href='$escapedUrl' target='_blank' rel='noopener'>View guidance</a>" 
+                "<a href='$escapedUrl' target='_blank' rel='noopener' class='eol-guidance-link'>View guidance</a>" 
             } else { 
                 "" 
             }
@@ -450,24 +472,18 @@ function Export-EOLReport {
                     <div class="eol-card-item" data-severity="$topSeverityLower">
                         <div class="eol-card-header" onclick="toggleEolComponent(this)">
                             <div class="eol-card-main">
-                                <span class="eol-component-name">$compName</span>
-                                <span class="badge severity-$topSeverityLower">$topSeverity</span>
-                                <span class="badge">$($comp.Count) resource(s)</span>
-                                <span class="badge">Deadline: $deadlineText ($daysText)</span>
+                                <div class="eol-card-header-info">
+                                    <span class="eol-component-name">$compName</span>
+                                    <span class="badge">$($comp.Count) resource(s)</span>
+                                    <span class="badge">Deadline: $deadlineText ($daysText)</span>
+                                    <span class="badge severity-$topSeverityLower eol-severity-badge">$topSeverity</span>
+                                </div>
                             </div>
                             <div class="eol-card-toggle">
                                 <span class="expand-arrow">&#9654;</span>
                             </div>
                         </div>
                         <div class="eol-card-body">
-                            <div class="eol-card-meta">
-                                <div class="eol-meta-badges">
-                                    $(if ($comp.CriticalCount -gt 0) { "<span class='badge severity-critical'>$($comp.CriticalCount) Critical</span>" } else { "" })
-                                    $(if ($comp.HighCount -gt 0) { "<span class='badge severity-high'>$($comp.HighCount) High</span>" } else { "" })
-                                    $(if ($comp.MediumCount -gt 0) { "<span class='badge severity-medium'>$($comp.MediumCount) Medium</span>" } else { "" })
-                                    $(if ($comp.LowCount -gt 0) { "<span class='badge severity-low'>$($comp.LowCount) Low</span>" } else { "" })
-                                </div>
-                            </div>
                             <div class="eol-card-table">
                                 <table class="resource-summary-table eol-resource-table">
                                     <thead>
@@ -636,9 +652,10 @@ $(Get-ReportStylesheet)
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 10px 12px;
+            padding: 12px 16px;
             cursor: pointer;
             background: var(--bg-secondary);
+            gap: 12px;
         }
 
         .eol-card-header:hover {
@@ -647,14 +664,38 @@ $(Get-ReportStylesheet)
 
         .eol-component-name {
             font-weight: 600;
-            margin-right: 8px;
+            margin-right: 12px;
+            min-width: 200px;
+        }
+        
+        .eol-card-header-info .badge {
+            margin-right: 0;
+            white-space: nowrap;
         }
 
         .eol-card-main {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
+            flex: 1;
+        }
+        
+        .eol-card-header-info {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 20px;
+            flex: 1;
+            row-gap: 10px;
+        }
+        
+        .eol-severity-badge {
+            margin-left: auto;
+        }
+        
+        .eol-card-header-info > * {
+            margin: 0;
         }
 
         .eol-card-toggle .expand-arrow {
@@ -678,14 +719,6 @@ $(Get-ReportStylesheet)
             display: block;
         }
 
-        .eol-card-meta {
-            margin-bottom: 8px;
-        }
-
-        .eol-meta-badges .badge {
-            margin-right: 4px;
-            margin-bottom: 4px;
-        }
 
         .eol-resource-table .resource-action-text {
             max-width: 260px;
@@ -714,22 +747,14 @@ $(Get-ReportStylesheet)
 
         .eol-resource-table td {
             padding: 12px 16px;
-            border-bottom: 1px solid var(--border-color);
+            border-bottom: none;
             color: var(--text-secondary);
             font-size: 0.85rem;
             word-wrap: break-word;
         }
 
-        .eol-resource-table tbody tr:nth-child(even) {
-            background: rgba(61, 61, 92, 0.3);
-        }
-
-        .eol-resource-table tbody tr:nth-child(odd) {
+        .eol-resource-table tbody tr {
             background: transparent;
-        }
-
-        .eol-resource-table tbody tr:nth-child(even):hover {
-            background: var(--bg-hover);
         }
 
         .eol-resource-table tbody tr:hover {
@@ -751,6 +776,24 @@ $(Get-ReportStylesheet)
         .badge.severity-low {
             background-color: rgba(46, 204, 113, 0.15);
             color: #58d68d;
+        }
+        
+        .eol-guidance-link {
+            color: var(--text-primary) !important;
+            text-decoration: none;
+        }
+        
+        .eol-guidance-link:hover {
+            color: var(--text-primary) !important;
+            text-decoration: underline;
+        }
+        
+        .eol-guidance-link:visited {
+            color: var(--text-primary) !important;
+        }
+        
+        .eol-guidance-link:link {
+            color: var(--text-primary) !important;
         }
     </style>
 </head>
@@ -853,9 +896,35 @@ $(if ($componentCount -eq 0) { @"
         const eolMediumComponents = [$mediumComponentsJson];
         const eolLowComponents = [$lowComponentsJson];
         
-        // Data for different chart views
-        const eolSubscriptionData = $subscriptionSeriesJson;
-        const eolCategoryData = $categorySeriesJson;
+        // Data for different chart views - parse JSON strings
+        let eolSubscriptionData = [];
+        let eolCategoryData = [];
+        
+        try {
+            const subJsonStr = '$subscriptionSeriesJsonEscaped';
+            if (subJsonStr && subJsonStr !== 'null' && subJsonStr.trim() !== '' && subJsonStr !== "[]") {
+                eolSubscriptionData = JSON.parse(subJsonStr);
+                if (!Array.isArray(eolSubscriptionData)) {
+                    eolSubscriptionData = [];
+                }
+            }
+        } catch (e) {
+            console.error('Error parsing subscription data:', e);
+            eolSubscriptionData = [];
+        }
+        
+        try {
+            const catJsonStr = '$categorySeriesJsonEscaped';
+            if (catJsonStr && catJsonStr !== 'null' && catJsonStr.trim() !== '' && catJsonStr !== "[]") {
+                eolCategoryData = JSON.parse(catJsonStr);
+                if (!Array.isArray(eolCategoryData)) {
+                    eolCategoryData = [];
+                }
+            }
+        } catch (e) {
+            console.error('Error parsing category data:', e);
+            eolCategoryData = [];
+        }
         
         let eolChart = null;
         let currentEolView = 'severity';
@@ -928,34 +997,66 @@ $(if ($componentCount -eq 0) { @"
                 ];
                 // Show severity legend
                 document.getElementById('eolLegend').style.display = 'flex';
+                // Show chart legend
+                eolChart.options.plugins.legend.display = true;
             } else if (currentEolView === 'subscription') {
                 // Subscription view - stacked by subscription
-                datasets = eolSubscriptionData.map((sub, index) => ({
-                    label: sub.label,
-                    data: sub.data,
-                    backgroundColor: eolChartColors[index % eolChartColors.length],
-                    borderColor: eolChartColors[index % eolChartColors.length].replace('0.8', '1').replace('0.9', '1').replace('0.6', '1'),
-                    borderWidth: 1,
-                    stack: 'subscription'
-                }));
+                if (eolSubscriptionData && Array.isArray(eolSubscriptionData) && eolSubscriptionData.length > 0) {
+                    datasets = eolSubscriptionData.map((sub, index) => ({
+                        label: sub.label,
+                        data: sub.data,
+                        backgroundColor: eolChartColors[index % eolChartColors.length],
+                        borderColor: eolChartColors[index % eolChartColors.length].replace('0.8', '1').replace('0.9', '1').replace('0.6', '1'),
+                        borderWidth: 1,
+                        stack: 'subscription'
+                    }));
+                } else {
+                    // Fallback to severity if no subscription data
+                    datasets = [
+                        {
+                            label: 'Critical',
+                            data: eolCritical,
+                            backgroundColor: 'rgba(231, 76, 60, 0.8)',
+                            borderColor: 'rgba(231, 76, 60, 1)',
+                            borderWidth: 1,
+                            stack: 'severity'
+                        }
+                    ];
+                }
                 // Hide severity legend, show chart legend
                 document.getElementById('eolLegend').style.display = 'none';
+                eolChart.options.plugins.legend.display = true;
             } else if (currentEolView === 'category') {
                 // Category view - stacked by component
-                datasets = eolCategoryData.map((cat, index) => ({
-                    label: cat.label,
-                    data: cat.data,
-                    backgroundColor: eolChartColors[index % eolChartColors.length],
-                    borderColor: eolChartColors[index % eolChartColors.length].replace('0.8', '1').replace('0.9', '1').replace('0.6', '1'),
-                    borderWidth: 1,
-                    stack: 'category'
-                }));
+                if (eolCategoryData && Array.isArray(eolCategoryData) && eolCategoryData.length > 0) {
+                    datasets = eolCategoryData.map((cat, index) => ({
+                        label: cat.label,
+                        data: cat.data,
+                        backgroundColor: eolChartColors[index % eolChartColors.length],
+                        borderColor: eolChartColors[index % eolChartColors.length].replace('0.8', '1').replace('0.9', '1').replace('0.6', '1'),
+                        borderWidth: 1,
+                        stack: 'category'
+                    }));
+                } else {
+                    // Fallback to severity if no category data
+                    datasets = [
+                        {
+                            label: 'Critical',
+                            data: eolCritical,
+                            backgroundColor: 'rgba(231, 76, 60, 0.8)',
+                            borderColor: 'rgba(231, 76, 60, 1)',
+                            borderWidth: 1,
+                            stack: 'severity'
+                        }
+                    ];
+                }
                 // Hide severity legend, show chart legend
                 document.getElementById('eolLegend').style.display = 'none';
+                eolChart.options.plugins.legend.display = true;
             }
             
             eolChart.data.datasets = datasets;
-            eolChart.update();
+            eolChart.update('none');
         }
 
         document.addEventListener('DOMContentLoaded', function () {

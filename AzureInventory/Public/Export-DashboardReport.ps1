@@ -107,6 +107,13 @@ function Export-DashboardReport {
     }
     $eolSoonestDeadlineText = if ($eolSoonestDeadline) { $eolSoonestDeadline } else { "N/A" }
     
+    # Determine highest EOL severity for color coding
+    $eolHighestSeverityColor = if ($eolCriticalCount -gt 0) { 'var(--accent-red)' }
+                               elseif ($eolHighCount -gt 0) { 'var(--accent-yellow)' }
+                               elseif ($eolMediumCount -gt 0) { 'var(--accent-blue)' }
+                               elseif ($eolLowCount -gt 0) { 'var(--accent-green)' }
+                               else { '#888' }
+    
     # VM Backup metrics - use pre-calculated data from VM Backup Report if available
     if ($VMBackupReportData) {
         $totalVMs = $VMBackupReportData.TotalVMs
@@ -403,6 +410,44 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                     <div class="metric-row">
                         <span class="metric-label">Cost Categories</span>
                         <span class="metric-value">$costCategoryCount</span>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">EOL / Deprecated Components</span>
+                    <a href="eol.html" class="card-link">View Details &rarr;</a>
+                </div>
+                <div class="card-body">
+                    <div class="score-display">
+                        <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, var(--bg-surface), var(--bg-hover));">
+                            <span class="score-value" style="color: $eolHighestSeverityColor; font-size: 2rem;">$eolTotalFindings</span>
+                            <span class="score-label">Total Findings</span>
+                        </div>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Components</span>
+                        <span class="metric-value">$eolComponentCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Critical</span>
+                        <span class="metric-value critical">$eolCriticalCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">High</span>
+                        <span class="metric-value high">$eolHighCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Medium</span>
+                        <span class="metric-value medium">$eolMediumCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Low</span>
+                        <span class="metric-value low">$eolLowCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Next Deadline</span>
+                        <span class="metric-value">$eolSoonestDeadlineText</span>
                     </div>
                 </div>
             </div>

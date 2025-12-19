@@ -1,11 +1,11 @@
-# Test-Local.ps1 - Snabb testning utan modul
-# Kör detta skript för att ladda alla funktioner direkt för snabb testning
+# Init-Local.ps1 - Initiera och ladda alla modulfunktioner
+# Kör detta skript för att ladda alla funktioner direkt utan att behöva installera modulen
 # Laddar automatiskt om funktioner om de redan finns
 # 
 # VIKTIGT: Du MÅSTE köra med punkt och mellanslag:
-#   . .\Test-Local.ps1
+#   . .\Init-Local.ps1
 # 
-# Om du kör .\Test-Local.ps1 (utan punkt) fungerar det INTE!
+# Om du kör .\Init-Local.ps1 (utan punkt) fungerar det INTE!
 
 param()
 
@@ -14,13 +14,13 @@ $ModuleRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Get-Location }
 # Varna om skriptet körs utan dot-source
 if ($MyInvocation.InvocationName -ne '.' -and $MyInvocation.Line -notmatch '^\s*\.\s+') {
     Write-Host "`n[ERROR] Script must be run with dot-source!" -ForegroundColor Red
-    Write-Host "Use: . .\Test-Local.ps1" -ForegroundColor Yellow
+    Write-Host "Use: . .\Init-Local.ps1" -ForegroundColor Yellow
     Write-Host "(Note the dot and space before the script name)`n" -ForegroundColor Yellow
     Write-Host "Current command: $($MyInvocation.Line)" -ForegroundColor Gray
     return
 }
 
-Write-Host "Reloading all functions for local testing..." -ForegroundColor Cyan
+Write-Host "Initializing module - loading all functions..." -ForegroundColor Cyan
 
 # Ta bort alla befintliga funktioner från modulen först
 Write-Host "  Removing existing functions..." -ForegroundColor Gray
@@ -43,7 +43,6 @@ $functionsToRemove = @(
     'New-SecurityFinding',
     'New-EOLFinding',
     'Get-SubscriptionDisplayName',
-    'Get-EOLFindings',
     'Get-DeprecationRules',
     'Test-ResourceEOLStatus',
     'Get-FindingsBySeverity',
@@ -175,7 +174,7 @@ Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | S
     }
 }
 
-Write-Host "`n[OK] All functions loaded! Ready to test." -ForegroundColor Green
+Write-Host "`n[OK] All functions loaded! Module initialized and ready to use." -ForegroundColor Green
 # Add Test-ChangeTracking function for quick testing
 function Test-ChangeTracking {
     [CmdletBinding()]
@@ -198,12 +197,12 @@ function Test-ChangeTracking {
     
     # Check if functions are loaded
     if (-not (Get-Command -Name Get-AzureChangeTracking -ErrorAction SilentlyContinue)) {
-        Write-Error "Get-AzureChangeTracking function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Get-AzureChangeTracking function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
     
     if (-not (Get-Command -Name Export-ChangeTrackingReport -ErrorAction SilentlyContinue)) {
-        Write-Error "Export-ChangeTrackingReport function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Export-ChangeTrackingReport function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
     
@@ -374,7 +373,7 @@ function Test-EOLTracking {
     # Check required core functions
     foreach ($fn in @('Invoke-ScannerForSubscription','Get-SubscriptionsToScan','Export-EOLReport')) {
         if (-not (Get-Command -Name $fn -ErrorAction SilentlyContinue)) {
-            Write-Error "$fn function not found. Make sure Test-Local.ps1 has loaded all functions."
+            Write-Error "$fn function not found. Make sure Init-Local.ps1 has loaded all functions."
             return
         }
     }
@@ -609,7 +608,7 @@ function Test-SecurityReport {
     # Validate required helpers
     foreach ($fn in @('Get-SubscriptionsToScan','Invoke-ScannerForSubscription','Export-SecurityReport')) {
         if (-not (Get-Command -Name $fn -ErrorAction SilentlyContinue)) {
-            Write-Error "$fn function not found. Make sure Test-Local.ps1 has loaded all functions."
+            Write-Error "$fn function not found. Make sure Init-Local.ps1 has loaded all functions."
             return
         }
     }
@@ -769,12 +768,12 @@ function Test-Advisor {
     }
 
     if (-not (Get-Command -Name Collect-AdvisorRecommendations -ErrorAction SilentlyContinue)) {
-        Write-Error "Collect-AdvisorRecommendations function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Collect-AdvisorRecommendations function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
 
     if (-not (Get-Command -Name Export-AdvisorReport -ErrorAction SilentlyContinue)) {
-        Write-Error "Export-AdvisorReport function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Export-AdvisorReport function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
 
@@ -848,12 +847,12 @@ function Test-VMBackup {
     }
 
     if (-not (Get-Command -Name Get-AzureVirtualMachineFindings -ErrorAction SilentlyContinue)) {
-        Write-Error "Get-AzureVirtualMachineFindings function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Get-AzureVirtualMachineFindings function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
 
     if (-not (Get-Command -Name Export-VMBackupReport -ErrorAction SilentlyContinue)) {
-        Write-Error "Export-VMBackupReport function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Export-VMBackupReport function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
 
@@ -959,12 +958,12 @@ function Test-NetworkInventory {
     
     # Check if functions are loaded
     if (-not (Get-Command -Name Get-AzureNetworkInventory -ErrorAction SilentlyContinue)) {
-        Write-Error "Get-AzureNetworkInventory function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Get-AzureNetworkInventory function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
     
     if (-not (Get-Command -Name Export-NetworkInventoryReport -ErrorAction SilentlyContinue)) {
-        Write-Error "Export-NetworkInventoryReport function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Export-NetworkInventoryReport function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
     
@@ -1103,12 +1102,12 @@ Write-Host \"`n=== Testing Cost Tracking ===\" -ForegroundColor Cyan
     
     # Check if functions are loaded
     if (-not (Get-Command -Name Collect-CostData -ErrorAction SilentlyContinue)) {
-        Write-Error "Collect-CostData function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Collect-CostData function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
     
     if (-not (Get-Command -Name Export-CostTrackingReport -ErrorAction SilentlyContinue)) {
-        Write-Error "Export-CostTrackingReport function not found. Make sure Test-Local.ps1 has loaded all functions."
+        Write-Error "Export-CostTrackingReport function not found. Make sure Init-Local.ps1 has loaded all functions."
         return
     }
     

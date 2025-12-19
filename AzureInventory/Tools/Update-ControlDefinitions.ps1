@@ -1,7 +1,7 @@
 # Update-ControlDefinitions.ps1
 # Script to add description and Tenable references to all controls in ControlDefinitions.json
 
-$controlDefPath = Join-Path $PSScriptRoot "Config\ControlDefinitions.json"
+$controlDefPath = Join-Path (Split-Path $PSScriptRoot -Parent) "Config\ControlDefinitions.json"
 
 if (-not (Test-Path $controlDefPath)) {
     Write-Error "ControlDefinitions.json not found at: $controlDefPath"
