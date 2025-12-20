@@ -187,6 +187,8 @@ function Export-DashboardReport {
         $networkDisconnectedConnections = if ($NetworkInventoryReportData.DisconnectedConnections) { $NetworkInventoryReportData.DisconnectedConnections } else { 0 }
         $networkSubnetsMissingNSG = if ($NetworkInventoryReportData.SubnetsMissingNSG) { $NetworkInventoryReportData.SubnetsMissingNSG } else { 0 }
         $networkSecurityRisks = if ($NetworkInventoryReportData.SecurityRisks) { $NetworkInventoryReportData.SecurityRisks } else { 0 }
+        $networkVirtualWANHubs = if ($NetworkInventoryReportData.VirtualWANHubCount) { $NetworkInventoryReportData.VirtualWANHubCount } else { 0 }
+        $networkAzureFirewalls = if ($NetworkInventoryReportData.AzureFirewallCount) { $NetworkInventoryReportData.AzureFirewallCount } else { 0 }
     } else {
         $networkVNetCount = if ($AuditResult.NetworkInventory) { $AuditResult.NetworkInventory.Count } else { 0 }
         $networkDeviceCount = 0
@@ -450,6 +452,12 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                         <span class="metric-label">Connections</span>
                         <span class="metric-value">$($networkS2SConnections + $networkERConnections) ($networkS2SConnections S2S, $networkERConnections ER)</span>
                     </div>
+                    $(if ($networkVirtualWANHubs -gt 0) {
+                        "<div class='metric-row'><span class='metric-label'>Virtual WAN Hubs</span><span class='metric-value'>$networkVirtualWANHubs</span></div>"
+                    })
+                    $(if ($networkAzureFirewalls -gt 0) {
+                        "<div class='metric-row'><span class='metric-label'>Azure Firewalls</span><span class='metric-value'>$networkAzureFirewalls</span></div>"
+                    })
                     $(if ($networkSecurityRisks -gt 0) {
 @"
                     <div class="metric-row">

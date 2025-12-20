@@ -81,61 +81,92 @@ function Collect-NetworkInventory {
                 }
                 
                 # Calculate detailed statistics
-                $vnetCount = $inventory.Count
+                $vnetItems = @($inventory | Where-Object { $_.Type -eq "VNet" })
+                $vnetCount = $vnetItems.Count
+                $virtualWANHubItems = @($inventory | Where-Object { $_.Type -eq "VirtualWANHub" })
+                $virtualWANHubCount = $virtualWANHubItems.Count
+                $azureFirewallItems = @($inventory | Where-Object { $_.Type -eq "AzureFirewall" })
+                $azureFirewallCount = $azureFirewallItems.Count
                 $deviceCount = 0
                 $gatewayCount = 0
                 $peeringCount = 0
                 $s2sConnectionCount = 0
                 $erConnectionCount = 0
                 
-                foreach ($vnet in $inventory) {
-                    # Count gateways
-                    if ($vnet.Gateways) {
-                        $gatewayCount += $vnet.Gateways.Count
-                        
-                        # Count connections per gateway
-                        foreach ($gateway in $vnet.Gateways) {
-                            # Check if this is an ExpressRoute gateway
-                            $isExpressRouteGateway = ($gateway.Type -eq "ExpressRoute")
+                foreach ($item in $inventory) {
+                    if ($item.Type -eq "VNet") {
+                        # Count gateways
+                        if ($item.Gateways) {
+                            $gatewayCount += $item.Gateways.Count
                             
-                            if ($isExpressRouteGateway) {
-                                # ExpressRoute gateways count as ER connections
-                                $erConnectionCount++
-                            }
-                            elseif ($gateway.Connections) {
-                                foreach ($conn in $gateway.Connections) {
-                                    # S2S connections are IPsec VPN connections
-                                    if ($conn.ConnectionType -eq "IPsec") {
-                                        $s2sConnectionCount++
-                                    }
-                                    # ER connections can also be in ConnectionType
-                                    elseif ($conn.ConnectionType -eq "ExpressRoute") {
-                                        $erConnectionCount++
+                            # Count connections per gateway
+                            foreach ($gateway in $item.Gateways) {
+                                # Check if this is an ExpressRoute gateway
+                                $isExpressRouteGateway = ($gateway.Type -eq "ExpressRoute")
+                                
+                                if ($isExpressRouteGateway) {
+                                    # ExpressRoute gateways count as ER connections
+                                    $erConnectionCount++
+                                }
+                                elseif ($gateway.Connections) {
+                                    foreach ($conn in $gateway.Connections) {
+                                        # S2S connections are IPsec VPN connections
+                                        if ($conn.ConnectionType -eq "IPsec") {
+                                            $s2sConnectionCount++
+                                        }
+                                        # ER connections can also be in ConnectionType
+                                        elseif ($conn.ConnectionType -eq "ExpressRoute") {
+                                            $erConnectionCount++
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    
-                    # Count peerings
-                    if ($vnet.Peerings) {
-                        $peeringCount += $vnet.Peerings.Count
-                    }
-                    
-                    # Count devices (connected devices in subnets)
-                    if ($vnet.Subnets) {
-                        foreach ($subnet in $vnet.Subnets) {
-                            if ($subnet.ConnectedDevices) {
-                                $deviceCount += $subnet.ConnectedDevices.Count
+                        
+                        # Count peerings
+                        if ($item.Peerings) {
+                            $peeringCount += $item.Peerings.Count
+                        }
+                        
+                        # Count devices (connected devices in subnets)
+                        if ($item.Subnets) {
+                            foreach ($subnet in $item.Subnets) {
+                                if ($subnet.ConnectedDevices) {
+                                    $deviceCount += $subnet.ConnectedDevices.Count
+                                }
                             }
+                        }
+                    }
+                    elseif ($item.Type -eq "VirtualWANHub") {
+                        # Count ExpressRoute connections from hub
+                        if ($item.ExpressRouteConnections) {
+                            $erConnectionCount += $item.ExpressRouteConnections.Count
+                        }
+                        
+                        # Count S2S VPN connections from hub
+                        if ($item.VpnConnections) {
+                            $s2sConnectionCount += $item.VpnConnections.Count
+                        }
+                        
+                        # Count peerings to hub
+                        if ($item.Peerings) {
+                            $peeringCount += $item.Peerings.Count
                         }
                     }
                 }
                 
                 # Output detailed statistics
-                Write-Host "    Found $vnetCount VNET" -ForegroundColor Green
+                if ($vnetCount -gt 0) {
+                    Write-Host "    Found $vnetCount VNET$(if ($vnetCount -ne 1) { 's' })" -ForegroundColor Green
+                }
+                if ($virtualWANHubCount -gt 0) {
+                    Write-Host "    Found $virtualWANHubCount Virtual WAN Hub$(if ($virtualWANHubCount -ne 1) { 's' })" -ForegroundColor Green
+                }
+                if ($azureFirewallCount -gt 0) {
+                    Write-Host "    Found $azureFirewallCount Azure Firewall$(if ($azureFirewallCount -ne 1) { 's' })" -ForegroundColor Green
+                }
                 if ($deviceCount -gt 0) {
-                    Write-Host "    Found $deviceCount device$(if ($deviceCount -ne 1) { 's' })" -ForegroundColor Green
+                    Write-Host "    Found $deviceCount Device$(if ($deviceCount -ne 1) { 's' })" -ForegroundColor Green
                 }
                 if ($gatewayCount -gt 0) {
                     Write-Host "    Found $gatewayCount Gateway$(if ($gatewayCount -ne 1) { 's' })" -ForegroundColor Green
@@ -157,7 +188,16 @@ function Collect-NetworkInventory {
         }
     }
     
-    Write-Host "`n  Total VNets collected: $($NetworkInventory.Count)" -ForegroundColor Green
+    $totalVnets = ($NetworkInventory | Where-Object { $_.Type -eq "VNet" }).Count
+    $totalHubs = ($NetworkInventory | Where-Object { $_.Type -eq "VirtualWANHub" }).Count
+    $totalFirewalls = ($NetworkInventory | Where-Object { $_.Type -eq "AzureFirewall" }).Count
+    Write-Host "`n  Total collected: $totalVnets VNet$(if ($totalVnets -ne 1) { 's' })" -ForegroundColor Green
+    if ($totalHubs -gt 0) {
+        Write-Host "  Total Virtual WAN Hubs: $totalHubs" -ForegroundColor Green
+    }
+    if ($totalFirewalls -gt 0) {
+        Write-Host "  Total Azure Firewalls: $totalFirewalls" -ForegroundColor Green
+    }
 }
 
 

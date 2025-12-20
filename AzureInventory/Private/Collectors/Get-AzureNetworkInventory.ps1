@@ -28,7 +28,23 @@ function Get-AzureNetworkInventory {
         Write-Verbose "Getting VNets..."
         $vnets = Get-AzVirtualNetwork -ErrorAction SilentlyContinue
 
-        if (-not $vnets) {
+        # Get Virtual WAN Hubs
+        Write-Verbose "Getting Virtual WAN Hubs..."
+        $virtualWANHubs = [System.Collections.Generic.List[PSObject]]::new()
+        $hubResources = Get-AzResource -ResourceType "Microsoft.Network/virtualHubs" -ErrorAction SilentlyContinue
+        if ($hubResources) {
+            foreach ($res in $hubResources) {
+                try {
+                    $hub = Get-AzVirtualHub -ResourceGroupName $res.ResourceGroupName -Name $res.Name -ErrorAction SilentlyContinue
+                    if ($hub) { $virtualWANHubs.Add($hub) }
+                }
+                catch {
+                    Write-Verbose "Failed to get Virtual WAN Hub $($res.Name): $_"
+                }
+            }
+        }
+
+        if (-not $vnets -and $virtualWANHubs.Count -eq 0) {
             return $inventory
         }
 
@@ -76,6 +92,40 @@ function Get-AzureNetworkInventory {
 
         $publicIps = Get-AzPublicIpAddress -ErrorAction SilentlyContinue
         $privateEndpoints = Get-AzPrivateEndpoint -ErrorAction SilentlyContinue
+        
+        # Get Azure Firewalls
+        Write-Verbose "Getting Azure Firewalls..."
+        $azureFirewalls = [System.Collections.Generic.List[PSObject]]::new()
+        $firewallResources = Get-AzResource -ResourceType "Microsoft.Network/azureFirewalls" -ErrorAction SilentlyContinue
+        if ($firewallResources) {
+            foreach ($res in $firewallResources) {
+                try {
+                    $fw = Get-AzFirewall -ResourceGroupName $res.ResourceGroupName -Name $res.Name -ErrorAction SilentlyContinue
+                    if ($fw) {
+                        # Get firewall policy for threat intel mode
+                        $threatIntelMode = "Unknown"
+                        if ($fw.FirewallPolicy -and $fw.FirewallPolicy.Id) {
+                            try {
+                                $fwPolicy = Get-AzFirewallPolicy -ResourceId $fw.FirewallPolicy.Id -ErrorAction SilentlyContinue
+                                if ($fwPolicy) {
+                                    $threatIntelMode = if ($fwPolicy.ThreatIntelMode) { $fwPolicy.ThreatIntelMode } else { "Off" }
+                                }
+                            }
+                            catch {
+                                Write-Verbose "Failed to get firewall policy for $($fw.Name): $_"
+                            }
+                        }
+                        $azureFirewalls.Add([PSCustomObject]@{
+                            Firewall = $fw
+                            ThreatIntelMode = $threatIntelMode
+                        })
+                    }
+                }
+                catch {
+                    Write-Verbose "Failed to get Azure Firewall $($res.Name): $_"
+                }
+            }
+        }
         
         # Get all NICs once (might be heavy, but better than per-subnet loop if many subnets)
         $allNics = Get-AzNetworkInterface -ErrorAction SilentlyContinue
@@ -196,6 +246,7 @@ function Get-AzureNetworkInventory {
                 Subnets = [System.Collections.Generic.List[PSObject]]::new()
                 Peerings = [System.Collections.Generic.List[PSObject]]::new()
                 Gateways = [System.Collections.Generic.List[PSObject]]::new()
+                Firewalls = [System.Collections.Generic.List[PSObject]]::new()
             }
 
             # Process Peerings
@@ -204,9 +255,19 @@ function Get-AzureNetworkInventory {
                     # Safely extract remote VNet name
                     $remoteVnetName = ""
                     $remoteVnetId = ""
+                    $isVirtualWANHub = $false
+                    $remoteHubId = $null
+                    
                     if ($peering.RemoteVirtualNetwork -and $peering.RemoteVirtualNetwork.Id) {
                         $remoteVnetId = $peering.RemoteVirtualNetwork.Id
-                        $remoteVnetName = $remoteVnetId.Split('/')[-1]
+                        # Check if this is a Virtual WAN hub (resource type Microsoft.Network/virtualHubs)
+                        if ($remoteVnetId -match '/providers/Microsoft\.Network/virtualHubs/') {
+                            $isVirtualWANHub = $true
+                            $remoteHubId = $remoteVnetId
+                            $remoteVnetName = $remoteVnetId.Split('/')[-1]
+                        } else {
+                            $remoteVnetName = $remoteVnetId.Split('/')[-1]
+                        }
                     }
                     
                     $vnetObj.Peerings.Add([PSCustomObject]@{
@@ -217,6 +278,8 @@ function Get-AzureNetworkInventory {
                         AllowForwardedTraffic = $peering.AllowForwardedTraffic
                         AllowGatewayTransit = $peering.AllowGatewayTransit
                         UseRemoteGateways = $peering.UseRemoteGateways
+                        IsVirtualWANHub = $isVirtualWANHub
+                        RemoteHubId = $remoteHubId
                     })
                 }
             }
@@ -374,8 +437,28 @@ function Get-AzureNetworkInventory {
                     
                     # Safely handle ServiceEndpoints
                     $serviceEndpointsString = ""
-                    if ($subnet.ServiceEndpoints -and $subnet.ServiceEndpoints.Service) {
-                        $serviceEndpointsString = $subnet.ServiceEndpoints.Service -join ", "
+                    $serviceEndpointsList = [System.Collections.Generic.List[string]]::new()
+                    if ($subnet.ServiceEndpoints) {
+                        # ServiceEndpoints can be an array of objects with Service property, or just Service property
+                        if ($subnet.ServiceEndpoints.Service) {
+                            # Array of ServiceEndpoint objects
+                            foreach ($se in $subnet.ServiceEndpoints) {
+                                if ($se.Service) {
+                                    $serviceEndpointsList.Add($se.Service)
+                                }
+                            }
+                        } elseif ($subnet.ServiceEndpoints -is [string]) {
+                            # Already a string (shouldn't happen, but handle it)
+                            $serviceEndpointsList.Add($subnet.ServiceEndpoints)
+                        } elseif ($subnet.ServiceEndpoints -is [array]) {
+                            # Array of strings
+                            foreach ($se in $subnet.ServiceEndpoints) {
+                                if ($se -and $se.ToString().Trim() -ne "") {
+                                    $serviceEndpointsList.Add($se.ToString())
+                                }
+                            }
+                        }
+                        $serviceEndpointsString = $serviceEndpointsList -join ", "
                     }
 
                     # Analyze NSG for security risks
@@ -389,6 +472,7 @@ function Get-AzureNetworkInventory {
                         Id = $subnet.Id
                         AddressPrefix = $addressPrefixString
                         ServiceEndpoints = $serviceEndpointsString
+                        ServiceEndpointsList = $serviceEndpointsList
                         
                         NsgId = if ($nsg) { $nsg.Id } else { $null }
                         NsgName = if ($nsg) { $nsg.Name } else { $null }
@@ -709,8 +793,406 @@ function Get-AzureNetworkInventory {
                     $vnetObj.Subnets.Add($subnetObj)
                 }
             }
+            
+            # Link Azure Firewalls to this VNet (only VNet-based firewalls, not Virtual WAN-integrated)
+            foreach ($fwData in $azureFirewalls) {
+                $fw = $fwData.Firewall
+                
+                # Skip Virtual WAN-integrated firewalls (they will be linked to hubs instead)
+                if ($fw.VirtualHub -and $fw.VirtualHub.Id) {
+                    continue
+                }
+                
+                if ($fw.IpConfigurations -and $fw.IpConfigurations.Count -gt 0) {
+                    foreach ($ipConfig in $fw.IpConfigurations) {
+                        if ($ipConfig.Subnet -and $ipConfig.Subnet.Id) {
+                            # Extract VNet ID from subnet ID
+                            $subnetIdParts = $ipConfig.Subnet.Id -split '/'
+                            $vnetIndex = [array]::IndexOf($subnetIdParts, 'virtualNetworks')
+                            if ($vnetIndex -ge 0 -and $vnetIndex -lt ($subnetIdParts.Count - 1)) {
+                                $fwVNetName = $subnetIdParts[$vnetIndex + 1]
+                                if ($fwVNetName -eq $vnet.Name) {
+                                    # Extract VNet ID (everything up to virtualNetworks/{name})
+                                    $vnetIdParts = $subnetIdParts[0..($vnetIndex + 1)]
+                                    $fwVNetId = $vnetIdParts -join '/'
+                                    
+                                    # Get Public IPs
+                                    $fwPublicIPs = [System.Collections.Generic.List[string]]::new()
+                                    if ($fw.PublicIPAddresses) {
+                                        foreach ($pipRef in $fw.PublicIPAddresses) {
+                                            if ($pipRef.Id) {
+                                                $pip = $publicIps | Where-Object { $_.Id -eq $pipRef.Id } | Select-Object -First 1
+                                                if ($pip -and $pip.IpAddress) {
+                                                    $fwPublicIPs.Add($pip.IpAddress)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    # Get Private IP
+                                    $fwPrivateIP = $null
+                                    if ($ipConfig.PrivateIPAddress) {
+                                        $fwPrivateIP = $ipConfig.PrivateIPAddress
+                                    }
+                                    
+                                    $fwObj = [PSCustomObject]@{
+                                        Type = "AzureFirewall"
+                                        Id = $fw.Id
+                                        Name = $fw.Name
+                                        ResourceGroup = $fw.ResourceGroupName
+                                        Location = $fw.Location
+                                        SubscriptionId = $SubscriptionId
+                                        SubscriptionName = $SubscriptionName
+                                        VNetId = $fwVNetId
+                                        VNetName = $fwVNetName
+                                        SubnetId = $ipConfig.Subnet.Id
+                                        PublicIPs = $fwPublicIPs
+                                        PrivateIP = $fwPrivateIP
+                                        FirewallPolicyId = if ($fw.FirewallPolicy -and $fw.FirewallPolicy.Id) { $fw.FirewallPolicy.Id } else { $null }
+                                        ThreatIntelMode = $fwData.ThreatIntelMode
+                                        SkuTier = if ($fw.Sku -and $fw.Sku.Tier) { $fw.Sku.Tier } else { "Standard" }
+                                        Zones = if ($fw.Zones) { $fw.Zones } else { @() }
+                                        DeploymentType = "VNet"
+                                    }
+                                    
+                                    $vnetObj.Firewalls.Add($fwObj)
+                                    break  # Only add once per VNet
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             $inventory.Add($vnetObj)
+        }
+        
+        # Process Virtual WAN Hubs
+        foreach ($hub in $virtualWANHubs) {
+            Write-Verbose "Processing Virtual WAN Hub: $($hub.Name)"
+            
+            # Link Virtual WAN-integrated Azure Firewalls to this hub
+            $hubFirewalls = [System.Collections.Generic.List[PSObject]]::new()
+            foreach ($fwData in $azureFirewalls) {
+                $fw = $fwData.Firewall
+                # Check if this firewall is integrated with this Virtual WAN hub
+                if ($fw.VirtualHub -and $fw.VirtualHub.Id -eq $hub.Id) {
+                    # Get Public IPs
+                    $fwPublicIPs = [System.Collections.Generic.List[string]]::new()
+                    if ($fw.PublicIPAddresses) {
+                        foreach ($pipRef in $fw.PublicIPAddresses) {
+                            if ($pipRef.Id) {
+                                $pip = $publicIps | Where-Object { $_.Id -eq $pipRef.Id } | Select-Object -First 1
+                                if ($pip -and $pip.IpAddress) {
+                                    $fwPublicIPs.Add($pip.IpAddress)
+                                }
+                            }
+                        }
+                    }
+                    
+                    $fwObj = [PSCustomObject]@{
+                        Type = "AzureFirewall"
+                        Id = $fw.Id
+                        Name = $fw.Name
+                        ResourceGroup = $fw.ResourceGroupName
+                        Location = $fw.Location
+                        SubscriptionId = $SubscriptionId
+                        SubscriptionName = $SubscriptionName
+                        VirtualHubId = $hub.Id
+                        VirtualHubName = $hub.Name
+                        VNetId = $null
+                        VNetName = $null
+                        SubnetId = $null
+                        PublicIPs = $fwPublicIPs
+                        PrivateIP = $null
+                        FirewallPolicyId = if ($fw.FirewallPolicy -and $fw.FirewallPolicy.Id) { $fw.FirewallPolicy.Id } else { $null }
+                        ThreatIntelMode = $fwData.ThreatIntelMode
+                        SkuTier = if ($fw.Sku -and $fw.Sku.Tier) { $fw.Sku.Tier } else { "Standard" }
+                        Zones = if ($fw.Zones) { $fw.Zones } else { @() }
+                        DeploymentType = "VirtualWAN"
+                    }
+                    
+                    $hubFirewalls.Add($fwObj)
+                }
+            }
+            
+            # Get ExpressRoute Gateway for this hub
+            $expressRouteConnections = [System.Collections.Generic.List[PSObject]]::new()
+            $erGatewayResources = Get-AzResource -ResourceType "Microsoft.Network/expressRouteGateways" -ErrorAction SilentlyContinue
+            if ($erGatewayResources) {
+                foreach ($erRes in $erGatewayResources) {
+                    try {
+                        $erGateway = Get-AzExpressRouteGateway -ResourceGroupName $erRes.ResourceGroupName -Name $erRes.Name -ErrorAction SilentlyContinue
+                        if ($erGateway -and $erGateway.VirtualHub -and $erGateway.VirtualHub.Id -eq $hub.Id) {
+                            # This ExpressRoute gateway belongs to this hub
+                            $erConnections = Get-AzExpressRouteConnection -ResourceGroupName $erRes.ResourceGroupName -ExpressRouteGatewayName $erRes.Name -ErrorAction SilentlyContinue
+                            if ($erConnections) {
+                                foreach ($erConn in $erConnections) {
+                                    $circuitId = if ($erConn.ExpressRouteCircuit -and $erConn.ExpressRouteCircuit.Id) { $erConn.ExpressRouteCircuit.Id } else { $null }
+                                    $circuitName = if ($circuitId) { ($circuitId -split '/')[-1] } else { "Unknown" }
+                                    $circuitInfo = $null
+                                    
+                                    # Try to get ExpressRoute Circuit details
+                                    if ($circuitId) {
+                                        try {
+                                            $circuit = Get-AzExpressRouteCircuit -ResourceId $circuitId -ErrorAction SilentlyContinue
+                                            if ($circuit) {
+                                                $circuitInfo = [PSCustomObject]@{
+                                                    Name = $circuit.Name
+                                                    ResourceGroup = $circuit.ResourceGroupName
+                                                    Location = $circuit.Location
+                                                    ServiceProviderName = if ($circuit.ServiceProviderProperties -and $circuit.ServiceProviderProperties.ServiceProviderName) { $circuit.ServiceProviderProperties.ServiceProviderName } else { $null }
+                                                    PeeringLocation = if ($circuit.ServiceProviderProperties -and $circuit.ServiceProviderProperties.PeeringLocation) { $circuit.ServiceProviderProperties.PeeringLocation } else { $null }
+                                                    BandwidthInMbps = if ($circuit.ServiceProviderProperties -and $circuit.ServiceProviderProperties.BandwidthInMbps) { $circuit.ServiceProviderProperties.BandwidthInMbps } else { $null }
+                                                    SkuName = if ($circuit.Sku -and $circuit.Sku.Name) { $circuit.Sku.Name } else { $null }
+                                                    SkuTier = if ($circuit.Sku -and $circuit.Sku.Tier) { $circuit.Sku.Tier } else { $null }
+                                                    CircuitProvisioningState = if ($circuit.CircuitProvisioningState) { $circuit.CircuitProvisioningState } else { $null }
+                                                    ServiceProviderProvisioningState = if ($circuit.ServiceProviderProvisioningState) { $circuit.ServiceProviderProvisioningState } else { $null }
+                                                    ServiceKey = if ($circuit.ServiceKey) { $circuit.ServiceKey } else { $null }
+                                                }
+                                            }
+                                        }
+                                        catch {
+                                            Write-Verbose "Failed to get ExpressRoute Circuit $circuitId : $_"
+                                        }
+                                    }
+                                    
+                                    $expressRouteConnections.Add([PSCustomObject]@{
+                                        Name = $erConn.Name
+                                        Id = $erConn.Id
+                                        ConnectionStatus = if ($erConn.ConnectionStatus) { $erConn.ConnectionStatus } else { "Unknown" }
+                                        ExpressRouteCircuitId = $circuitId
+                                        ExpressRouteCircuitName = $circuitName
+                                        ExpressRouteCircuit = $circuitInfo
+                                        PeerASN = if ($erConn.PeerASN) { $erConn.PeerASN } else { $null }
+                                        RoutingWeight = if ($erConn.RoutingWeight) { $erConn.RoutingWeight } else { 0 }
+                                        AuthorizationKey = if ($erConn.AuthorizationKey) { $erConn.AuthorizationKey } else { $null }
+                                    })
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Verbose "Failed to get ExpressRoute Gateway $($erRes.Name): $_"
+                    }
+                }
+            }
+            
+            # Get VPN Gateway for this hub
+            $vpnConnections = [System.Collections.Generic.List[PSObject]]::new()
+            $vpnGatewayResources = Get-AzResource -ResourceType "Microsoft.Network/vpnGateways" -ErrorAction SilentlyContinue
+            if ($vpnGatewayResources) {
+                foreach ($vpnRes in $vpnGatewayResources) {
+                    try {
+                        $vpnGateway = Get-AzVpnGateway -ResourceGroupName $vpnRes.ResourceGroupName -Name $vpnRes.Name -ErrorAction SilentlyContinue
+                        if ($vpnGateway -and $vpnGateway.VirtualHub -and $vpnGateway.VirtualHub.Id -eq $hub.Id) {
+                            # This VPN gateway belongs to this hub
+                            $vpnConns = Get-AzVpnGatewayConnection -ResourceGroupName $vpnRes.ResourceGroupName -VpnGatewayName $vpnRes.Name -ErrorAction SilentlyContinue
+                            if ($vpnConns) {
+                                foreach ($vpnConn in $vpnConns) {
+                                    $remoteSiteName = "Unknown"
+                                    $remoteSiteAddressSpace = ""
+                                    if ($vpnConn.RemoteVpnSite -and $vpnConn.RemoteVpnSite.Id) {
+                                        try {
+                                            $vpnSite = Get-AzVpnSite -ResourceId $vpnConn.RemoteVpnSite.Id -ErrorAction SilentlyContinue
+                                            if ($vpnSite) {
+                                                $remoteSiteName = $vpnSite.Name
+                                                if ($vpnSite.AddressSpace -and $vpnSite.AddressSpace.AddressPrefixes) {
+                                                    $remoteSiteAddressSpace = $vpnSite.AddressSpace.AddressPrefixes -join ", "
+                                                }
+                                            }
+                                        }
+                                        catch {
+                                            Write-Verbose "Failed to get VPN Site for connection $($vpnConn.Name): $_"
+                                        }
+                                    }
+                                    
+                                    $vpnConnections.Add([PSCustomObject]@{
+                                        Name = $vpnConn.Name
+                                        Id = $vpnConn.Id
+                                        ConnectionStatus = if ($vpnConn.ConnectionStatus) { $vpnConn.ConnectionStatus } else { "Unknown" }
+                                        RemoteSiteName = $remoteSiteName
+                                        RemoteSiteAddressSpace = $remoteSiteAddressSpace
+                                        RemoteVpnSiteId = if ($vpnConn.RemoteVpnSite -and $vpnConn.RemoteVpnSite.Id) { $vpnConn.RemoteVpnSite.Id } else { $null }
+                                        RoutingWeight = if ($vpnConn.RoutingWeight) { $vpnConn.RoutingWeight } else { 0 }
+                                    })
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Verbose "Failed to get VPN Gateway $($vpnRes.Name): $_"
+                    }
+                }
+            }
+            
+            # Find VNets peered to this hub
+            # Match by hub ID (most reliable) - the peering RemoteVirtualNetwork.Id should match hub.Id
+            $hubPeerings = [System.Collections.Generic.List[PSObject]]::new()
+            foreach ($vnet in $vnets) {
+                if ($vnet.VirtualNetworkPeerings) {
+                    foreach ($peering in $vnet.VirtualNetworkPeerings) {
+                        # Match by ID first (most reliable)
+                        $isMatch = $false
+                        if ($peering.RemoteVirtualNetwork -and $peering.RemoteVirtualNetwork.Id) {
+                            # Direct ID match
+                            if ($peering.RemoteVirtualNetwork.Id -eq $hub.Id) {
+                                $isMatch = $true
+                            }
+                            # Also check if it's a Virtual WAN hub peering (by resource type)
+                            elseif ($peering.RemoteVirtualNetwork.Id -match '/providers/Microsoft\.Network/virtualHubs/') {
+                                # Extract hub name from the ID and try to match
+                                $remoteHubNameFromId = $peering.RemoteVirtualNetwork.Id.Split('/')[-1]
+                                # Try fuzzy matching: check if hub name is contained in the remote name or vice versa
+                                if ($remoteHubNameFromId -like "*$($hub.Name)*" -or $hub.Name -like "*$remoteHubNameFromId*") {
+                                    $isMatch = $true
+                                }
+                                # Also try matching by extracting the base name (remove prefixes/suffixes)
+                                $hubBaseName = $hub.Name -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
+                                $remoteBaseName = $remoteHubNameFromId -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
+                                if ($hubBaseName -eq $remoteBaseName -or $hub.Name -eq $remoteBaseName -or $remoteHubNameFromId -eq $hubBaseName) {
+                                    $isMatch = $true
+                                }
+                            }
+                        }
+                        
+                        if ($isMatch) {
+                            $hubPeerings.Add([PSCustomObject]@{
+                                VNetName = $vnet.Name
+                                VNetId = $vnet.Id
+                                PeeringName = $peering.Name
+                                State = $peering.PeeringState
+                                AllowForwardedTraffic = $peering.AllowForwardedTraffic
+                                AllowGatewayTransit = $peering.AllowGatewayTransit
+                                UseRemoteGateways = $peering.UseRemoteGateways
+                            })
+                        }
+                    }
+                }
+            }
+            
+            # Create VirtualWANHub object
+            $hubObj = [PSCustomObject]@{
+                Type = "VirtualWANHub"
+                Id = $hub.Id
+                Name = $hub.Name
+                ResourceGroup = $hub.ResourceGroupName
+                Location = $hub.Location
+                AddressPrefix = if ($hub.AddressPrefix) { $hub.AddressPrefix } else { "" }
+                SubscriptionId = $SubscriptionId
+                SubscriptionName = $SubscriptionName
+                VirtualWANId = if ($hub.VirtualWAN -and $hub.VirtualWAN.Id) { $hub.VirtualWAN.Id } else { $null }
+                HubRoutingPreference = if ($hub.HubRoutingPreference) { $hub.HubRoutingPreference } else { "ASPath" }
+                ExpressRouteConnections = $expressRouteConnections
+                VpnConnections = $vpnConnections
+                Peerings = $hubPeerings
+                Firewalls = $hubFirewalls
+            }
+            
+            $inventory.Add($hubObj)
+        }
+        
+        # Add standalone Azure Firewalls (not linked to VNets or Hubs in current subscription)
+        foreach ($fwData in $azureFirewalls) {
+            $fw = $fwData.Firewall
+            $fwLinked = $false
+            
+            # Check if this firewall is already linked to a VNet in inventory
+            foreach ($invItem in $inventory) {
+                if ($invItem.Type -eq "VNet" -and $invItem.Firewalls) {
+                    foreach ($fwObj in $invItem.Firewalls) {
+                        if ($fwObj.Id -eq $fw.Id) {
+                            $fwLinked = $true
+                            break
+                        }
+                    }
+                }
+                # Also check if linked to a Virtual WAN Hub
+                if ($invItem.Type -eq "VirtualWANHub" -and $invItem.Firewalls) {
+                    foreach ($fwObj in $invItem.Firewalls) {
+                        if ($fwObj.Id -eq $fw.Id) {
+                            $fwLinked = $true
+                            break
+                        }
+                    }
+                }
+                if ($fwLinked) { break }
+            }
+            
+            # If not linked, add as standalone (might be in different subscription, VNet not found, or Virtual WAN hub not found)
+            if (-not $fwLinked) {
+                $fwVNetId = $null
+                $fwVNetName = "Unknown"
+                $fwSubnetId = $null
+                $fwPublicIPs = [System.Collections.Generic.List[string]]::new()
+                $fwPrivateIP = $null
+                $fwVirtualHubId = $null
+                $fwVirtualHubName = "Unknown"
+                $deploymentType = "Unknown"
+                
+                # Check if it's a Virtual WAN-integrated firewall
+                if ($fw.VirtualHub -and $fw.VirtualHub.Id) {
+                    $deploymentType = "VirtualWAN"
+                    $fwVirtualHubId = $fw.VirtualHub.Id
+                    # Try to extract hub name from ID
+                    $hubIdParts = $fwVirtualHubId -split '/'
+                    $hubIndex = [array]::IndexOf($hubIdParts, 'virtualHubs')
+                    if ($hubIndex -ge 0 -and $hubIndex -lt ($hubIdParts.Count - 1)) {
+                        $fwVirtualHubName = $hubIdParts[$hubIndex + 1]
+                    }
+                } elseif ($fw.IpConfigurations -and $fw.IpConfigurations.Count -gt 0) {
+                    $deploymentType = "VNet"
+                    $ipConfig = $fw.IpConfigurations[0]
+                    if ($ipConfig.Subnet -and $ipConfig.Subnet.Id) {
+                        $fwSubnetId = $ipConfig.Subnet.Id
+                        $subnetIdParts = $ipConfig.Subnet.Id -split '/'
+                        $vnetIndex = [array]::IndexOf($subnetIdParts, 'virtualNetworks')
+                        if ($vnetIndex -ge 0 -and $vnetIndex -lt ($subnetIdParts.Count - 1)) {
+                            $fwVNetName = $subnetIdParts[$vnetIndex + 1]
+                            $vnetIdParts = $subnetIdParts[0..($vnetIndex + 1)]
+                            $fwVNetId = $vnetIdParts -join '/'
+                        }
+                    }
+                    if ($ipConfig.PrivateIPAddress) {
+                        $fwPrivateIP = $ipConfig.PrivateIPAddress
+                    }
+                }
+                
+                if ($fw.PublicIPAddresses) {
+                    foreach ($pipRef in $fw.PublicIPAddresses) {
+                        if ($pipRef.Id) {
+                            $pip = $publicIps | Where-Object { $_.Id -eq $pipRef.Id } | Select-Object -First 1
+                            if ($pip -and $pip.IpAddress) {
+                                $fwPublicIPs.Add($pip.IpAddress)
+                            }
+                        }
+                    }
+                }
+                
+                $fwObj = [PSCustomObject]@{
+                    Type = "AzureFirewall"
+                    Id = $fw.Id
+                    Name = $fw.Name
+                    ResourceGroup = $fw.ResourceGroupName
+                    Location = $fw.Location
+                    SubscriptionId = $SubscriptionId
+                    SubscriptionName = $SubscriptionName
+                    VNetId = $fwVNetId
+                    VNetName = $fwVNetName
+                    VirtualHubId = $fwVirtualHubId
+                    VirtualHubName = $fwVirtualHubName
+                    SubnetId = $fwSubnetId
+                    PublicIPs = $fwPublicIPs
+                    PrivateIP = $fwPrivateIP
+                    FirewallPolicyId = if ($fw.FirewallPolicy -and $fw.FirewallPolicy.Id) { $fw.FirewallPolicy.Id } else { $null }
+                    ThreatIntelMode = $fwData.ThreatIntelMode
+                    SkuTier = if ($fw.Sku -and $fw.Sku.Tier) { $fw.Sku.Tier } else { "Standard" }
+                    Zones = if ($fw.Zones) { $fw.Zones } else { @() }
+                    DeploymentType = $deploymentType
+                }
+                
+                $inventory.Add($fwObj)
+            }
         }
     }
     catch {
