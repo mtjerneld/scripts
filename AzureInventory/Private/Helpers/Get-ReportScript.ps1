@@ -167,6 +167,8 @@ function Get-ReportScript {
                         
                         const controlRowsInBox = box.querySelectorAll('.control-row');
                         let hasMatchingControl = false;
+                        let hasMatchingSubscription = false;
+                        
                         controlRowsInBox.forEach(row => {
                             const rowSeverity = row.getAttribute('data-severity-lower') || '';
                             const rowCategory = row.getAttribute('data-category-lower') || '';
@@ -178,12 +180,42 @@ function Get-ReportScript {
                             const rowFrameworkMatch = selectedFramework === 'all' || rowFrameworks.includes(selectedFramework);
                             const rowSearchMatch = searchText === '' || rowSearchable.includes(searchText);
                             
-                            if (rowSeverityMatch && rowCategoryMatch && rowFrameworkMatch && rowSearchMatch) {
+                            // Check subscription match - subscription names are in the searchable text
+                            let rowSubscriptionMatch = true;
+                            if (selectedSubscription !== 'all') {
+                                // Extract subscription names from searchable text or check resource detail rows
+                                // Subscription names are included in the searchable text (lowercased)
+                                rowSubscriptionMatch = rowSearchable.includes(selectedSubscription);
+                                
+                                // Also check resource detail rows for this control
+                                if (!rowSubscriptionMatch) {
+                                    const controlKey = row.getAttribute('data-control-key');
+                                    if (controlKey) {
+                                        const resourcesRow = document.querySelector('.control-resources-row[data-control-key="' + controlKey + '"]');
+                                        if (resourcesRow) {
+                                            const resourceDetailRows = resourcesRow.querySelectorAll('.resource-detail-control-row');
+                                            for (let resourceRow of resourceDetailRows) {
+                                                const resourceSearchable = resourceRow.getAttribute('data-searchable') || '';
+                                                if (resourceSearchable.includes(selectedSubscription)) {
+                                                    rowSubscriptionMatch = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (rowSeverityMatch && rowCategoryMatch && rowFrameworkMatch && rowSearchMatch && rowSubscriptionMatch) {
                                 hasMatchingControl = true;
+                                hasMatchingSubscription = true;
                             }
                         });
                         
-                        if (severityMatch && categoryMatch && searchMatch && hasMatchingControl) {
+                        // Also check if the box itself has subscription match in its searchable text
+                        const boxSubscriptionMatch = selectedSubscription === 'all' || searchableText.includes(selectedSubscription) || hasMatchingSubscription;
+                        
+                        if (severityMatch && categoryMatch && searchMatch && boxSubscriptionMatch && hasMatchingControl) {
                             box.style.display = 'block';
                             // Ensure content is still hidden if header is collapsed
                             const categoryId = box.querySelector('.category-header')?.getAttribute('data-category-id');
@@ -207,7 +239,32 @@ function Get-ReportScript {
                                 const rowFrameworkMatch = selectedFramework === 'all' || rowFrameworks.includes(selectedFramework);
                                 const rowSearchMatch = searchText === '' || rowSearchable.includes(searchText);
                                 
-                                if (rowSeverityMatch && rowCategoryMatch && rowFrameworkMatch && rowSearchMatch) {
+                                // Check subscription match - subscription names are in the searchable text
+                                let rowSubscriptionMatch = true;
+                                if (selectedSubscription !== 'all') {
+                                    // Subscription names are included in the searchable text (lowercased)
+                                    rowSubscriptionMatch = rowSearchable.includes(selectedSubscription);
+                                    
+                                    // Also check resource detail rows for this control
+                                    if (!rowSubscriptionMatch) {
+                                        const controlKey = row.getAttribute('data-control-key');
+                                        if (controlKey) {
+                                            const resourcesRow = document.querySelector('.control-resources-row[data-control-key="' + controlKey + '"]');
+                                            if (resourcesRow) {
+                                                const resourceDetailRows = resourcesRow.querySelectorAll('.resource-detail-control-row');
+                                                for (let resourceRow of resourceDetailRows) {
+                                                    const resourceSearchable = resourceRow.getAttribute('data-searchable') || '';
+                                                    if (resourceSearchable.includes(selectedSubscription)) {
+                                                        rowSubscriptionMatch = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (rowSeverityMatch && rowCategoryMatch && rowFrameworkMatch && rowSearchMatch && rowSubscriptionMatch) {
                                     row.classList.remove('hidden');
                                     visibleCount++;
                                     // Keep resources row collapsed - only expand on click
@@ -252,6 +309,26 @@ function Get-ReportScript {
                             });
                         } else {
                             box.style.display = 'none';
+                        }
+                    });
+                    
+                    // Filter score cards (Overall Score, L1, L2, Category cards)
+                    const scoreCards = document.querySelectorAll('.score-card, .category-score-card');
+                    scoreCards.forEach(card => {
+                        const cardSubscriptions = card.getAttribute('data-subscription') || '';
+                        let subscriptionMatch = true;
+                        
+                        if (selectedSubscription !== 'all' && cardSubscriptions) {
+                            // Check if the selected subscription is in the card's subscription list
+                            // Subscriptions are pipe-separated, so split and check
+                            const subscriptionList = cardSubscriptions.toLowerCase().split('|');
+                            subscriptionMatch = subscriptionList.includes(selectedSubscription);
+                        }
+                        
+                        if (subscriptionMatch) {
+                            card.style.display = '';
+                        } else {
+                            card.style.display = 'none';
                         }
                     });
                     

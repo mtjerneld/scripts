@@ -134,22 +134,34 @@ function Export-DashboardReport {
     if ($AdvisorReportData) {
         $advisorCount = $AdvisorReportData.AdvisorCount
         $advisorHighCount = $AdvisorReportData.AdvisorHighCount
+        $advisorMediumCount = if ($AdvisorReportData.AdvisorMediumCount) { $AdvisorReportData.AdvisorMediumCount } else { 0 }
+        $advisorLowCount = if ($AdvisorReportData.AdvisorLowCount) { $AdvisorReportData.AdvisorLowCount } else { 0 }
         $advisorSavings = $AdvisorReportData.TotalSavings
         $advisorCurrency = $AdvisorReportData.SavingsCurrency
     } else {
         # Fallback: Calculate from AdvisorRecommendations
         $advisorCount = 0
         $advisorHighCount = 0
+        $advisorMediumCount = 0
+        $advisorLowCount = 0
         $advisorSavings = 0
         $advisorCurrency = "USD"
         if ($AdvisorRecommendations -and $AdvisorRecommendations.Count -gt 0) {
             $advisorCount = $AdvisorRecommendations.Count
             $advisorHighCount = @($AdvisorRecommendations | Where-Object { $_.Impact -eq 'High' }).Count
+            $advisorMediumCount = @($AdvisorRecommendations | Where-Object { $_.Impact -eq 'Medium' }).Count
+            $advisorLowCount = @($AdvisorRecommendations | Where-Object { $_.Impact -eq 'Low' }).Count
             $savingsData = Get-CostSavingsFromRecommendations -Recommendations $AdvisorRecommendations
             $advisorSavings = $savingsData.TotalSavings
             $advisorCurrency = $savingsData.Currency
         }
     }
+    
+    # Determine highest severity for Advisor card color
+    $advisorHighestSeverityColor = if ($advisorHighCount -gt 0) { 'var(--accent-yellow)' }
+                                   elseif ($advisorMediumCount -gt 0) { 'var(--accent-blue)' }
+                                   elseif ($advisorLowCount -gt 0) { 'var(--accent-green)' }
+                                   else { '#888' }
     
     # Change Tracking metrics - use pre-calculated data from Change Tracking Report if available
     if ($ChangeTrackingReportData) {
@@ -169,15 +181,69 @@ function Export-DashboardReport {
     if ($NetworkInventoryReportData) {
         $networkVNetCount = $NetworkInventoryReportData.VNetCount
         $networkDeviceCount = $NetworkInventoryReportData.DeviceCount
+        $networkPeeringCount = if ($NetworkInventoryReportData.PeeringCount) { $NetworkInventoryReportData.PeeringCount } else { 0 }
+        $networkS2SConnections = if ($NetworkInventoryReportData.S2SConnectionCount) { $NetworkInventoryReportData.S2SConnectionCount } else { 0 }
+        $networkERConnections = if ($NetworkInventoryReportData.ERConnectionCount) { $NetworkInventoryReportData.ERConnectionCount } else { 0 }
+        $networkDisconnectedConnections = if ($NetworkInventoryReportData.DisconnectedConnections) { $NetworkInventoryReportData.DisconnectedConnections } else { 0 }
+        $networkSubnetsMissingNSG = if ($NetworkInventoryReportData.SubnetsMissingNSG) { $NetworkInventoryReportData.SubnetsMissingNSG } else { 0 }
+        $networkSecurityRisks = if ($NetworkInventoryReportData.SecurityRisks) { $NetworkInventoryReportData.SecurityRisks } else { 0 }
     } else {
         $networkVNetCount = if ($AuditResult.NetworkInventory) { $AuditResult.NetworkInventory.Count } else { 0 }
         $networkDeviceCount = 0
+        $networkPeeringCount = 0
+        $networkS2SConnections = 0
+        $networkERConnections = 0
+        $networkDisconnectedConnections = 0
+        $networkSubnetsMissingNSG = 0
+        $networkSecurityRisks = 0
         if ($AuditResult.NetworkInventory) {
+            $uniquePeerings = [System.Collections.Generic.HashSet[string]]::new()
             foreach ($vnet in $AuditResult.NetworkInventory) {
                 foreach ($subnet in $vnet.Subnets) {
                     $networkDeviceCount += $subnet.ConnectedDevices.Count
+                    if (-not $subnet.NsgId) {
+                        # Exclude legitimate exceptions: GatewaySubnet, AzureBastionSubnet, AzureFirewallSubnet
+                        $subnetName = $subnet.Name
+                        $isExceptionSubnet = ($subnetName -eq "GatewaySubnet" -or 
+                                             $subnetName -eq "AzureBastionSubnet" -or 
+                                             $subnetName -eq "AzureFirewallSubnet")
+                        
+                        if (-not $isExceptionSubnet) {
+                            $networkSubnetsMissingNSG++
+                        }
+                    }
+                    # Count NSG risks
+                    if ($subnet.NsgRisks) {
+                        $networkSecurityRisks += $subnet.NsgRisks.Count
+                    }
+                }
+                # Count peerings
+                foreach ($peering in $vnet.Peerings) {
+                    $vnetPair = @($vnet.Name, $peering.RemoteVnetName) | Sort-Object
+                    $peeringKey = "$($vnetPair[0])|$($vnetPair[1])"
+                    [void]$uniquePeerings.Add($peeringKey)
+                }
+                # Count connections
+                foreach ($gateway in $vnet.Gateways) {
+                    if ($gateway.Type -eq "ExpressRoute") {
+                        $networkERConnections++
+                    }
+                    elseif ($gateway.Connections) {
+                        foreach ($conn in $gateway.Connections) {
+                            if ($conn.ConnectionType -eq "IPsec") {
+                                $networkS2SConnections++
+                            }
+                            elseif ($conn.ConnectionType -eq "ExpressRoute") {
+                                $networkERConnections++
+                            }
+                            if ($conn.ConnectionStatus -and $conn.ConnectionStatus -ne "Connected") {
+                                $networkDisconnectedConnections++
+                            }
+                        }
+                    }
                 }
             }
+            $networkPeeringCount = $uniquePeerings.Count
         }
     }
     
@@ -254,29 +320,12 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
     <div class="container">
         <div class="hero">
             <h1>Azure Audit Dashboard</h1>
-            <p class="subtitle">Generated: $timestamp | Tenant: $TenantId | $subscriptionCount Subscription(s)</p>
-            <div class="health-indicator">
-                <span class="health-dot" style="background-color: $healthColor;"></span>
-                <span>$healthText</span>
-            </div>
-        </div>
-        
-        <div class="quick-stats">
-            <div class="quick-stat">
-                <div class="value">$subscriptionCount</div>
-                <div class="label">Subscriptions Scanned</div>
-            </div>
-            <div class="quick-stat" style="$(if ($eolTotalFindings -gt 0) { 'border-color: var(--accent-red);' })">
-                <div class="value" style="$(if ($eolTotalFindings -gt 0) { 'color: var(--accent-red);' })">$eolTotalFindings</div>
-                <div class="label">EOL / Deprecated Resources (Components: $eolComponentCount, Next: $eolSoonestDeadlineText)</div>
-            </div>
-            <div class="quick-stat">
-                <div class="value">$totalFailedFindings</div>
-                <div class="label">Security Issues</div>
-            </div>
-            <div class="quick-stat" style="$(if ($advisorHighCount -gt 0) { 'border-color: var(--accent-yellow);' })">
-                <div class="value" style="$(if ($advisorHighCount -gt 0) { 'color: var(--accent-yellow);' })">$advisorCount</div>
-                <div class="label">Advisor Recommendations</div>
+            <div class="metadata">
+                <p><strong>Tenant:</strong> $TenantId</p>
+                <p><strong>Scanned:</strong> $timestamp</p>
+                <p><strong>Subscriptions:</strong> $subscriptionCount</p>
+                <p><strong>Resources:</strong> $($AuditResult.TotalResources)</p>
+                <p><strong>Total Findings:</strong> $totalFailedFindings</p>
             </div>
         </div>
         
@@ -355,13 +404,21 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="card-body">
                     <div class="score-display">
                         <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, var(--bg-surface), var(--bg-hover));">
-                            <span class="score-value" style="color: var(--accent-yellow); font-size: 2rem;">$advisorCount</span>
+                            <span class="score-value" style="color: $advisorHighestSeverityColor; font-size: 2rem;">$advisorCount</span>
                             <span class="score-label">Recommendations</span>
                         </div>
                     </div>
                     <div class="metric-row">
                         <span class="metric-label">High Impact</span>
                         <span class="metric-value red">$advisorHighCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Medium Impact</span>
+                        <span class="metric-value medium">$advisorMediumCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Low Impact</span>
+                        <span class="metric-value low">$advisorLowCount</span>
                     </div>
                     <div class="metric-row">
                         <span class="metric-label">Potential Savings</span>
@@ -385,6 +442,38 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                         <span class="metric-label">Connected Devices</span>
                         <span class="metric-value">$networkDeviceCount</span>
                     </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Peerings</span>
+                        <span class="metric-value">$networkPeeringCount</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Connections</span>
+                        <span class="metric-value">$($networkS2SConnections + $networkERConnections) ($networkS2SConnections S2S, $networkERConnections ER)</span>
+                    </div>
+                    $(if ($networkSecurityRisks -gt 0) {
+@"
+                    <div class="metric-row">
+                        <span class="metric-label">Security Risks</span>
+                        <span class="metric-value red">$networkSecurityRisks</span>
+                    </div>
+"@
+})
+$(if ($networkDisconnectedConnections -gt 0) {
+@"
+                    <div class="metric-row">
+                        <span class="metric-label">Disconnected Links</span>
+                        <span class="metric-value red">$networkDisconnectedConnections</span>
+                    </div>
+"@
+})
+$(if ($networkSubnetsMissingNSG -gt 0) {
+@"
+                    <div class="metric-row">
+                        <span class="metric-label">Subnets Missing NSG</span>
+                        <span class="metric-value red">$networkSubnetsMissingNSG</span>
+                    </div>
+"@
+})
                 </div>
             </div>
             <div class="card">

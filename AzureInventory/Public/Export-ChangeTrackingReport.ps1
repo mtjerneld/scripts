@@ -40,8 +40,11 @@ function Export-ChangeTrackingReport {
     
     Write-Verbose "Export-ChangeTrackingReport: Processing $($ChangeTrackingData.Count) changes"
     
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    
     # Calculate statistics
     $totalChanges = $ChangeTrackingData.Count
+    $subscriptionCount = ($ChangeTrackingData | Select-Object -ExpandProperty SubscriptionName -Unique).Count
     $creates = @($ChangeTrackingData | Where-Object { $_.OperationType -eq 'Create' }).Count
     $modifies = @($ChangeTrackingData | Where-Object { $_.OperationType -eq 'Modify' }).Count
     $deletes = @($ChangeTrackingData | Where-Object { $_.OperationType -eq 'Delete' }).Count
@@ -415,7 +418,13 @@ $(Get-ReportStylesheet)
     <div class="container">
         <div class="page-header">
             <h1>Change Tracking</h1>
-            <p class="subtitle">Activity Log changes over the last 30 days - $totalChanges total changes</p>
+            <div class="metadata">
+                <p><strong>Tenant:</strong> $TenantId</p>
+                <p><strong>Scanned:</strong> $timestamp</p>
+                <p><strong>Subscriptions:</strong> $subscriptionCount</p>
+                <p><strong>Resources:</strong> $totalChanges</p>
+                <p><strong>Total Findings:</strong> $totalChanges</p>
+            </div>
         </div>
         
         <div class="summary-cards">

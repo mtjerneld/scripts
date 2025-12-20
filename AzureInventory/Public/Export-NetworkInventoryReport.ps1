@@ -48,10 +48,16 @@ function Export-NetworkInventoryReport {
         $totalNsgs = 0
         $totalPeerings = 0
         $totalGateways = 0
+        $subscriptionCount = ($NetworkInventory | Select-Object -ExpandProperty SubscriptionName -Unique).Count
+        $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
         $totalDevices = 0
         $totalCriticalRisks = 0
         $totalHighRisks = 0
         $totalMediumRisks = 0
+        $totalS2SConnections = 0
+        $totalERConnections = 0
+        $disconnectedConnections = 0
+        $subnetsMissingNSG = 0
         
         # Collect unique NSGs and subscriptions, and all NSG risks
         $uniqueNsgIds = [System.Collections.Generic.HashSet[string]]::new()
@@ -73,6 +79,27 @@ function Export-NetworkInventoryReport {
                 [void]$uniquePeerings.Add($peeringKey)
             }
             
+            # Count gateway connections (S2S and ER)
+            foreach ($gateway in $vnet.Gateways) {
+                if ($gateway.Type -eq "ExpressRoute") {
+                    $totalERConnections++
+                }
+                elseif ($gateway.Connections) {
+                    foreach ($conn in $gateway.Connections) {
+                        if ($conn.ConnectionType -eq "IPsec") {
+                            $totalS2SConnections++
+                        }
+                        elseif ($conn.ConnectionType -eq "ExpressRoute") {
+                            $totalERConnections++
+                        }
+                        # Check connection status
+                        if ($conn.ConnectionStatus -and $conn.ConnectionStatus -ne "Connected") {
+                            $disconnectedConnections++
+                        }
+                    }
+                }
+            }
+            
             # Track subscriptions
             $subKey = $vnet.SubscriptionId
             if ($subKey -and -not $subscriptions.ContainsKey($subKey)) {
@@ -89,6 +116,24 @@ function Export-NetworkInventoryReport {
             foreach ($subnet in $vnet.Subnets) {
                 if ($subnet.NsgId) {
                     [void]$uniqueNsgIds.Add($subnet.NsgId)
+                } else {
+                    # Count subnets missing NSG, but exclude legitimate exceptions
+                    $subnetName = $subnet.Name
+                    
+                    # Exclude special subnet names that shouldn't have NSGs:
+                    # - GatewaySubnet: VPN/ExpressRoute Gateway subnets
+                    # - AzureBastionSubnet: Azure Bastion subnets
+                    # - AzureFirewallSubnet: Azure Firewall subnets
+                    # Note: Application Gateway v2 subnets CAN have NSGs (with specific rules),
+                    # so they are still counted if missing NSG
+                    $isExceptionSubnet = ($subnetName -eq "GatewaySubnet" -or 
+                                        $subnetName -eq "AzureBastionSubnet" -or 
+                                        $subnetName -eq "AzureFirewallSubnet")
+                    
+                    # Only count as missing NSG if it's not an exception subnet
+                    if (-not $isExceptionSubnet) {
+                        $subnetsMissingNSG++
+                    }
                 }
                 $totalDevices += $subnet.ConnectedDevices.Count
                 
@@ -638,7 +683,10 @@ $(Get-ReportNavigation -ActivePage "Network")
             <h1>Network Inventory</h1>
             <div class="metadata">
                 <p><strong>Tenant:</strong> $TenantId</p>
-                <p><strong>Generated:</strong> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</p>
+                <p><strong>Scanned:</strong> $timestamp</p>
+                <p><strong>Subscriptions:</strong> $subscriptionCount</p>
+                <p><strong>Resources:</strong> $totalVnets</p>
+                <p><strong>Total Findings:</strong> $totalVnets</p>
             </div>
         </div>
         
@@ -948,7 +996,17 @@ $(Get-ReportNavigation -ActivePage "Network")
                             if ($subnetMedium -gt 0) { $nsgBadgeHtml += "<span class='risk-badge medium'>$subnetMedium</span>" }
                         }
                     } else {
-                        $nsgBadgeHtml = "<span class='no-nsg-badge'>No NSG</span>"
+                        # Check for legitimate exception subnets - show in green with note, using same CSS as NSG badges
+                        $subnetName = $subnet.Name
+                        if ($subnetName -eq "GatewaySubnet") {
+                            $nsgBadgeHtml = "<span class='badge-nsg'>No NSG (GW subnet)</span>"
+                        } elseif ($subnetName -eq "AzureBastionSubnet") {
+                            $nsgBadgeHtml = "<span class='badge-nsg'>No NSG (Bastion subnet)</span>"
+                        } elseif ($subnetName -eq "AzureFirewallSubnet") {
+                            $nsgBadgeHtml = "<span class='badge-nsg'>No NSG (Firewall subnet)</span>"
+                        } else {
+                            $nsgBadgeHtml = "<span class='no-nsg-badge'>No NSG</span>"
+                        }
                     }
                     
                     $html += @"
@@ -1818,6 +1876,14 @@ $(Get-ReportNavigation -ActivePage "Network")
             VNetCount = $totalVnets
             DeviceCount = $totalDevices
             SecurityRisks = $totalRisks
+            SubnetCount = $totalSubnets
+            NSGCount = $totalNsgs
+            PeeringCount = $totalPeerings
+            GatewayCount = $totalGateways
+            S2SConnectionCount = $totalS2SConnections
+            ERConnectionCount = $totalERConnections
+            DisconnectedConnections = $disconnectedConnections
+            SubnetsMissingNSG = $subnetsMissingNSG
         }
     }
     catch {

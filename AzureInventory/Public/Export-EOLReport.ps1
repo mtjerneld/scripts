@@ -95,6 +95,10 @@ function Export-EOLReport {
 
     $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $totalFindings = $eolFindings.Count
+    
+    # Calculate metadata for display
+    $subscriptionCount = ($eolFindings | Select-Object -ExpandProperty SubscriptionName -Unique).Count
+    $resourceCount = ($eolFindings | Select-Object -ExpandProperty ResourceName -Unique).Count
 
     # Group by component
     $components = @()
@@ -803,7 +807,13 @@ $(Get-ReportNavigation -ActivePage "EOL")
     <div class="container">
         <div class="page-header">
             <h1>End of Life / Deprecated Components</h1>
-            <p class="subtitle">EOL and deprecation risk overview for Azure resources · Tenant: $TenantId · Generated: $timestamp</p>
+            <div class="metadata">
+                <p><strong>Tenant:</strong> $TenantId</p>
+                <p><strong>Scanned:</strong> $timestamp</p>
+                <p><strong>Subscriptions:</strong> $subscriptionCount</p>
+                <p><strong>Resources:</strong> $resourceCount</p>
+                <p><strong>Total Findings:</strong> $totalFindings</p>
+            </div>
         </div>
 
         <div class="summary-cards">
@@ -1263,7 +1273,8 @@ $(if ($componentCount -eq 0) { @"
 "@
 
     # Persist HTML to disk
-    [System.IO.File]::WriteAllText($OutputPath, $html, [System.Text.Encoding]::UTF8)
+    # Write to file with UTF-8 encoding (no BOM for better browser compatibility)
+    [System.IO.File]::WriteAllText($OutputPath, $html, [System.Text.UTF8Encoding]::new($false))
 
     # Return lightweight summary for dashboard usage
     return @{

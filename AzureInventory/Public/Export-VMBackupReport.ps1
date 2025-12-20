@@ -33,6 +33,9 @@ function Export-VMBackupReport {
     
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     
+    # Calculate metadata for display
+    $subscriptionCount = ($VMInventory | Select-Object -ExpandProperty SubscriptionName -Unique).Count
+    
     # Calculate statistics
     $totalVMs = $VMInventory.Count
     $protectedVMs = @($VMInventory | Where-Object { $_.BackupEnabled }).Count
@@ -71,7 +74,13 @@ $(Get-ReportNavigation -ActivePage "VMBackup")
     <div class="container">
         <div class="page-header">
             <h1>VM Backup Overview</h1>
-            <p class="subtitle">Generated: $timestamp | Tenant: $TenantId</p>
+            <div class="metadata">
+                <p><strong>Tenant:</strong> $TenantId</p>
+                <p><strong>Scanned:</strong> $timestamp</p>
+                <p><strong>Subscriptions:</strong> $subscriptionCount</p>
+                <p><strong>Resources:</strong> $totalVMs</p>
+                <p><strong>Total Findings:</strong> $totalVMs</p>
+            </div>
         </div>
         
         <div class="summary-cards">

@@ -82,7 +82,7 @@ function Export-SecurityReport {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Azure Security Audit Report</title>
+    <title>Security Audit</title>
     <style type="text/css">
 $(Get-ReportStylesheet -IncludeReportSpecific)
     </style>
@@ -92,7 +92,7 @@ $(Get-ReportNavigation -ActivePage "Security")
     
     <div class="container">
         <div class="page-header">
-            <h1>Azure Security Audit Report</h1>
+            <h1>Security Audit</h1>
             <div class="metadata">
                 <p><strong>Tenant:</strong> $($AuditResult.TenantId)</p>
                 <p><strong>Scanned:</strong> $($AuditResult.ScanStartTime.ToString('yyyy-MM-dd HH:mm:ss'))</p>
@@ -132,6 +132,11 @@ $(Get-ReportNavigation -ActivePage "Security")
             $passedChecks = $AuditResult.ComplianceScores.PassedChecks
             $totalChecks = $AuditResult.ComplianceScores.TotalChecks
             
+            # Get subscription names for score cards
+            $allSubscriptionNames = ($findings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+            $l1SubscriptionNames = ($findings | Where-Object { $_.CisLevel -eq "L1" } | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+            $l2SubscriptionNames = ($findings | Where-Object { $_.CisLevel -eq "L2" } | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+            
             # Determine score color
             $scoreColor = if ($overallScore -ge 90) { "score-excellent" } 
                          elseif ($overallScore -ge 75) { "score-good" } 
@@ -142,13 +147,13 @@ $(Get-ReportNavigation -ActivePage "Security")
         <div class="compliance-scores-section">
             <h3>Security Compliance Score</h3>
             <div class="score-grid">
-                <div class="score-card overall-score $scoreColor">
-                    <div class="score-label">Overall Score</div>
+                <div class="score-card overall-score $scoreColor" data-subscription="$allSubscriptionNames">
+                    <div class="score-label">All Controls</div>
                     <div class="score-value">$overallScore%</div>
                     <div class="score-details">$passedChecks / $totalChecks checks passed</div>
                 </div>
-                <div class="score-card l1-score">
-                    <div class="score-label">Level 1 (L1)</div>
+                <div class="score-card l1-score" data-subscription="$l1SubscriptionNames">
+                    <div class="score-label">CIS Level 1 (L1) Controls</div>
                     <div class="score-value">$l1Score%</div>
                     <div class="score-details">CIS v4.0.0 Mandatory controls</div>
                 </div>
@@ -159,7 +164,7 @@ $(Get-ReportNavigation -ActivePage "Security")
                                elseif ($l2Score -ge 50) { "score-fair" } 
                                else { "score-poor" }
                 $html += @"
-                <div class="score-card l2-score $l2ScoreColor">
+                <div class="score-card l2-score $l2ScoreColor" data-subscription="$l2SubscriptionNames">
                     <div class="score-label">Level 2 (L2)</div>
                     <div class="score-value">$l2Score%</div>
                     <div class="score-details">Enhanced controls</div>
@@ -179,8 +184,10 @@ $(Get-ReportNavigation -ActivePage "Security")
                                     elseif ($catScore -ge 75) { "score-good" } 
                                     elseif ($catScore -ge 50) { "score-fair" } 
                                     else { "score-poor" }
+                    # Get subscription names for this category
+                    $categorySubscriptionNames = ($findings | Where-Object { $_.Category -eq $category } | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
                     $html += @"
-                <div class="category-score-card $catScoreColor">
+                <div class="category-score-card $catScoreColor" data-subscription="$categorySubscriptionNames">
                     <div class="category-score-label">$(Encode-Html $category)</div>
                     <div class="category-score-value">$catScore%</div>
                 </div>

@@ -134,6 +134,10 @@ function Get-ReportStylesheet {
             font-size: 0.9rem;
         }
         
+        .hero .metadata {
+            justify-content: center;
+        }
+        
         .metadata {
             display: flex;
             flex-wrap: wrap;
@@ -1400,7 +1404,7 @@ function Get-ReportStylesheet {
         
         .category-scores-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 1rem;
         }
         

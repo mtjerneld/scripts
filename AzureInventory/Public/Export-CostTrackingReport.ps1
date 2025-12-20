@@ -1516,7 +1516,13 @@ $(Get-ReportStylesheet)
     <div class="container">
         <div class="page-header">
             <h1>Cost Tracking</h1>
-            <p class="subtitle">Cost analysis with meter-level granularity - Period: $($periodStart.ToString('yyyy-MM-dd')) to $($periodEnd.ToString('yyyy-MM-dd'))</p>
+            <div class="metadata">
+                <p><strong>Tenant:</strong> $TenantId</p>
+                <p><strong>Scanned:</strong> $timestamp</p>
+                <p><strong>Subscriptions:</strong> $($CostTrackingData.SubscriptionCount)</p>
+                <p><strong>Resources:</strong> $($CostTrackingData.TopResources.Count)</p>
+                <p><strong>Total Findings:</strong> $($CostTrackingData.TopResources.Count)</p>
+            </div>
         </div>
         
         <div class="global-filter-bar">

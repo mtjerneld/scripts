@@ -401,6 +401,70 @@ function Get-AzureNetworkInventory {
                         
                         ConnectedDevices = [System.Collections.Generic.List[PSObject]]::new()
                     }
+                    
+                    # Add gateways to GatewaySubnet as connected devices
+                    if ($subnet.Name -eq "GatewaySubnet" -and $vnetGateways) {
+                        foreach ($gw in $vnetGateways) {
+                            # Check if this gateway is in this subnet by matching subnet ID
+                            $gwInThisSubnet = $false
+                            if ($gw.IpConfigurations) {
+                                foreach ($ipconf in $gw.IpConfigurations) {
+                                    if ($ipconf.Subnet -and $ipconf.Subnet.Id -eq $subnet.Id) {
+                                        $gwInThisSubnet = $true
+                                        break
+                                    }
+                                }
+                            }
+                            
+                            if ($gwInThisSubnet) {
+                                $gwType = if ($gw.GatewayType) { $gw.GatewayType } else { "VPN" }
+                                $gwSku = if ($gw.Sku -and $gw.Sku.Name) { $gw.Sku.Name } else { "Unknown" }
+                                $gwVpnType = if ($gw.VpnType) { $gw.VpnType } else { "" }
+                                
+                                # Get Public IP if available
+                                $gwPublicIp = $null
+                                if ($gw.IpConfigurations) {
+                                    foreach ($ipconf in $gw.IpConfigurations) {
+                                        if ($ipconf.PublicIpAddress -and $ipconf.PublicIpAddress.Id) {
+                                            $pip = $publicIps | Where-Object { $_.Id -eq $ipconf.PublicIpAddress.Id } | Select-Object -First 1
+                                            if ($pip) {
+                                                $gwPublicIp = $pip.IpAddress
+                                                break
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                # Extract ResourceGroup from gateway ID
+                                $gwResourceGroup = if ($gw.Id) {
+                                    $gwIdParts = $gw.Id -split '/'
+                                    $rgIndex = [array]::IndexOf($gwIdParts, 'resourceGroups')
+                                    if ($rgIndex -ge 0 -and $rgIndex -lt ($gwIdParts.Count - 1)) {
+                                        $gwIdParts[$rgIndex + 1]
+                                    } else {
+                                        $vnetObj.ResourceGroup
+                                    }
+                                } else {
+                                    $vnetObj.ResourceGroup
+                                }
+                                
+                                $subnetObj.ConnectedDevices.Add([PSCustomObject]@{
+                                    Name = $gw.Name
+                                    Id = $gw.Id
+                                    PrivateIp = "GatewaySubnet"
+                                    PublicIp = $gwPublicIp
+                                    VmName = "$gwType Gateway"
+                                    VmId = $gw.Id
+                                    IsPrivateEndpoint = $false
+                                    DeviceType = "$gwType Gateway"
+                                    ResourceGroup = $gwResourceGroup
+                                    Location = $vnetObj.Location
+                                    Tags = $null
+                                    AdditionalInfo = "SKU: $gwSku" + $(if ($gwVpnType) { " | VPN: $gwVpnType" } else { "" })
+                                })
+                            }
+                        }
+                    }
 
                     # Track Private Endpoints already added via NICs to avoid duplicates
                     $processedPEIds = [System.Collections.Generic.HashSet[string]]::new()

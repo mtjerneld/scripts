@@ -79,7 +79,76 @@ function Collect-NetworkInventory {
                 foreach ($item in $inventory) {
                     $NetworkInventory.Add($item)
                 }
-                Write-Host "    Found $($inventory.Count) VNets" -ForegroundColor Green
+                
+                # Calculate detailed statistics
+                $vnetCount = $inventory.Count
+                $deviceCount = 0
+                $gatewayCount = 0
+                $peeringCount = 0
+                $s2sConnectionCount = 0
+                $erConnectionCount = 0
+                
+                foreach ($vnet in $inventory) {
+                    # Count gateways
+                    if ($vnet.Gateways) {
+                        $gatewayCount += $vnet.Gateways.Count
+                        
+                        # Count connections per gateway
+                        foreach ($gateway in $vnet.Gateways) {
+                            # Check if this is an ExpressRoute gateway
+                            $isExpressRouteGateway = ($gateway.Type -eq "ExpressRoute")
+                            
+                            if ($isExpressRouteGateway) {
+                                # ExpressRoute gateways count as ER connections
+                                $erConnectionCount++
+                            }
+                            elseif ($gateway.Connections) {
+                                foreach ($conn in $gateway.Connections) {
+                                    # S2S connections are IPsec VPN connections
+                                    if ($conn.ConnectionType -eq "IPsec") {
+                                        $s2sConnectionCount++
+                                    }
+                                    # ER connections can also be in ConnectionType
+                                    elseif ($conn.ConnectionType -eq "ExpressRoute") {
+                                        $erConnectionCount++
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    # Count peerings
+                    if ($vnet.Peerings) {
+                        $peeringCount += $vnet.Peerings.Count
+                    }
+                    
+                    # Count devices (connected devices in subnets)
+                    if ($vnet.Subnets) {
+                        foreach ($subnet in $vnet.Subnets) {
+                            if ($subnet.ConnectedDevices) {
+                                $deviceCount += $subnet.ConnectedDevices.Count
+                            }
+                        }
+                    }
+                }
+                
+                # Output detailed statistics
+                Write-Host "    Found $vnetCount VNET" -ForegroundColor Green
+                if ($deviceCount -gt 0) {
+                    Write-Host "    Found $deviceCount device$(if ($deviceCount -ne 1) { 's' })" -ForegroundColor Green
+                }
+                if ($gatewayCount -gt 0) {
+                    Write-Host "    Found $gatewayCount Gateway$(if ($gatewayCount -ne 1) { 's' })" -ForegroundColor Green
+                }
+                if ($peeringCount -gt 0) {
+                    Write-Host "    Found $peeringCount Peering$(if ($peeringCount -ne 1) { 's' })" -ForegroundColor Green
+                }
+                if ($s2sConnectionCount -gt 0) {
+                    Write-Host "    Found $s2sConnectionCount S2S Connection$(if ($s2sConnectionCount -ne 1) { 's' })" -ForegroundColor Green
+                }
+                if ($erConnectionCount -gt 0) {
+                    Write-Host "    Found $erConnectionCount ER Connection$(if ($erConnectionCount -ne 1) { 's' })" -ForegroundColor Green
+                }
             }
         }
         catch {
