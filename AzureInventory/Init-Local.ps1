@@ -35,6 +35,7 @@ $functionsToRemove = @(
     'Export-ChangeTrackingReport',
     'Export-NetworkInventoryReport',
     'Export-CostTrackingReport',
+    'Export-EOLReport',
     # Helper functions
     'Get-SubscriptionContext',
     'Invoke-AzureApiWithRetry',
@@ -43,8 +44,6 @@ $functionsToRemove = @(
     'New-SecurityFinding',
     'New-EOLFinding',
     'Get-SubscriptionDisplayName',
-    'Get-DeprecationRules',
-    'Test-ResourceEOLStatus',
     'Get-FindingsBySeverity',
     'Parse-ResourceId',
     'Encode-Html',
@@ -72,7 +71,7 @@ $functionsToRemove = @(
     'Get-AzureNetworkFindings',
     'Get-AzureSqlDatabaseFindings',
     'Get-AzureKeyVaultFindings',
-    'Get-EOLStatus',
+    'Get-AzureEOLStatus',
     # Collector functions
     'Get-AzureAdvisorRecommendations',
     'Get-AzureChangeTracking',

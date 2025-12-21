@@ -50,8 +50,6 @@ function Export-CostTrackingReport {
     }
     
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $periodStart = $CostTrackingData.PeriodStart
-    $periodEnd = $CostTrackingData.PeriodEnd
     $totalCostLocal = [math]::Round($CostTrackingData.TotalCostLocal, 2)
     $totalCostUSD = [math]::Round($CostTrackingData.TotalCostUSD, 2)
     $currency = $CostTrackingData.Currency
@@ -173,8 +171,9 @@ function Export-CostTrackingReport {
     $allCategories = @($byMeterCategory.Keys | Sort-Object)
     $allSubscriptionNames = @($bySubscription.Values | ForEach-Object { $_.Name } | Sort-Object)
     
-    # Get unique meters across all days (top 15 by total cost)
+    # Get unique meters across all days (ALL meters, not just top 15, so category filtering can work correctly)
     $meterTotals = @{}
+    $allMetersSet = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($day in $dailyTrend) {
         if ($day.ByMeter) {
             foreach ($meterEntry in $day.ByMeter.GetEnumerator()) {
@@ -182,13 +181,39 @@ function Export-CostTrackingReport {
                     $meterTotals[$meterEntry.Key] = 0
                 }
                 $meterTotals[$meterEntry.Key] += $meterEntry.Value.CostLocal
+                [void]$allMetersSet.Add($meterEntry.Key)
             }
         }
     }
-    $allMeters = @($meterTotals.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15 | ForEach-Object { $_.Key })
+    # Get all unique meters for raw data (needed for category filtering)
+    $allMeters = @($allMetersSet | Sort-Object)
+    # Top 15 for initial chart display (when no category filter)
+    $top15Meters = @($meterTotals.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15 | ForEach-Object { $_.Key })
     
-    # Get unique resources across all days (top 15 by total cost)
+    # Get unique resources - use all unique names from raw data (for category filtering support)
+    # Calculate totals from daily trend for top 15 selection
     $resourceTotals = @{}
+    if ($CostTrackingData.AllUniqueResourceNames) {
+        # Use pre-collected unique resource names from raw data (more complete)
+        $allResourceNames = $CostTrackingData.AllUniqueResourceNames
+    } else {
+        # Fallback: collect from daily trend (may miss some resources)
+        $allResourcesSet = [System.Collections.Generic.HashSet[string]]::new()
+        foreach ($day in $dailyTrend) {
+            if ($day.ByResource) {
+                foreach ($resEntry in $day.ByResource.GetEnumerator()) {
+                    [void]$allResourcesSet.Add($resEntry.Key)
+                    if (-not $resourceTotals.ContainsKey($resEntry.Key)) {
+                        $resourceTotals[$resEntry.Key] = 0
+                    }
+                    $resourceTotals[$resEntry.Key] += $resEntry.Value.CostLocal
+                }
+            }
+        }
+        $allResourceNames = @($allResourcesSet | Sort-Object)
+    }
+    
+    # Calculate totals for top 15 selection (from daily trend)
     foreach ($day in $dailyTrend) {
         if ($day.ByResource) {
             foreach ($resEntry in $day.ByResource.GetEnumerator()) {
@@ -199,7 +224,8 @@ function Export-CostTrackingReport {
             }
         }
     }
-    $allResourceNames = @($resourceTotals.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15 | ForEach-Object { $_.Key })
+    # Top 15 for initial chart display (when no category filter)
+    $top15Resources = @($resourceTotals.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15 | ForEach-Object { $_.Key })
     
     # Prepare daily trend data with breakdowns for stacked chart
     $chartLabels = @()
@@ -391,14 +417,15 @@ function Export-CostTrackingReport {
     }
     $datasetsBySubscriptionJsonString = $datasetsBySubscriptionJson -join ",`n"
     
-    # Build datasets JSON for Chart.js - by Meter
+    # Build datasets JSON for Chart.js - by Meter (use top 15 for initial display)
     $datasetsByMeterJson = @()
     $colorIndex = 0
-    foreach ($meter in $allMeters) {
-        $color = $colors[$colorIndex % $colors.Count]
-        $dataArray = $chartDatasetsByMeter[$meter] -join ","
-        $escapedMeter = $meter -replace '"', '\"'
-        $datasetsByMeterJson += @"
+    foreach ($meter in $top15Meters) {
+        if ($chartDatasetsByMeter.ContainsKey($meter)) {
+            $color = $colors[$colorIndex % $colors.Count]
+            $dataArray = $chartDatasetsByMeter[$meter] -join ","
+            $escapedMeter = $meter -replace '"', '\"'
+            $datasetsByMeterJson += @"
             {
                 label: "$escapedMeter",
                 data: [$dataArray],
@@ -407,18 +434,20 @@ function Export-CostTrackingReport {
                 borderWidth: 1
             }
 "@
-        $colorIndex++
+            $colorIndex++
+        }
     }
     $datasetsByMeterJsonString = $datasetsByMeterJson -join ",`n"
     
-    # Build datasets JSON for Chart.js - by Resource
+    # Build datasets JSON for Chart.js - by Resource (use top 15 for initial display)
     $datasetsByResourceJson = @()
     $colorIndex = 0
-    foreach ($resName in $allResourceNames) {
-        $color = $colors[$colorIndex % $colors.Count]
-        $dataArray = $chartDatasetsByResource[$resName] -join ","
-        $escapedResName = $resName -replace '"', '\"'
-        $datasetsByResourceJson += @"
+    foreach ($resName in $top15Resources) {
+        if ($chartDatasetsByResource.ContainsKey($resName)) {
+            $color = $colors[$colorIndex % $colors.Count]
+            $dataArray = $chartDatasetsByResource[$resName] -join ","
+            $escapedResName = $resName -replace '"', '\"'
+            $datasetsByResourceJson += @"
             {
                 label: "$escapedResName",
                 data: [$dataArray],
@@ -427,16 +456,18 @@ function Export-CostTrackingReport {
                 borderWidth: 1
             }
 "@
-        $colorIndex++
+            $colorIndex++
+        }
     }
     $datasetsByResourceJsonString = $datasetsByResourceJson -join ",`n"
     
     # Convert chart labels to JSON
     $chartLabelsJson = ($chartLabels | ForEach-Object { "`"$_`"" }) -join ","
     
-    # Build subscription options for filter
+    # Build subscription options for filter (sorted by name)
     $subscriptionOptionsHtml = ""
-    foreach ($sub in $subscriptionsArray) {
+    $subscriptionsForFilter = $subscriptionsArray | Sort-Object { if ($_.Name) { $_.Name } else { "Unknown" } }
+    foreach ($sub in $subscriptionsForFilter) {
         $subName = if ($sub.Name) { [System.Web.HttpUtility]::HtmlEncode($sub.Name) } else { "Unknown" }
         $subId = if ($sub.SubscriptionId) { $sub.SubscriptionId } else { "" }
         $subscriptionOptionsHtml += @"
@@ -518,12 +549,10 @@ function Export-CostTrackingReport {
                 $meterCostLocalRounded = Format-NumberWithSeparator -Number $meterCostLocal
                 $meterCostUSDRounded = Format-NumberWithSeparator -Number $meterCostUSD
                 $meterNameEncoded = [System.Web.HttpUtility]::HtmlEncode($meterName)
-                $meterUnitOfMeasureEncoded = if ($meterUnitOfMeasure) { [System.Web.HttpUtility]::HtmlEncode($meterUnitOfMeasure) } else { "" }
                 $meterCount = $meterItems.Count
                 $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
                 $unitPriceDisplay = if ($meterUnitPrice -gt 0) { Format-NumberWithSeparator -Number $meterUnitPrice } else { "" }
                 $unitPriceUSDDisplay = if ($meterUnitPriceUSD -gt 0) { Format-NumberWithSeparator -Number $meterUnitPriceUSD } else { "" }
-                $meterId = "topres_meter_$topResourceMeterIdCounter"
                 $topResourceMeterIdCounter++
                 
                 $meterCardsHtml += @"
@@ -607,7 +636,6 @@ $categoryHtml
                         $meterUnitPrice = if ($meter.UnitPrice) { Format-NumberWithSeparator -Number $meter.UnitPrice } else { "" }
                         $meterUnitPriceUSD = if ($meter.UnitPriceUSD) { Format-NumberWithSeparator -Number $meter.UnitPriceUSD } else { "" }
                         $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
-                        $meterId = "meter_$meterIdCounter"
                         $meterIdCounter++
                         
                         # Build resource rows if available
@@ -782,12 +810,10 @@ $subCatHtml
                         $meterCostLocalRounded = Format-NumberWithSeparator -Number $meterCostLocal
                         $meterCostUSDRounded = Format-NumberWithSeparator -Number $meterCostUSD
                         $meterNameEncoded = [System.Web.HttpUtility]::HtmlEncode($meterName)
-                        $meterUnitOfMeasureEncoded = if ($meterUnitOfMeasure) { [System.Web.HttpUtility]::HtmlEncode($meterUnitOfMeasure) } else { "" }
                         $meterCount = $meterItems.Count
                         $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
                         $unitPriceDisplay = if ($meterUnitPrice -gt 0) { Format-NumberWithSeparator -Number $meterUnitPrice } else { "" }
                         $unitPriceUSDDisplay = if ($meterUnitPriceUSD -gt 0) { Format-NumberWithSeparator -Number $meterUnitPriceUSD } else { "" }
-                        $meterId = "sub_meter_$subscriptionMeterIdCounter"
                         $subscriptionMeterIdCounter++
                         
                         # Group by resource within meter
@@ -1119,21 +1145,25 @@ $(Get-ReportStylesheet)
             gap: 10px;
         }
         
-        .section h2 .expand-arrow {
+        .section h2 .expand-arrow,
+        .global-filter-bar h3 .expand-arrow {
             font-size: 0.8rem;
             transition: transform 0.2s;
             color: var(--accent-blue);
         }
         
-        .section h2.expanded .expand-arrow {
+        .section h2.expanded .expand-arrow,
+        .global-filter-bar h3.expanded .expand-arrow {
             transform: rotate(90deg);
         }
         
-        .section-content {
+        .section-content,
+        .subscription-filter-content {
             display: none;
         }
         
-        .section h2.expanded + .section-content {
+        .section h2.expanded + .section-content,
+        .global-filter-bar h3.expanded + .subscription-filter-content {
             display: block;
         }
         
@@ -1526,12 +1556,16 @@ $(Get-ReportStylesheet)
         </div>
         
         <div class="global-filter-bar">
-            <h3>Filter by Subscription</h3>
-            <div class="subscription-filter-container">
+            <h3 onclick="toggleSubscriptionFilter(this)" style="cursor: pointer;">
+                <span class="expand-arrow">&#9654;</span> Filter by Subscription
+            </h3>
+            <div class="subscription-filter-content">
+                <div class="subscription-filter-container">
 $subscriptionOptionsHtml
-                <div class="filter-actions">
-                    <button class="filter-btn" onclick="selectAllSubscriptions()">Select All</button>
-                    <button class="filter-btn" onclick="deselectAllSubscriptions()">Deselect All</button>
+                    <div class="filter-actions">
+                        <button class="filter-btn" onclick="selectAllSubscriptions()">Select All</button>
+                        <button class="filter-btn" onclick="deselectAllSubscriptions()">Deselect All</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1567,7 +1601,7 @@ $subscriptionOptionsHtml
                     <option value="stacked-subscription">Stacked by Subscription</option>
                     <option value="stacked-meter">Stacked by Meter (Top 15)</option>
                     <option value="stacked-resource">Stacked by Resource (Top 15)</option>
-                    <option value="total">Total Cost</option>
+                    <option value="total" selected>Total Cost</option>
                 </select>
                 <select id="categoryFilter" onchange="filterChartCategory()">
                     <option value="all">All Categories</option>
@@ -1644,7 +1678,7 @@ $datasetsByResourceJsonString
         ];
         
         let costChart = null;
-        let currentView = 'stacked-category';
+        let currentView = 'total';
         let currentCategoryFilter = 'all';
         let selectedSubscriptions = new Set();
         
@@ -1702,6 +1736,8 @@ $datasetsByResourceJsonString
             
             initChart();
             populateCategoryFilter();
+            // Update chart to show default view (Total Cost)
+            updateChart();
         });
         
         function initChart() {
@@ -1756,7 +1792,9 @@ $datasetsByResourceJsonString
                             ticks: {
                                 color: '#888',
                                 maxRotation: 45,
-                                minRotation: 45
+                                minRotation: 45,
+                                autoSkip: false,
+                                maxTicksLimit: null
                             }
                         },
                         y: {
@@ -1786,6 +1824,41 @@ $datasetsByResourceJsonString
             });
         }
         
+        // Helper function to calculate filtered total for a day (reused by total view and Other calculation)
+        function getFilteredDayTotal(day, categoryFilter, selectedSubscriptions) {
+            if (!day) return 0;
+            let dayTotal = 0;
+            if (categoryFilter === 'all') {
+                // Sum all categories for selected subscriptions
+                if (day.categories && typeof day.categories === 'object') {
+                    Object.entries(day.categories).forEach(([cat, catData]) => {
+                        if (catData && typeof catData === 'object') {
+                            if (selectedSubscriptions.size === 0) {
+                                dayTotal += (catData.total || 0);
+                            } else {
+                                selectedSubscriptions.forEach(sub => {
+                                    dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
+                                });
+                            }
+                        }
+                    });
+                }
+            } else {
+                // Single category
+                const catData = day.categories && day.categories[categoryFilter];
+                if (catData && typeof catData === 'object') {
+                    if (selectedSubscriptions.size === 0) {
+                        dayTotal = catData.total || 0;
+                    } else {
+                        selectedSubscriptions.forEach(sub => {
+                            dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
+                        });
+                    }
+                }
+            }
+            return dayTotal || 0; // Ensure we always return a number
+        }
+        
         function updateChart() {
             const view = currentView;
             const categoryFilter = currentCategoryFilter;
@@ -1793,39 +1866,25 @@ $datasetsByResourceJsonString
             
             costChart.options.scales.x.stacked = stacked;
             costChart.options.scales.y.stacked = stacked;
+            // Ensure all labels are shown (no auto-skip)
+            costChart.options.scales.x.ticks.autoSkip = false;
+            costChart.options.scales.x.ticks.maxTicksLimit = null;
             
             let datasets;
             
             if (view === 'total') {
                 // Show only total (filtered by category and subscription)
+                // Reuse the helper function for consistency
                 const totalData = rawDailyData.map(day => {
-                    let dayTotal = 0;
-                    if (categoryFilter === 'all') {
-                        // Sum all categories for selected subscriptions
-                        Object.entries(day.categories || {}).forEach(([cat, catData]) => {
-                            if (selectedSubscriptions.size === 0) {
-                                dayTotal += catData.total || 0;
-                            } else {
-                                selectedSubscriptions.forEach(sub => {
-                                    dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
-                                });
-                            }
-                        });
-                    } else {
-                        // Single category
-                        const catData = day.categories && day.categories[categoryFilter];
-                        if (catData) {
-                            if (selectedSubscriptions.size === 0) {
-                                dayTotal = catData.total || 0;
-                            } else {
-                                selectedSubscriptions.forEach(sub => {
-                                    dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
-                                });
-                            }
-                        }
-                    }
-                    return dayTotal;
+                    const total = getFilteredDayTotal(day, categoryFilter, selectedSubscriptions);
+                    return isNaN(total) ? 0 : total; // Ensure we always return a valid number
                 });
+                
+                // Ensure data array length matches labels
+                if (totalData.length !== chartLabels.length) {
+                    console.warn(`Data length mismatch: ${totalData.length} data points vs ${chartLabels.length} labels`);
+                }
+                
                 datasets = [{
                     label: categoryFilter === 'all' ? 'Total Cost' : categoryFilter,
                     data: totalData,
@@ -1845,6 +1904,7 @@ $datasetsByResourceJsonString
                 datasets = buildFilteredDatasets('categories', categoryFilter, false);
             }
             
+            costChart.data.labels = chartLabels;
             costChart.data.datasets = datasets;
             costChart.update();
         }
@@ -2042,30 +2102,11 @@ $datasetsByResourceJsonString
             // Add "Other" for meters and resources (at the top, before sorted items)
             if (includeOther) {
                 const otherDataCalc = rawDailyData.map((day, dayIndex) => {
-                    // Calculate total and subtract known items
-                    let dayTotal = 0;
+                    // Use the filtered day total (already calculated based on filters)
+                    const dayTotal = getFilteredDayTotal(day, categoryFilter, selectedSubscriptions);
                     
-                    // Get total for the day (filtered by subscription if needed)
-                    if (selectedSubscriptions.size === 0) {
-                        dayTotal = day.totalCostLocal || 0;
-                    } else {
-                        // Sum selected subscriptions
-                        Object.entries(day.subscriptions || {}).forEach(([sub, subData]) => {
-                            if (selectedSubscriptions.has(sub)) {
-                                if (categoryFilter === 'all') {
-                                    dayTotal += subData.total || 0;
-                                } else {
-                                    dayTotal += (subData.byCategory && subData.byCategory[categoryFilter]) || 0;
-                                }
-                            }
-                        });
-                    }
-                    
-                    // Subtract known items
-                    let knownTotal = 0;
-                    datasets.forEach(ds => {
-                        knownTotal += ds.data[dayIndex] || 0;
-                    });
+                    // Subtract known items (sum of all dataset values for this day)
+                    const knownTotal = datasets.reduce((sum, ds) => sum + (ds.data[dayIndex] || 0), 0);
                     
                     return Math.max(0, dayTotal - knownTotal);
                 });
@@ -2373,6 +2414,10 @@ $datasetsByResourceJsonString
         }
         
         function toggleSection(element) {
+            element.classList.toggle('expanded');
+        }
+        
+        function toggleSubscriptionFilter(element) {
             element.classList.toggle('expanded');
         }
         

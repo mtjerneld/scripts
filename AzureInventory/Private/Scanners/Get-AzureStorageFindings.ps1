@@ -43,28 +43,6 @@ function Get-AzureStorageFindings {
     $uniqueResourcesScanned = @{}
     $controlsEvaluated = 0
     
-    # Load deprecation rules for EOL checking
-    $deprecationRules = Get-DeprecationRules
-    $resourceTypeMapping = @{}
-    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
-    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
-    if (Test-Path $mappingPath) {
-        try {
-            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
-            if ($mappingJson -and $mappingJson.mappings) {
-                foreach ($mapping in $mappingJson.mappings) {
-                    if ($mapping.resourceType -eq "Microsoft.Storage/storageAccounts") {
-                        $resourceTypeMapping["Microsoft.Storage/storageAccounts"] = $mapping
-                        break
-                    }
-                }
-            }
-        }
-        catch {
-            Write-Verbose "Failed to load ResourceTypeMapping: $_"
-        }
-    }
-    
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "Storage" -IncludeLevel2:$IncludeLevel2
     if ($null -eq $controls -or $controls.Count -eq 0) {
@@ -263,7 +241,6 @@ function Get-AzureStorageFindings {
                 Write-Verbose "Could not get blob service properties for $($sa.StorageAccountName): $_"
             }
             
-            $softDeleteStatus = if ($softDeleteEnabled) { "PASS" } else { "FAIL" }
             $remediationCmd = $softDeleteControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
             
             $finding = New-SecurityFinding `
@@ -281,7 +258,7 @@ function Get-AzureStorageFindings {
                 -CisLevel $softDeleteControl.level `
                 -CurrentValue $(if ($softDeleteEnabled) { "Enabled" } else { "Disabled" }) `
                 -ExpectedValue $softDeleteControl.expectedValue `
-                -Status $softDeleteStatus `
+                -Status $(if ($softDeleteEnabled) { "PASS" } else { "FAIL" }) `
                 -RemediationSteps $softDeleteControl.businessImpact `
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
@@ -292,7 +269,6 @@ function Get-AzureStorageFindings {
         if ($networkControl) {
             $controlsEvaluated++
             $defaultAction = if ($networkRules) { $networkRules.DefaultAction } else { "Allow" }
-            $networkStatus = if ($defaultAction -eq "Deny") { "PASS" } else { "FAIL" }
             
             $remediationCmd = $networkControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
             $finding = New-SecurityFinding `
@@ -310,7 +286,7 @@ function Get-AzureStorageFindings {
                 -CisLevel $networkControl.level `
                 -CurrentValue $defaultAction `
                 -ExpectedValue $networkControl.expectedValue `
-                -Status $networkStatus `
+                -Status $(if ($defaultAction -eq "Deny") { "PASS" } else { "FAIL" }) `
                 -RemediationSteps $networkControl.businessImpact `
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
@@ -320,7 +296,6 @@ function Get-AzureStorageFindings {
         $kindControl = $controlLookup["Storage Account Kind (Legacy Detection)"]
         if ($kindControl) {
             $controlsEvaluated++
-            $kindStatus = if ($sa.Kind -eq "StorageV2") { "PASS" } else { "FAIL" }
             
             $remediationCmd = $kindControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
             $finding = New-SecurityFinding `
@@ -338,45 +313,10 @@ function Get-AzureStorageFindings {
                 -CisLevel $kindControl.level `
                 -CurrentValue $sa.Kind `
                 -ExpectedValue $kindControl.expectedValue `
-                -Status $kindStatus `
+                -Status $(if ($sa.Kind -eq "StorageV2") { "PASS" } else { "FAIL" }) `
                 -RemediationSteps $kindControl.businessImpact `
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
-        }
-        
-        # EOL Checking: Check if this storage account matches any deprecation rules
-        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
-            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Storage/storageAccounts")) {
-                $resourceTypeMapping["Microsoft.Storage/storageAccounts"]
-            } else {
-                $null
-            }
-            
-            $eolStatus = Test-ResourceEOLStatus `
-                -Resource $sa `
-                -ResourceType "Microsoft.Storage/storageAccounts" `
-                -DeprecationRules $deprecationRules `
-                -ResourceTypeMapping @{ "Microsoft.Storage/storageAccounts" = $mapping }
-            
-            if ($eolStatus.Matched -and $eolStatus.Rule) {
-                $rule = $eolStatus.Rule
-                $eolFinding = New-EOLFinding `
-                    -SubscriptionId $SubscriptionId `
-                    -SubscriptionName $SubscriptionName `
-                    -ResourceGroup $sa.ResourceGroupName `
-                    -ResourceType "Microsoft.Storage/storageAccounts" `
-                    -ResourceName $sa.StorageAccountName `
-                    -ResourceId $resourceId `
-                    -Component $rule.component `
-                    -Status $rule.status `
-                    -Deadline $eolStatus.Deadline `
-                    -Severity $eolStatus.Severity `
-                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
-                    -ActionRequired $rule.actionRequired `
-                    -MigrationGuide $rule.migrationGuide `
-                    -References $(if ($rule.references) { $rule.references } else { @() })
-                $eolFindings.Add($eolFinding)
-            }
         }
         
         # Level 2 Controls - Only check if control is enabled and IncludeLevel2 is specified

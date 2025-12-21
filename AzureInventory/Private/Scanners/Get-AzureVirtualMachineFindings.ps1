@@ -40,28 +40,6 @@ function Get-AzureVirtualMachineFindings {
     $uniqueResourcesScanned = @{}
     $controlsEvaluated = 0
     
-    # Load deprecation rules for EOL checking
-    $deprecationRules = Get-DeprecationRules
-    $resourceTypeMapping = @{}
-    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
-    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
-    if (Test-Path $mappingPath) {
-        try {
-            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
-            if ($mappingJson -and $mappingJson.mappings) {
-                foreach ($mapping in $mappingJson.mappings) {
-                    if ($mapping.resourceType -eq "Microsoft.Compute/virtualMachines") {
-                        $resourceTypeMapping["Microsoft.Compute/virtualMachines"] = $mapping
-                        break
-                    }
-                }
-            }
-        }
-        catch {
-            Write-Verbose "Failed to load ResourceTypeMapping: $_"
-        }
-    }
-    
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "VM" -IncludeLevel2:$IncludeLevel2
     if ($null -eq $controls -or $controls.Count -eq 0) {
@@ -263,6 +241,11 @@ function Get-AzureVirtualMachineFindings {
         
         Write-Verbose "VM $($vm.Name): OsType=$osType (PowerState=$powerState)"
         
+        # Track this resource as scanned
+        if (-not $uniqueResourcesScanned.ContainsKey($resourceId)) {
+            $uniqueResourcesScanned[$resourceId] = $true
+        }
+        
         # Get backup info for this VM
         $resourceIdLower = $resourceId.ToLower()
         $backupInfo = $backupProtectedVMs[$resourceIdLower]
@@ -304,8 +287,10 @@ function Get-AzureVirtualMachineFindings {
         # Control: Managed Disks
         $managedDiskControl = $controlLookup["Managed Disks"]
         if ($managedDiskControl) {
+            $controlsEvaluated++
             $hasManagedDisk = $null -ne $vm.StorageProfile.OsDisk.ManagedDisk
             $managedDiskStatus = if ($hasManagedDisk) { "PASS" } else { "FAIL" }
+            $currentValue = if ($hasManagedDisk) { "Managed disk" } else { "Unmanaged VHD" }
             
             $remediationCmd = $managedDiskControl.remediationCommand -replace '\{vmName\}', $vm.Name -replace '\{rg\}', $vm.ResourceGroupName
             $finding = New-SecurityFinding `
@@ -321,7 +306,7 @@ function Get-AzureVirtualMachineFindings {
                 -Frameworks $managedDiskControl.frameworks `
                 -Severity $managedDiskControl.severity `
                 -CisLevel $managedDiskControl.level `
-                -CurrentValue $(if ($hasManagedDisk) { "Managed disk" } else { "Unmanaged VHD" }) `
+                -CurrentValue $currentValue `
                 -ExpectedValue $managedDiskControl.expectedValue `
                 -Status $managedDiskStatus `
                 -RemediationSteps $managedDiskControl.businessImpact `
@@ -334,12 +319,10 @@ function Get-AzureVirtualMachineFindings {
         if ($legacyMmaControl) {
             $controlsEvaluated++
             $legacyMmaPresent = $false
-            $legacyExtensionName = $null
             if ($extensions) {
                 foreach ($ext in $extensions) {
                     if ($ext.ExtensionType -eq "MicrosoftMonitoringAgent" -or $ext.ExtensionType -eq "OmsAgentForLinux") {
                         $legacyMmaPresent = $true
-                        $legacyExtensionName = $ext.ExtensionType
                         break
                     }
                 }
@@ -350,6 +333,11 @@ function Get-AzureVirtualMachineFindings {
             # Only set EOLDate if legacy agent is actually present (FAIL status)
             # This ensures deprecated-components table only shows VMs that actually have the deprecated agent
             $eolDate = if ($legacyMmaPresent) { $legacyMmaControl.eolDate } else { $null }
+            $currentValue = if ($legacyMmaPresent) { "Legacy MMA agent present" } else { "No legacy agent" }
+            
+            # Note: EOL tracking is handled centrally by Get-AzureEOLStatus in Invoke-AzureSecurityAudit
+            # This scanner only creates security findings with EOLDate for reference
+            
             $finding = New-SecurityFinding `
                 -SubscriptionId $SubscriptionId `
                 -SubscriptionName $SubscriptionName `
@@ -363,7 +351,7 @@ function Get-AzureVirtualMachineFindings {
                 -Frameworks $legacyMmaControl.frameworks `
                 -Severity $legacyMmaControl.severity `
                 -CisLevel $legacyMmaControl.level `
-                -CurrentValue $(if ($legacyMmaPresent) { "Legacy MMA agent present" } else { "No legacy agent" }) `
+                -CurrentValue $currentValue `
                 -ExpectedValue $legacyMmaControl.expectedValue `
                 -Status $legacyStatus `
                 -RemediationSteps $legacyMmaControl.businessImpact `
@@ -387,8 +375,10 @@ function Get-AzureVirtualMachineFindings {
                 }
             }
             
-            $amaStatus = if ($amaInstalled) { "PASS" } else { "FAIL" }
             $remediationCmd = if ($amaInstalled) { "" } else { $amaControl.remediationCommand -replace '\{vmName\}', $vm.Name -replace '\{rg\}', $vm.ResourceGroupName }
+            $currentValue = if ($amaInstalled) { "Installed" } else { "Not installed" }
+            $amaStatus = if ($amaInstalled) { "PASS" } else { "FAIL" }
+            
             $finding = New-SecurityFinding `
                 -SubscriptionId $SubscriptionId `
                 -SubscriptionName $SubscriptionName `
@@ -402,7 +392,7 @@ function Get-AzureVirtualMachineFindings {
                 -Frameworks $amaControl.frameworks `
                 -Severity $amaControl.severity `
                 -CisLevel $amaControl.level `
-                -CurrentValue $(if ($amaInstalled) { "Installed" } else { "Not installed" }) `
+                -CurrentValue $currentValue `
                 -ExpectedValue $amaControl.expectedValue `
                 -Status $amaStatus `
                 -RemediationSteps $amaControl.businessImpact `
@@ -422,9 +412,10 @@ function Get-AzureVirtualMachineFindings {
                 }
             }
             
+            $remediationCmd = $antimalwareControl.remediationCommand -replace '\{vmName\}', $vm.Name -replace '\{rg\}', $vm.ResourceGroupName
+            $currentValue = if ($antimalwareInstalled) { "Installed" } else { "Not installed" }
             $antimalwareStatus = if ($antimalwareInstalled) { "PASS" } else { "FAIL" }
             
-            $remediationCmd = $antimalwareControl.remediationCommand -replace '\{vmName\}', $vm.Name -replace '\{rg\}', $vm.ResourceGroupName
             $finding = New-SecurityFinding `
                 -SubscriptionId $SubscriptionId `
                 -SubscriptionName $SubscriptionName `
@@ -438,7 +429,7 @@ function Get-AzureVirtualMachineFindings {
                 -Frameworks $antimalwareControl.frameworks `
                 -Severity $antimalwareControl.severity `
                 -CisLevel $antimalwareControl.level `
-                -CurrentValue $(if ($antimalwareInstalled) { "Installed" } else { "Not installed" }) `
+                -CurrentValue $currentValue `
                 -ExpectedValue $antimalwareControl.expectedValue `
                 -Status $antimalwareStatus `
                 -RemediationSteps $antimalwareControl.businessImpact `
@@ -450,15 +441,15 @@ function Get-AzureVirtualMachineFindings {
         $backupControl = $controlLookup["VM Backup Enabled"]
         if ($backupControl) {
             $controlsEvaluated++
-            $currentValue = if ($backupEnabled) {
-                $lastBackup = if ($backupInfo.LastBackupTime) { $backupInfo.LastBackupTime.ToString("yyyy-MM-dd HH:mm") } else { "N/A" }
-                "Protected by $($backupInfo.VaultName) (Last: $lastBackup)"
-            } else {
-                "No backup protection detected"
-            }
-            
-            $backupStatus = if ($backupEnabled) { "PASS" } else { "FAIL" }
             $remediationCmd = $backupControl.remediationCommand
+            
+            if ($backupEnabled) {
+                $lastBackup = if ($backupInfo.LastBackupTime) { $backupInfo.LastBackupTime.ToString("yyyy-MM-dd HH:mm") } else { "N/A" }
+                $currentValue = "Protected by $($backupInfo.VaultName) (Last: $lastBackup)"
+            } else {
+                $currentValue = "No backup protection detected"
+            }
+            $backupStatus = if ($backupEnabled) { "PASS" } else { "FAIL" }
             
             $finding = New-SecurityFinding `
                 -SubscriptionId $SubscriptionId `
@@ -479,50 +470,6 @@ function Get-AzureVirtualMachineFindings {
                 -RemediationSteps $backupControl.businessImpact `
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
-        }
-        
-        # EOL Checking: Check if this VM matches any deprecation rules
-        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
-            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Compute/virtualMachines")) {
-                $resourceTypeMapping["Microsoft.Compute/virtualMachines"]
-            } else {
-                $null
-            }
-            
-            # Create a wrapper object with Extensions property for EOL matching
-            # (since Get-AzVM doesn't include Extensions, we add it from Get-AzVMExtension)
-            $vmForEOL = $vm | Select-Object *
-            if ($extensions) {
-                $vmForEOL | Add-Member -MemberType NoteProperty -Name "Extensions" -Value $extensions -Force
-            } else {
-                $vmForEOL | Add-Member -MemberType NoteProperty -Name "Extensions" -Value @() -Force
-            }
-            
-            $eolStatus = Test-ResourceEOLStatus `
-                -Resource $vmForEOL `
-                -ResourceType "Microsoft.Compute/virtualMachines" `
-                -DeprecationRules $deprecationRules `
-                -ResourceTypeMapping @{ "Microsoft.Compute/virtualMachines" = $mapping }
-            
-            if ($eolStatus.Matched -and $eolStatus.Rule) {
-                $rule = $eolStatus.Rule
-                $eolFinding = New-EOLFinding `
-                    -SubscriptionId $SubscriptionId `
-                    -SubscriptionName $SubscriptionName `
-                    -ResourceGroup $vm.ResourceGroupName `
-                    -ResourceType "Microsoft.Compute/virtualMachines" `
-                    -ResourceName $vm.Name `
-                    -ResourceId $resourceId `
-                    -Component $rule.component `
-                    -Status $rule.status `
-                    -Deadline $eolStatus.Deadline `
-                    -Severity $eolStatus.Severity `
-                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
-                    -ActionRequired $rule.actionRequired `
-                    -MigrationGuide $rule.migrationGuide `
-                    -References $(if ($rule.references) { $rule.references } else { @() })
-                $eolFindings.Add($eolFinding)
-            }
         }
     }
     

@@ -33,27 +33,6 @@ function Get-AzureMonitorFindings {
     $uniqueResourcesScanned = @{}
     $controlsEvaluated = 0
     
-    # Load deprecation rules for EOL checking
-    $deprecationRules = Get-DeprecationRules
-    $resourceTypeMapping = @{}
-    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
-    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
-    if (Test-Path $mappingPath) {
-        try {
-            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
-            if ($mappingJson -and $mappingJson.mappings) {
-                foreach ($mapping in $mappingJson.mappings) {
-                    if ($mapping.resourceType -eq "Microsoft.OperationalInsights/workspaces" -or $mapping.resourceType -eq "Microsoft.Insights/dataCollectionRules") {
-                        $resourceTypeMapping[$mapping.resourceType] = $mapping
-                    }
-                }
-            }
-        }
-        catch {
-            Write-Verbose "Failed to load ResourceTypeMapping: $_"
-        }
-    }
-    
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "Monitor"
     if ($null -eq $controls -or $controls.Count -eq 0) {
@@ -126,41 +105,6 @@ function Get-AzureMonitorFindings {
                             -References $descAndRefs.References
                         # Only add one finding per subscription for this check
                         $findings.Add($finding)
-                        
-                        # EOL Checking: Check if this workspace matches any deprecation rules
-                        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
-                            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.OperationalInsights/workspaces")) {
-                                $resourceTypeMapping["Microsoft.OperationalInsights/workspaces"]
-                            } else {
-                                $null
-                            }
-                            
-                            $eolStatus = Test-ResourceEOLStatus `
-                                -Resource $workspace `
-                                -ResourceType "Microsoft.OperationalInsights/workspaces" `
-                                -DeprecationRules $deprecationRules `
-                                -ResourceTypeMapping @{ "Microsoft.OperationalInsights/workspaces" = $mapping }
-                            
-                            if ($eolStatus.Matched -and $eolStatus.Rule) {
-                                $rule = $eolStatus.Rule
-                                $eolFinding = New-EOLFinding `
-                                    -SubscriptionId $SubscriptionId `
-                                    -SubscriptionName $SubscriptionName `
-                                    -ResourceGroup $workspace.ResourceGroupName `
-                                    -ResourceType "Microsoft.OperationalInsights/workspaces" `
-                                    -ResourceName $workspace.Name `
-                                    -ResourceId $workspace.Id `
-                                    -Component $rule.component `
-                                    -Status $rule.status `
-                                    -Deadline $eolStatus.Deadline `
-                                    -Severity $eolStatus.Severity `
-                                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
-                                    -ActionRequired $rule.actionRequired `
-                                    -MigrationGuide $rule.migrationGuide `
-                                    -References $(if ($rule.references) { $rule.references } else { @() })
-                                $eolFindings.Add($eolFinding)
-                            }
-                        }
                         break
                     }
                     catch {
@@ -287,41 +231,6 @@ function Get-AzureMonitorFindings {
                             -RemediationCommand $remediationCmd `
                             -References $descAndRefs.References
                         $findings.Add($finding)
-                        
-                        # EOL Checking: Check if this DCR matches any deprecation rules
-                        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
-                            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Insights/dataCollectionRules")) {
-                                $resourceTypeMapping["Microsoft.Insights/dataCollectionRules"]
-                            } else {
-                                $null
-                            }
-                            
-                            $eolStatus = Test-ResourceEOLStatus `
-                                -Resource $dcr `
-                                -ResourceType "Microsoft.Insights/dataCollectionRules" `
-                                -DeprecationRules $deprecationRules `
-                                -ResourceTypeMapping @{ "Microsoft.Insights/dataCollectionRules" = $mapping }
-                            
-                            if ($eolStatus.Matched -and $eolStatus.Rule) {
-                                $rule = $eolStatus.Rule
-                                $eolFinding = New-EOLFinding `
-                                    -SubscriptionId $SubscriptionId `
-                                    -SubscriptionName $SubscriptionName `
-                                    -ResourceGroup $dcr.ResourceGroupName `
-                                    -ResourceType "Microsoft.Insights/dataCollectionRules" `
-                                    -ResourceName $dcr.Name `
-                                    -ResourceId $dcr.Id `
-                                    -Component $rule.component `
-                                    -Status $rule.status `
-                                    -Deadline $eolStatus.Deadline `
-                                    -Severity $eolStatus.Severity `
-                                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
-                                    -ActionRequired $rule.actionRequired `
-                                    -MigrationGuide $rule.migrationGuide `
-                                    -References $(if ($rule.references) { $rule.references } else { @() })
-                                $eolFindings.Add($eolFinding)
-                            }
-                        }
                     }
                     catch {
                         Write-Verbose "Could not check DCR associations: $_"

@@ -401,19 +401,36 @@ function Collect-CostData {
                 }
             }
             
-            # Group by resource for daily trend (with category and subscription breakdown, top 20)
+            # Group by resource for daily trend (with category and subscription breakdown)
+            # Limit to top 50 per day for performance, but collect all unique resource names separately
             $dayResourceGroups = $dayItems | Where-Object { $_.ResourceName } | Group-Object ResourceName
             $dayByResource = @{}
-            foreach ($dayResGroup in ($dayResourceGroups | Sort-Object { ($_.Group | Measure-Object -Property CostLocal -Sum).Sum } -Descending | Select-Object -First 20)) {
+            
+            # Pre-calculate costs for all resources to avoid expensive Measure-Object calls in Sort-Object
+            $resourceCosts = @{}
+            foreach ($dayResGroup in $dayResourceGroups) {
                 $resName = $dayResGroup.Name
                 if ([string]::IsNullOrWhiteSpace($resName)) {
                     continue
                 }
-                $dayResCostLocal = ($dayResGroup.Group | Measure-Object -Property CostLocal -Sum).Sum
-                $dayResCostUSD = ($dayResGroup.Group | Measure-Object -Property CostUSD -Sum).Sum
+                $resCostLocal = ($dayResGroup.Group | Measure-Object -Property CostLocal -Sum).Sum
+                $resourceCosts[$resName] = @{
+                    Group = $dayResGroup.Group
+                    CostLocal = $resCostLocal
+                }
+            }
+            
+            # Process top 50 resources per day for performance (category filtering will use raw data)
+            $topResourcesForDay = $resourceCosts.GetEnumerator() | Sort-Object { $_.Value.CostLocal } -Descending | Select-Object -First 50
+            
+            foreach ($resEntry in $topResourcesForDay) {
+                $resName = $resEntry.Key
+                $dayResGroupItems = $resEntry.Value.Group
+                $dayResCostLocal = $resEntry.Value.CostLocal
+                $dayResCostUSD = ($dayResGroupItems | Measure-Object -Property CostUSD -Sum).Sum
                 
                 # Category breakdown within resource
-                $resCatGroups = $dayResGroup.Group | Group-Object MeterCategory
+                $resCatGroups = $dayResGroupItems | Group-Object MeterCategory
                 $resByCategory = @{}
                 foreach ($resCatGroup in $resCatGroups) {
                     $catName = $resCatGroup.Name
@@ -425,7 +442,7 @@ function Collect-CostData {
                 }
                 
                 # Subscription breakdown within resource
-                $resSubGroups = $dayResGroup.Group | Group-Object SubscriptionName
+                $resSubGroups = $dayResGroupItems | Group-Object SubscriptionName
                 $resBySubscription = @{}
                 foreach ($resSubGroup in $resSubGroups) {
                     $subName = $resSubGroup.Name
@@ -455,6 +472,34 @@ function Collect-CostData {
                 ByResource = $dayByResource
             }
         }
+        
+        # Collect ALL unique resource names from raw data (for category filtering support)
+        # This is separate from daily trend which is limited for performance
+        $allUniqueResourceNames = [System.Collections.Generic.HashSet[string]]::new()
+        foreach ($item in $allCostData) {
+            if ($item.ResourceName -and -not [string]::IsNullOrWhiteSpace($item.ResourceName)) {
+                [void]$allUniqueResourceNames.Add($item.ResourceName)
+            }
+        }
+        
+        # Fill in missing dates with zero-cost entries to ensure all dates in range are present
+        $currentDate = $startDate
+        while ($currentDate -le $endDate) {
+            $dateStr = $currentDate.ToString('yyyy-MM-dd')
+            if (-not $dailyTrend.ContainsKey($dateStr)) {
+                $dailyTrend[$dateStr] = @{
+                    Date = $currentDate
+                    DateString = $dateStr
+                    TotalCostLocal = 0
+                    TotalCostUSD = 0
+                    ByCategory = @{}
+                    BySubscription = @{}
+                    ByMeter = @{}
+                    ByResource = @{}
+                }
+            }
+            $currentDate = $currentDate.AddDays(1)
+        }
     }
     
     # Build aggregated result
@@ -471,6 +516,7 @@ function Collect-CostData {
         TopResources = @($byResource.Values | Sort-Object { $_.CostUSD } -Descending | Select-Object -First 20)
         DailyTrend = @($dailyTrend.Values | Sort-Object Date)
         RawData = $allCostData
+        AllUniqueResourceNames = @($allUniqueResourceNames | Sort-Object)
         SubscriptionCount = $Subscriptions.Count
     }
     

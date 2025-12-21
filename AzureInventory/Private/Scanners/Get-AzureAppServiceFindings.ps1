@@ -35,28 +35,6 @@ function Get-AzureAppServiceFindings {
     $uniqueResourcesScanned = @{}
     $controlsEvaluated = 0
     
-    # Load deprecation rules for EOL checking
-    $deprecationRules = Get-DeprecationRules
-    $resourceTypeMapping = @{}
-    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
-    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
-    if (Test-Path $mappingPath) {
-        try {
-            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
-            if ($mappingJson -and $mappingJson.mappings) {
-                foreach ($mapping in $mappingJson.mappings) {
-                    if ($mapping.resourceType -eq "Microsoft.Web/sites") {
-                        $resourceTypeMapping["Microsoft.Web/sites"] = $mapping
-                        break
-                    }
-                }
-            }
-        }
-        catch {
-            Write-Verbose "Failed to load ResourceTypeMapping: $_"
-        }
-    }
-    
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "AppService" -IncludeLevel2:$IncludeLevel2
     if ($null -eq $controls -or $controls.Count -eq 0) {
@@ -475,51 +453,6 @@ function Get-AzureAppServiceFindings {
                 -RemediationSteps $authControl.businessImpact `
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
-        }
-        
-        # EOL Checking: Check if this App Service matches any deprecation rules
-        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
-            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Web/sites")) {
-                $resourceTypeMapping["Microsoft.Web/sites"]
-            } else {
-                $null
-            }
-            
-            # Create a resource object with SiteConfig.MinTlsVersion for matching
-            $resourceForEOL = [PSCustomObject]@{
-                Name = $app.Name
-                Id = $app.Id
-                ResourceGroupName = $resourceGroupName
-                SiteConfig = @{
-                    MinTlsVersion = $minTlsVersion
-                }
-            }
-            
-            $eolStatus = Test-ResourceEOLStatus `
-                -Resource $resourceForEOL `
-                -ResourceType "Microsoft.Web/sites" `
-                -DeprecationRules $deprecationRules `
-                -ResourceTypeMapping @{ "Microsoft.Web/sites" = $mapping }
-            
-            if ($eolStatus.Matched -and $eolStatus.Rule) {
-                $rule = $eolStatus.Rule
-                $eolFinding = New-EOLFinding `
-                    -SubscriptionId $SubscriptionId `
-                    -SubscriptionName $SubscriptionName `
-                    -ResourceGroup $resourceGroupName `
-                    -ResourceType "Microsoft.Web/sites" `
-                    -ResourceName $app.Name `
-                    -ResourceId $app.Id `
-                    -Component $rule.component `
-                    -Status $rule.status `
-                    -Deadline $eolStatus.Deadline `
-                    -Severity $eolStatus.Severity `
-                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
-                    -ActionRequired $rule.actionRequired `
-                    -MigrationGuide $rule.migrationGuide `
-                    -References $(if ($rule.references) { $rule.references } else { @() })
-                $eolFindings.Add($eolFinding)
-            }
         }
     }
     

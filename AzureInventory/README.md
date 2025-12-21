@@ -305,7 +305,7 @@ AzureInventory/
 │   └── Config/                      # Config loaders
 ├── Config/                           # Configuration files
 │   ├── ControlDefinitions.json
-│   └── DeprecationRules.json
+│   └── EOLFallback/                 # Fallback EOL data from Microsoft
 └── Templates/                        # HTML templates (optional)
     └── assets/
 ```

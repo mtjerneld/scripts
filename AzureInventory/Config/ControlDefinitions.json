@@ -29,7 +29,7 @@
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
       "cliCommand": "az storage account show --name {name} --resource-group {rg} --query minimumTlsVersion",
       "remediationCommand": "az storage account update --name {name} --resource-group {rg} --min-tls-version TLS1_2",
-      "businessImpact": "Prevents use of insecure TLS 1.0/1.1 protocols. TLS 1.0/1.1 will be deprecated in February 2026. EOL tracking is handled via DeprecationRules.json.",
+      "businessImpact": "Prevents use of insecure TLS 1.0/1.1 protocols. TLS 1.0/1.1 will be deprecated in February 2026. EOL tracking is handled via Microsoft's official EOL lists.",
       "references": [
         "https://learn.microsoft.com/en-us/azure/storage/common/transport-layer-security-configure-minimum-version",
         "https://workbench.cisecurity.org/files/3459",
@@ -211,7 +211,7 @@
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01",
       "cliCommand": "az storage account show --name {name} --resource-group {rg} --query kind",
       "remediationCommand": "az storage account update --name {name} --resource-group {rg} --set kind=StorageV2",
-      "businessImpact": "Legacy storage account types (GPv1, BlobStorage) are being deprecated October 2026. Upgrade to StorageV2 for full feature support. EOL tracking is handled via DeprecationRules.json.",
+      "businessImpact": "Legacy storage account types (GPv1, BlobStorage) are being deprecated October 2026. Upgrade to StorageV2 for full feature support. EOL tracking is handled via Microsoft's official EOL lists.",
       "references": [
         "https://azure.microsoft.com/en-us/updates/action-required-switch-to-azure-storage-account-standard-general-purpose-v2-by-13-october-2026/"
       ],
@@ -565,7 +565,7 @@
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Network/virtualNetworkGateways?api-version=2024-05-01",
       "cliCommand": "az network vnet-gateway show --name {name} --resource-group {rg} --query sku.name",
       "remediationCommand": "az network vnet-gateway update --name {name} --resource-group {rg} --sku {newSku}",
-      "businessImpact": "Non-AZ VPN Gateway SKUs (VpnGw1-5) are deprecated. From January 1, 2025, new gateways cannot be created with these SKUs. Existing gateways will be automatically migrated to AZ versions (VpnGw1AZ-5AZ) between April 2025 and September 2026. Migrate proactively to maintain control and avoid service disruption. EOL tracking is handled via DeprecationRules.json.",
+      "businessImpact": "Non-AZ VPN Gateway SKUs (VpnGw1-5) are deprecated. From January 1, 2025, new gateways cannot be created with these SKUs. Existing gateways will be automatically migrated to AZ versions (VpnGw1AZ-5AZ) between April 2025 and September 2026. Migrate proactively to maintain control and avoid service disruption. EOL tracking is handled via Microsoft's official EOL lists.",
       "references": [
         "https://learn.microsoft.com/en-us/azure/vpn-gateway/gateway-sku-consolidation",
         "https://azure.microsoft.com/en-us/updates/action-required-upgrade-your-vpn-gateway-skus-to-zone-redundant-versions-by-30-september-2026/"
@@ -694,7 +694,7 @@
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Compute/virtualMachines/{vmName}/extensions?api-version=2024-03-01",
       "cliCommand": "az vm extension list --vm-name {vmName} --resource-group {rg}",
       "remediationCommand": "az vm extension delete --name MicrosoftMonitoringAgent --vm-name {vmName} --resource-group {rg} && az vm extension set --name AzureMonitorWindowsAgent --publisher Microsoft.Azure.Monitor --vm-name {vmName} --resource-group {rg}",
-      "businessImpact": "Log Analytics Agent (MMA/OMS) was RETIRED August 31, 2024. Must migrate to Azure Monitor Agent immediately. EOL tracking is handled via DeprecationRules.json.",
+      "businessImpact": "Log Analytics Agent (MMA/OMS) was RETIRED August 31, 2024. Must migrate to Azure Monitor Agent immediately. EOL tracking is handled via Microsoft's official EOL lists.",
       "references": [
         "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/log-analytics-agent"
       ],
@@ -722,7 +722,7 @@
       "apiEndpoint": "GET /subscriptions/{subscriptionId}/providers/Microsoft.Web/sites/{name}/config/web?api-version=2024-04-01",
       "cliCommand": "az webapp config show --name {name} --resource-group {rg} --query minTlsVersion",
       "remediationCommand": "az webapp config set --name {name} --resource-group {rg} --min-tls-version 1.2",
-      "businessImpact": "Enforces secure TLS connections for web applications. Prevents use of deprecated protocols. EOL tracking is handled via DeprecationRules.json.",
+      "businessImpact": "Enforces secure TLS connections for web applications. Prevents use of deprecated protocols. EOL tracking is handled via Microsoft's official EOL lists.",
       "references": [
         "https://learn.microsoft.com/en-us/azure/app-service/configure-ssl-bindings#enforce-tls-versions",
         "https://workbench.cisecurity.org/files/3459",

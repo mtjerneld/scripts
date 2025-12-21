@@ -37,9 +37,6 @@ function Export-SecurityReport {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     }
     
-    # Note: We no longer use external CSS files - all styles are inline for dark mode consistency
-    $cssContent = ""
-    
     # Generate HTML report
     try {
         # Calculate summary values - count FAIL findings by severity directly from findings
@@ -200,11 +197,10 @@ $(Get-ReportNavigation -ActivePage "Security")
 "@
         }
         
-        # Get unique categories and severities for filter dropdowns
+        # Get unique categories for filter dropdowns
         # Use all findings, not just failed ones, to populate category filter
         $allCategories = ($findings | Select-Object -ExpandProperty Category -Unique | Sort-Object)
         $categories = if ($allCategories.Count -gt 0) { $allCategories } else { @() }
-        $severities = @("All", "Critical", "High", "Medium", "Low")
         
         # Get unique subscription names for subscription filter
         $allSubscriptions = ($failedFindings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object)
@@ -312,7 +308,6 @@ $(Get-ReportNavigation -ActivePage "Security")
                 foreach ($controlGroup in $categoryControls) {
                     $allCategoryFindings += $controlGroup.Group
                 }
-                $categoryFailedCount = $allCategoryFindings.Count
                 
                 # Count per severity for this category (use @() to ensure array for .Count)
                 $catCritical = @($allCategoryFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
@@ -334,14 +329,6 @@ $(Get-ReportNavigation -ActivePage "Security")
                 if ($categorySeverities -contains "Critical") { $categoryHighestSeverity = "Critical" }
                 elseif ($categorySeverities -contains "High") { $categoryHighestSeverity = "High" }
                 elseif ($categorySeverities -contains "Medium") { $categoryHighestSeverity = "Medium" }
-                
-                $categorySeverityClass = switch ($categoryHighestSeverity) {
-                    "Critical" { "status-badge critical" }
-                    "High" { "status-badge high" }
-                    "Medium" { "status-badge medium" }
-                    "Low" { "status-badge low" }
-                    default { "" }
-                }
                 
                 $categoryLower = ($category -replace '\s+', '-').ToLower()
                 $categorySeverityLower = $categoryHighestSeverity.ToLower()

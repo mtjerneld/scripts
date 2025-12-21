@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Factory function that creates standardized EOL finding objects for tracking
-    deprecated Azure resources/components based on DeprecationRules.
+    deprecated Azure resources/components based on Microsoft's official EOL lists.
 
 .PARAMETER SubscriptionId
     Azure subscription ID where the resource resides.

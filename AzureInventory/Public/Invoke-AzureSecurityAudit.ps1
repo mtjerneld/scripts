@@ -28,6 +28,9 @@
 .PARAMETER CriticalStorageAccounts
     Array of storage account names that contain critical data. Used for Level 2 CMK control (3.12).
 
+.PARAMETER SkipChangeTracking
+    Skip collecting change tracking data. This can speed up the audit process.
+
 .EXAMPLE
     Invoke-AzureSecurityAudit -Categories Storage, SQL
 
@@ -57,8 +60,8 @@ function Invoke-AzureSecurityAudit {
         [switch]$IncludeLevel2,
         
         [string[]]$CriticalStorageAccounts = @(),
-
-        [switch]$IncludeEOLTracking
+        
+        [switch]$SkipChangeTracking
     )
     
     $scanStart = Get-Date
@@ -186,6 +189,7 @@ function Invoke-AzureSecurityAudit {
     }
     
     # Calculate CIS Compliance Score
+    # Note: Calculate is an approved PowerShell verb - PSScriptAnalyzer warning is a false positive
     function Calculate-CisComplianceScore {
         param(
             [array]$Findings,
@@ -389,12 +393,17 @@ function Invoke-AzureSecurityAudit {
     $result.AdvisorRecommendations = @($advisorRecommendations)
     Write-Verbose "Updated result.AdvisorRecommendations with $($advisorRecommendations.Count) recommendations"
     
-    # Collect Change Tracking Data
-    Collect-ChangeTrackingData -Subscriptions $subscriptions -ChangeTrackingData $changeTrackingData -Errors $errors
-    
-    # Update result with latest change tracking data (ensure it's an array)
-    $result.ChangeTrackingData = @($changeTrackingData)
-    Write-Verbose "Updated result.ChangeTrackingData with $($changeTrackingData.Count) changes"
+    # Collect Change Tracking Data (unless skipped)
+    if (-not $SkipChangeTracking) {
+        Collect-ChangeTrackingData -Subscriptions $subscriptions -ChangeTrackingData $changeTrackingData -Errors $errors
+        
+        # Update result with latest change tracking data (ensure it's an array)
+        $result.ChangeTrackingData = @($changeTrackingData)
+        Write-Verbose "Updated result.ChangeTrackingData with $($changeTrackingData.Count) changes"
+    } else {
+        Write-Verbose "Skipping change tracking data collection as requested"
+        $result.ChangeTrackingData = @()
+    }
 
     # Collect Network Inventory
     Collect-NetworkInventory -Subscriptions $subscriptions -NetworkInventory $networkInventory -Errors $errors
@@ -414,70 +423,68 @@ function Invoke-AzureSecurityAudit {
         $result.CostTrackingData = @{}
     }
 
-    # Collect EOL Status (optional)
-    if ($IncludeEOLTracking.IsPresent) {
-        try {
-            $subIdsForEol = @($subscriptions.Id)
-            if ($subIdsForEol.Count -gt 0) {
-                Write-Verbose "Running EOL tracking across $($subIdsForEol.Count) subscription(s)"
-                $eolResults = Get-EOLStatus -SubscriptionIds $subIdsForEol
-                if ($eolResults) {
-                    foreach ($eolComponent in $eolResults) {
-                        $eolStatus.Add($eolComponent)
-                        
-                        # Convert each affected resource to an EOLFinding and add to allEOLFindings
-                        if ($eolComponent.AffectedResources -and $eolComponent.AffectedResources.Count -gt 0) {
-                            # Map status: DEPRECATED -> Deprecated, ANNOUNCED -> Retiring, RETIRED -> RETIRED
-                            $mappedStatus = switch ($eolComponent.Status) {
-                                "DEPRECATED" { "Deprecated" }
-                                "ANNOUNCED" { "Retiring" }
-                                "RETIRED" { "RETIRED" }
-                                "UNKNOWN" { "Deprecated" }
-                                default { $eolComponent.Status }
-                            }
-                            
-                            # Ensure DaysUntilDeadline is an integer (handle null)
-                            $daysUntil = if ($null -ne $eolComponent.DaysUntilDeadline) { 
-                                [int]$eolComponent.DaysUntilDeadline 
-                            } else { 
-                                0 
-                            }
-                            
-                            foreach ($affectedResource in $eolComponent.AffectedResources) {
-                                # Get subscription name
-                                $subName = Get-SubscriptionDisplayName -SubscriptionId $affectedResource.SubscriptionId
-                                
-                                # Create EOLFinding for this resource
-                                $eolFinding = New-EOLFinding `
-                                    -SubscriptionId $affectedResource.SubscriptionId `
-                                    -SubscriptionName $subName `
-                                    -ResourceGroup $affectedResource.ResourceGroup `
-                                    -ResourceType $eolComponent.ResourceType `
-                                    -ResourceName $affectedResource.Name `
-                                    -ResourceId $affectedResource.ResourceId `
-                                    -Component $eolComponent.Component `
-                                    -Status $mappedStatus `
-                                    -Deadline $eolComponent.Deadline `
-                                    -Severity $eolComponent.Severity `
-                                    -DaysUntilDeadline $daysUntil `
-                                    -ActionRequired $eolComponent.ActionRequired `
-                                    -MigrationGuide $eolComponent.MigrationGuide `
-                                    -References @()
-                                
-                                $allEOLFindings.Add($eolFinding)
-                            }
-                            
-                            Write-Verbose "EOLTracking: Converted $($eolComponent.AffectedResources.Count) resource(s) for component '$($eolComponent.Component)' to EOL findings"
+    # Collect EOL Status (using Microsoft's official EOL lists)
+    try {
+        $subIdsForEol = @($subscriptions.Id)
+        if ($subIdsForEol.Count -gt 0) {
+            Write-Verbose "Running EOL tracking across $($subIdsForEol.Count) subscription(s)"
+            $eolResults = Get-AzureEOLStatus -SubscriptionIds $subIdsForEol
+            if ($eolResults) {
+                foreach ($eolComponent in $eolResults) {
+                    $eolStatus.Add($eolComponent)
+                    
+                    # Convert each affected resource to an EOLFinding and add to allEOLFindings
+                    if ($eolComponent.AffectedResources -and $eolComponent.AffectedResources.Count -gt 0) {
+                        # Map status: DEPRECATED -> Deprecated, ANNOUNCED -> Retiring, RETIRED -> RETIRED
+                        $mappedStatus = switch ($eolComponent.Status) {
+                            "DEPRECATED" { "Deprecated" }
+                            "ANNOUNCED" { "Retiring" }
+                            "RETIRED" { "RETIRED" }
+                            "UNKNOWN" { "Deprecated" }
+                            default { $eolComponent.Status }
                         }
+                        
+                        # Ensure DaysUntilDeadline is an integer (handle null)
+                        $daysUntil = if ($null -ne $eolComponent.DaysUntilDeadline) { 
+                            [int]$eolComponent.DaysUntilDeadline 
+                        } else { 
+                            0 
+                        }
+                        
+                        foreach ($affectedResource in $eolComponent.AffectedResources) {
+                            # Get subscription name
+                            $subName = Get-SubscriptionDisplayName -SubscriptionId $affectedResource.SubscriptionId
+                            
+                            # Create EOLFinding for this resource
+                            $eolFinding = New-EOLFinding `
+                                -SubscriptionId $affectedResource.SubscriptionId `
+                                -SubscriptionName $subName `
+                                -ResourceGroup $affectedResource.ResourceGroup `
+                                -ResourceType $eolComponent.ResourceType `
+                                -ResourceName $affectedResource.Name `
+                                -ResourceId $affectedResource.ResourceId `
+                                -Component $eolComponent.Component `
+                                -Status $mappedStatus `
+                                -Deadline $eolComponent.Deadline `
+                                -Severity $eolComponent.Severity `
+                                -DaysUntilDeadline $daysUntil `
+                                -ActionRequired $eolComponent.ActionRequired `
+                                -MigrationGuide $eolComponent.MigrationGuide `
+                                -References @()
+                            
+                            $allEOLFindings.Add($eolFinding)
+                        }
+                        
+                        Write-Verbose "EOLTracking: Converted $($eolComponent.AffectedResources.Count) resource(s) for component '$($eolComponent.Component)' to EOL findings"
                     }
-                    $result.EOLStatus = @($eolStatus)
-                    Write-Verbose "EOLTracking: Found $($eolStatus.Count) EOL component(s), created $($allEOLFindings.Count) total EOL findings"
                 }
+                $result.EOLStatus = @($eolStatus)
+                Write-Verbose "EOLTracking: Found $($eolStatus.Count) EOL component(s), created $($allEOLFindings.Count) total EOL findings"
             }
         }
-        catch {
-            Write-Warning "EOL tracking failed: $_"
-        }
+    }
+    catch {
+        Write-Warning "EOL tracking failed: $_"
     }
     
     # Generate reports

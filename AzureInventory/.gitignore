@@ -11,7 +11,6 @@
 *.json
 # But allow configuration JSON files
 !Config/ControlDefinitions.json
-!Config/DeprecationRules.json
 
 # EOL cache (downloaded files, not committed)
 Config/EOLCache/

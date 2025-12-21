@@ -40,28 +40,6 @@ function Get-AzureKeyVaultFindings {
     $uniqueResourcesScanned = @{}
     $controlsEvaluated = 0
     
-    # Load deprecation rules for EOL checking
-    $deprecationRules = Get-DeprecationRules
-    $resourceTypeMapping = @{}
-    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
-    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
-    if (Test-Path $mappingPath) {
-        try {
-            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
-            if ($mappingJson -and $mappingJson.mappings) {
-                foreach ($mapping in $mappingJson.mappings) {
-                    if ($mapping.resourceType -eq "Microsoft.KeyVault/vaults") {
-                        $resourceTypeMapping["Microsoft.KeyVault/vaults"] = $mapping
-                        break
-                    }
-                }
-            }
-        }
-        catch {
-            Write-Verbose "Failed to load ResourceTypeMapping: $_"
-        }
-    }
-    
     # Load enabled controls from JSON
     $controls = Get-ControlsForCategory -Category "KeyVault" -IncludeLevel2:$IncludeLevel2
     if ($null -eq $controls -or $controls.Count -eq 0) {
@@ -237,41 +215,6 @@ function Get-AzureKeyVaultFindings {
                 -Status $status `
                 -RemediationSteps $firewallControl.businessImpact `
                 -RemediationCommand $remediationCmd))
-        }
-        
-        # EOL Checking: Check if this Key Vault matches any deprecation rules
-        if ($deprecationRules -and $deprecationRules.Count -gt 0) {
-            $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.KeyVault/vaults")) {
-                $resourceTypeMapping["Microsoft.KeyVault/vaults"]
-            } else {
-                $null
-            }
-            
-            $eolStatus = Test-ResourceEOLStatus `
-                -Resource $vault `
-                -ResourceType "Microsoft.KeyVault/vaults" `
-                -DeprecationRules $deprecationRules `
-                -ResourceTypeMapping @{ "Microsoft.KeyVault/vaults" = $mapping }
-            
-            if ($eolStatus.Matched -and $eolStatus.Rule) {
-                $rule = $eolStatus.Rule
-                $eolFinding = New-EOLFinding `
-                    -SubscriptionId $SubscriptionId `
-                    -SubscriptionName $SubscriptionName `
-                    -ResourceGroup $vault.ResourceGroupName `
-                    -ResourceType "Microsoft.KeyVault/vaults" `
-                    -ResourceName $vault.VaultName `
-                    -ResourceId $vault.ResourceId `
-                    -Component $rule.component `
-                    -Status $rule.status `
-                    -Deadline $eolStatus.Deadline `
-                    -Severity $eolStatus.Severity `
-                    -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
-                    -ActionRequired $rule.actionRequired `
-                    -MigrationGuide $rule.migrationGuide `
-                    -References $(if ($rule.references) { $rule.references } else { @() })
-                $eolFindings.Add($eolFinding)
-            }
         }
     }
     

@@ -42,20 +42,7 @@ function Export-VMBackupReport {
     $unprotectedVMs = $totalVMs - $protectedVMs
     $runningVMs = @($VMInventory | Where-Object { $_.PowerState -eq 'running' }).Count
     $stoppedVMs = @($VMInventory | Where-Object { $_.PowerState -eq 'deallocated' -or $_.PowerState -eq 'stopped' }).Count
-    $otherStateVMs = $totalVMs - $runningVMs - $stoppedVMs
     $protectionRate = if ($totalVMs -gt 0) { [math]::Round(($protectedVMs / $totalVMs) * 100, 1) } else { 0 }
-    
-    # Group by subscription for summary
-    $subscriptionSummary = $VMInventory | Group-Object SubscriptionName | ForEach-Object {
-        $subVMs = $_.Group
-        [PSCustomObject]@{
-            Name = $_.Name
-            Total = $_.Count
-            Protected = @($subVMs | Where-Object { $_.BackupEnabled }).Count
-            Unprotected = @($subVMs | Where-Object { -not $_.BackupEnabled }).Count
-            Running = @($subVMs | Where-Object { $_.PowerState -eq 'running' }).Count
-        }
-    }
     
     $html = @"
 <!DOCTYPE html>

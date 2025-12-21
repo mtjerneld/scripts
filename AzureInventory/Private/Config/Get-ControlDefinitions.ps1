@@ -3,10 +3,10 @@
     Loads control definitions from JSON configuration file.
 
 .DESCRIPTION
-    Reads control definitions and deprecation rules from Config directory.
+    Reads control definitions from Config directory.
 
 .OUTPUTS
-    Hashtable with control definitions and deprecation rules.
+    Hashtable with control definitions.
 #>
 function Get-ControlDefinitions {
     [CmdletBinding()]
@@ -14,11 +14,9 @@ function Get-ControlDefinitions {
     
     $moduleRoot = $PSScriptRoot -replace '\\Private\\Config$', ''
     $controlDefPath = Join-Path $moduleRoot "Config\ControlDefinitions.json"
-    $deprecationPath = Join-Path $moduleRoot "Config\DeprecationRules.json"
     
     $result = @{
         Controls = @()
-        Deprecations = @()
     }
     
     try {
@@ -30,15 +28,6 @@ function Get-ControlDefinitions {
     }
     catch {
         Write-Warning "Failed to load control definitions: $_"
-    }
-    
-    try {
-        if (Test-Path $deprecationPath) {
-            $result.Deprecations = Get-Content -Path $deprecationPath -Raw | ConvertFrom-Json
-        }
-    }
-    catch {
-        Write-Warning "Failed to load deprecation rules: $_"
     }
     
     return $result

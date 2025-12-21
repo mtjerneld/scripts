@@ -21,7 +21,7 @@
         AffectedResourceCount, AffectedResources (array),
         ActionRequired, MigrationGuide
 #>
-function Get-EOLStatus {
+function Get-AzureEOLStatus {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]

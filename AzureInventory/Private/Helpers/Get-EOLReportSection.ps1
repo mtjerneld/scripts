@@ -3,7 +3,7 @@
     Generates the HTML section for End of Life (EOL) tracking in the Security report.
 
 .PARAMETER EOLStatus
-    Array of EOL status objects as returned by Get-EOLStatus.
+    Array of EOL status objects as returned by Get-AzureEOLStatus.
 #>
 function Get-EOLReportSection {
     [CmdletBinding()]

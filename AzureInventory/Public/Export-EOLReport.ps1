@@ -146,7 +146,7 @@ function Export-EOLReport {
                         'Low'      { 3 }
                         default    { 4 }
                     }
-                }}, @{Expression = { if ($_.DaysUntil -ne $null) { $_.DaysUntil } else { 99999 } }}
+                }}, @{Expression = { if ($null -ne $_.DaysUntil) { $_.DaysUntil } else { 99999 } }}
     }
 
     $componentCount = $components.Count
@@ -406,7 +406,7 @@ function Export-EOLReport {
         $topSeverity = $comp.TopSeverity
         $topSeverityLower = $topSeverity.ToLower()
         $deadlineText = if ($compDeadline) { $compDeadline } else { "N/A" }
-        $daysText = if ($daysUntil -ne $null) {
+        $daysText = if ($null -ne $daysUntil) {
             if ($daysUntil -lt 0) { "Past due ({0} d)" -f [math]::Abs($daysUntil) } else { "{0} d" -f $daysUntil }
         } else {
             "N/A"
@@ -424,7 +424,7 @@ function Export-EOLReport {
             $dl      = $f.Deadline
             $di      = $f.DaysUntilDeadline
             $dlText  = if ($dl) { $dl } else { "N/A" }
-            $diText  = if ($di -ne $null) {
+            $diText  = if ($null -ne $di) {
                 if ($di -lt 0) { "Past due ({0} d)" -f [math]::Abs($di) } else { "{0} d" -f $di }
             } else { "N/A" }
 
@@ -511,12 +511,6 @@ $resourceRows
                     </div>
 "@
     }
-
-    # Prepare summary cards values
-    $criticalLabel = "$criticalTotal"
-    $highLabel     = "$highTotal"
-    $mediumLabel   = "$mediumTotal"
-    $lowLabel      = "$lowTotal"
 
     # Build HTML
     $html = @"

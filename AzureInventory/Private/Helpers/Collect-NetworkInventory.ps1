@@ -18,6 +18,8 @@
 .OUTPUTS
     Updated collections (NetworkInventory, Errors).
 #>
+# Note: "Collect" is intentionally used (not an approved verb) to distinguish aggregation functions
+# from single-source retrieval functions (which use "Get-"). This is a known PSScriptAnalyzer warning.
 function Collect-NetworkInventory {
     [CmdletBinding()]
     param(

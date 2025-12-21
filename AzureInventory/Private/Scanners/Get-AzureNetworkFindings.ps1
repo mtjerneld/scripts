@@ -36,30 +36,6 @@ function Get-AzureNetworkFindings {
     $uniqueResourcesScanned = @{}
     $controlsEvaluated = 0
     
-    # Load deprecation rules for EOL checking
-    $deprecationRules = Get-DeprecationRules
-    $resourceTypeMapping = @{}
-    $moduleRoot = $PSScriptRoot -replace '\\Private\\Scanners$', ''
-    $mappingPath = Join-Path $moduleRoot "Config\ResourceTypeMapping.json"
-    if (Test-Path $mappingPath) {
-        try {
-            $mappingJson = Get-Content -Path $mappingPath -Raw | ConvertFrom-Json
-            if ($mappingJson -and $mappingJson.mappings) {
-                foreach ($mapping in $mappingJson.mappings) {
-                    if ($mapping.resourceType) {
-                        $resourceTypeMapping[$mapping.resourceType] = $mapping
-                    }
-                }
-            }
-            Write-Verbose "Loaded $($resourceTypeMapping.Keys.Count) resource type mapping(s) from ResourceTypeMapping.json"
-        }
-        catch {
-            Write-Verbose "Failed to load ResourceTypeMapping: $_"
-        }
-    } else {
-        Write-Verbose "ResourceTypeMapping.json not found at $mappingPath - EOL matching may be limited"
-    }
-    
     # Load enabled controls from JSON
     try {
         $controls = Get-ControlsForCategory -Category "Network" -IncludeLevel2:$IncludeLevel2
@@ -455,71 +431,6 @@ function Get-AzureNetworkFindings {
                                 -RemediationSteps $vpnGwControl.businessImpact `
                                 -RemediationCommand $remediationCmd
                             $findings.Add($finding)
-                            
-                            # EOL Checking: Check if this VPN Gateway matches any deprecation rules
-                            if ($deprecationRules -and $deprecationRules.Count -gt 0) {
-                                $mapping = if ($resourceTypeMapping.ContainsKey("Microsoft.Network/virtualNetworkGateways")) {
-                                    $resourceTypeMapping["Microsoft.Network/virtualNetworkGateways"]
-                                } else {
-                                    $null
-                                }
-                                
-                                # Debug: Log gateway SKU for troubleshooting
-                                Write-Verbose "VPN Gateway EOL Check: $($gateway.Name), SKU: $skuName, Mapping present: $($null -ne $mapping)"
-                                if ($mapping) {
-                                    Write-Verbose "VPN Gateway EOL Check: Mapping properties: $($mapping.properties | ConvertTo-Json -Compress)"
-                                }
-                                
-                                $eolStatus = Test-ResourceEOLStatus `
-                                    -Resource $gateway `
-                                    -ResourceType "Microsoft.Network/virtualNetworkGateways" `
-                                    -DeprecationRules $deprecationRules `
-                                    -ResourceTypeMapping @{ "Microsoft.Network/virtualNetworkGateways" = $mapping }
-                                
-                                $ruleComponent = if ($eolStatus.Rule) { $eolStatus.Rule.component } else { 'None' }
-                                Write-Verbose "VPN Gateway EOL Check Result: Matched=$($eolStatus.Matched), Severity=$($eolStatus.Severity), Rule=$ruleComponent"
-                                
-                                if ($eolStatus.Matched -and $eolStatus.Rule) {
-                                    $rule = $eolStatus.Rule
-                                    
-                                    # Map status to ensure compatibility (DeprecationRules uses "Deprecated", "Retiring", "RETIRED")
-                                    $mappedStatus = if ($rule.status) {
-                                        switch ($rule.status) {
-                                            "DEPRECATED" { "Deprecated" }
-                                            "ANNOUNCED" { "Retiring" }
-                                            "RETIRED" { "RETIRED" }
-                                            default { $rule.status }
-                                        }
-                                    } else {
-                                        # If no status in rule, calculate based on deadline
-                                        if ($eolStatus.DaysUntilDeadline -lt 0) {
-                                            "RETIRED"
-                                        } elseif ($eolStatus.DaysUntilDeadline -lt 90) {
-                                            "Deprecated"
-                                        } else {
-                                            "Retiring"
-                                        }
-                                    }
-                                    
-                                    $eolFinding = New-EOLFinding `
-                                        -SubscriptionId $SubscriptionId `
-                                        -SubscriptionName $SubscriptionName `
-                                        -ResourceGroup $gateway.ResourceGroupName `
-                                        -ResourceType "Microsoft.Network/virtualNetworkGateways" `
-                                        -ResourceName $gateway.Name `
-                                        -ResourceId $gateway.Id `
-                                        -Component $rule.component `
-                                        -Status $mappedStatus `
-                                        -Deadline $eolStatus.Deadline `
-                                        -Severity $eolStatus.Severity `
-                                        -DaysUntilDeadline $eolStatus.DaysUntilDeadline `
-                                        -ActionRequired $rule.actionRequired `
-                                        -MigrationGuide $rule.migrationGuide `
-                                        -References $(if ($rule.references) { $rule.references } else { @() })
-                                    $eolFindings.Add($eolFinding)
-                                    Write-Verbose "Added EOL finding for VPN Gateway: $($gateway.Name), Status: $mappedStatus, Severity: $($eolStatus.Severity)"
-                                }
-                            }
                         }
                     }
                     catch {

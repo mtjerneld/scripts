@@ -67,7 +67,6 @@ function Export-DashboardReport {
     # Security metrics - MUST come from Security Report (no additional inventory)
     if ($SecurityReportData) {
         $securityScore   = $SecurityReportData.SecurityScore
-        $totalChecks     = $SecurityReportData.TotalChecks
         $passedChecks    = $SecurityReportData.PassedChecks
         $criticalCount   = $SecurityReportData.CriticalCount
         $highCount       = $SecurityReportData.HighCount
@@ -77,7 +76,6 @@ function Export-DashboardReport {
     } else {
         # Fallback: Set defaults if Security Report data not available
         $securityScore   = 0
-        $totalChecks     = 0
         $passedChecks    = 0
         $criticalCount   = 0
         $highCount       = 0
@@ -85,6 +83,10 @@ function Export-DashboardReport {
         $lowCount        = 0
         $totalFailedFindings = 0
     }
+    
+    # Get failed findings for display in report links
+    $findings = if ($AuditResult.Findings) { @($AuditResult.Findings) } else { @() }
+    $failedFindings = @($findings | Where-Object { $_.Status -eq 'FAIL' })
 
     # EOL / Deprecated components metrics (from EOLSummary on AuditResult or defaults)
     $eolTotalFindings   = 0
@@ -256,8 +258,6 @@ function Export-DashboardReport {
         $costCurrency = $CostTrackingReportData.Currency
         $costSubscriptionCount = $CostTrackingReportData.SubscriptionCount
         $costCategoryCount = $CostTrackingReportData.CategoryCount
-        $costTrendPercent = $CostTrackingReportData.TrendPercent
-        $costTrendDirection = $CostTrackingReportData.TrendDirection
         $costDays = $CostTrackingReportData.DaysIncluded
     } else {
         # Fallback: Try to get from AuditResult.CostTrackingData
@@ -266,8 +266,6 @@ function Export-DashboardReport {
         $costCurrency = "SEK"
         $costSubscriptionCount = 0
         $costCategoryCount = 0
-        $costTrendPercent = 0
-        $costTrendDirection = "neutral"
         $costDays = 30
         if ($AuditResult.CostTrackingData -and $AuditResult.CostTrackingData.TotalCostLocal) {
             $costTotalLocal = $AuditResult.CostTrackingData.TotalCostLocal
@@ -285,25 +283,6 @@ function Export-DashboardReport {
     
     # Subscription count
     $subscriptionCount = ($AuditResult.SubscriptionsScanned | Measure-Object).Count
-    
-    # Resources scanned by category
-    $resourcesByCategory = $failedFindings | Group-Object Category | ForEach-Object {
-        [PSCustomObject]@{
-            Category = $_.Name
-            FailCount = $_.Count
-        }
-    } | Sort-Object FailCount -Descending
-    
-    # Determine overall health color
-    $healthColor = if ($criticalCount -gt 0) { '#ff6b6b' } 
-                   elseif ($highCount -gt 0) { '#feca57' }
-                   elseif ($mediumCount -gt 0) { '#54a0ff' }
-                   else { '#00d26a' }
-    
-    $healthText = if ($criticalCount -gt 0) { 'Critical Issues Found' }
-                  elseif ($highCount -gt 0) { 'High Risk Items Present' }
-                  elseif ($mediumCount -gt 0) { 'Medium Risk Items' }
-                  else { 'Environment Healthy' }
     
     $html = @"
 <!DOCTYPE html>
