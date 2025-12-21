@@ -1397,6 +1397,9 @@ $(if ($componentCount -eq 0) { @"
                 const mediumBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(52, 152, 219, 0.4)' : 'rgba(52, 152, 219, 0.8)');
                 const lowBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(39, 174, 96, 0.4)' : 'rgba(39, 174, 96, 0.8)');
                 
+                // Pre-compute x-axis tick colors - past months are red
+                const xAxisTickColors = eolIsPastMonth.map(isPast => isPast ? '#ff6b6b' : '#888');
+                
                 eolChart = new Chart(ctx, {
                     type: 'bar',
                     data: {
@@ -1524,7 +1527,11 @@ $(if ($componentCount -eq 0) { @"
                         x: {
                             stacked: true,
                             ticks: {
-                                color: '#888',
+                                color: function(context) {
+                                    const index = context.index;
+                                    const isPast = eolIsPastMonth && index < eolIsPastMonth.length && eolIsPastMonth[index] === true;
+                                    return isPast ? '#ff6b6b' : '#888';
+                                },
                                 maxRotation: 45,
                                 minRotation: 45
                             },
