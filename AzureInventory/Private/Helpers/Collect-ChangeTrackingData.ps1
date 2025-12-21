@@ -1,10 +1,11 @@
 <#
 .SYNOPSIS
-    Collects Azure Activity Log change tracking data for all subscriptions.
+    Collects Azure Change Analysis data for all subscriptions.
 
 .DESCRIPTION
-    Iterates through subscriptions and collects change tracking data using
-    the Get-AzureChangeTracking function.
+    Uses Resource Graph Change Analysis to collect actual configuration changes
+    across all subscriptions in a single cross-subscription query. Optionally
+    includes curated Activity Log security events.
 
 .PARAMETER Subscriptions
     Array of subscription objects to collect change tracking data from.
@@ -40,11 +41,11 @@ function Collect-ChangeTrackingData {
         $Errors = [System.Collections.Generic.List[string]]::new()
     }
     
-    Write-Host "`n=== Collecting Azure Change Tracking Data ===" -ForegroundColor Cyan
+    Write-Host "`n=== Collecting Azure Change Tracking Data (v2 - Change Analysis) ===" -ForegroundColor Cyan
     
     # Check if function exists, if not try to load it directly
-    if (-not (Get-Command -Name Get-AzureChangeTracking -ErrorAction SilentlyContinue)) {
-        Write-Verbose "Get-AzureChangeTracking function not found, attempting to load directly..."
+    if (-not (Get-Command -Name Get-AzureChangeAnalysis -ErrorAction SilentlyContinue)) {
+        Write-Verbose "Get-AzureChangeAnalysis function not found, attempting to load directly..."
         
         # Try to load the function directly from file
         # Try to find module root by looking for AzureSecurityAudit.psm1
@@ -65,7 +66,7 @@ function Collect-ChangeTrackingData {
             $moduleRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         }
         
-        $collectorPath = Join-Path $moduleRoot "Private\Collectors\Get-AzureChangeTracking.ps1"
+        $collectorPath = Join-Path $moduleRoot "Private\Collectors\Get-AzureChangeAnalysis.ps1"
         
         Write-Verbose "Module root: $moduleRoot"
         Write-Verbose "Looking for function at: $collectorPath"
@@ -76,7 +77,7 @@ function Collect-ChangeTrackingData {
                 . $collectorPath
                 
                 # Verify it loaded
-                if (Get-Command -Name Get-AzureChangeTracking -ErrorAction SilentlyContinue) {
+                if (Get-Command -Name Get-AzureChangeAnalysis -ErrorAction SilentlyContinue) {
                     Write-Verbose "Function loaded and verified successfully"
                 } else {
                     Write-Warning "Function file loaded but function not found in session"
@@ -100,79 +101,77 @@ function Collect-ChangeTrackingData {
             }
         }
     } else {
-        Write-Verbose "Get-AzureChangeTracking function found"
+        Write-Verbose "Get-AzureChangeAnalysis function found"
     }
     
     # Check again after potential load
-    if (-not (Get-Command -Name Get-AzureChangeTracking -ErrorAction SilentlyContinue)) {
-        Write-Warning "Get-AzureChangeTracking function still not available! Make sure the module is properly loaded."
+    if (-not (Get-Command -Name Get-AzureChangeAnalysis -ErrorAction SilentlyContinue)) {
+        Write-Warning "Get-AzureChangeAnalysis function still not available! Make sure the module is properly loaded."
         return
     }
     
-    # Check if Az.Monitor module is available
+    # Check if Az.ResourceGraph module is available
+    if (-not (Get-Module -ListAvailable -Name Az.ResourceGraph)) {
+        Write-Warning "Az.ResourceGraph module is not installed! Install with: Install-Module -Name Az.ResourceGraph"
+    } else {
+        Write-Verbose "Az.ResourceGraph module is available"
+    }
+    
+    # Check if Az.Monitor module is available (for security events)
     if (-not (Get-Module -ListAvailable -Name Az.Monitor)) {
-        Write-Warning "Az.Monitor module is not installed! Install with: Install-Module -Name Az.Monitor"
+        Write-Warning "Az.Monitor module is not installed! Security events will be skipped. Install with: Install-Module -Name Az.Monitor"
     } else {
         Write-Verbose "Az.Monitor module is available"
     }
     
-    # Get tenant ID for context switching
-    $currentContext = Get-AzContext
-    $tenantId = if ($currentContext -and $currentContext.Tenant) { $currentContext.Tenant.Id } else { $null }
-    
-    foreach ($sub in $Subscriptions) {
-        $subscriptionNameToUse = Get-SubscriptionDisplayName -Subscription $sub
-        Write-Host "`n  Collecting from: $subscriptionNameToUse..." -ForegroundColor Gray
+    try {
+        # Extract subscription IDs for cross-subscription query
+        $subscriptionIds = @($Subscriptions | ForEach-Object { $_.Id })
         
-        try {
-            Write-Verbose "Setting subscription context for $subscriptionNameToUse..."
-            Invoke-WithSuppressedWarnings {
-                if ($tenantId) {
-                    Set-AzContext -SubscriptionId $sub.Id -TenantId $tenantId -ErrorAction Stop | Out-Null
+        if ($subscriptionIds.Count -eq 0) {
+            Write-Warning "No subscriptions provided for change tracking"
+            return
+        }
+        
+        Write-Host "  Querying Change Analysis for $($subscriptionIds.Count) subscription(s)..." -ForegroundColor Gray
+        
+        # Call Get-AzureChangeAnalysis with all subscription IDs at once (cross-subscription query)
+        # Include security events by default
+        $changeData = Get-AzureChangeAnalysis -SubscriptionIds $subscriptionIds -Days 14 -IncludeSecurityEvents
+        
+        Write-Verbose "Function returned: Type=$($changeData.GetType().FullName), Count=$($changeData.Count)"
+        
+        # Ensure changeData is an array
+        if ($null -eq $changeData) {
+            $changeData = @()
+        } else {
+            $changeData = @($changeData)
+        }
+        
+        if ($changeData.Count -gt 0) {
+            $addedCount = 0
+            foreach ($change in $changeData) {
+                if ($null -ne $change) {
+                    $ChangeTrackingData.Add($change)
+                    $addedCount++
                 } else {
-                    Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
+                    Write-Verbose "Skipping null change object"
                 }
             }
-            Write-Verbose "Context set successfully"
-            
-            # Run function
-            Write-Verbose "Calling Get-AzureChangeTracking for $subscriptionNameToUse..."
-            $changeData = Get-AzureChangeTracking -SubscriptionId $sub.Id -SubscriptionName $subscriptionNameToUse
-            
-            Write-Verbose "Function returned: Type=$($changeData.GetType().FullName), Count=$($changeData.Count)"
-            
-            # Ensure changeData is an array
-            if ($null -eq $changeData) {
-                $changeData = @()
-            } else {
-                $changeData = @($changeData)
-            }
-            
-            if ($changeData.Count -gt 0) {
-                $addedCount = 0
-                foreach ($change in $changeData) {
-                    if ($null -ne $change) {
-                        $ChangeTrackingData.Add($change)
-                        $addedCount++
-                    } else {
-                        Write-Verbose "Skipping null change object"
-                    }
-                }
-                Write-Host "    Added $addedCount changes" -ForegroundColor Green
-                Write-Verbose "Total changes in collection after adding: $($ChangeTrackingData.Count)"
-            } else {
-                Write-Verbose "No changes found (this may be normal if no changes occurred)"
-            }
+            Write-Host "    Added $addedCount changes" -ForegroundColor Green
+            Write-Verbose "Total changes in collection after adding: $($ChangeTrackingData.Count)"
+        } else {
+            Write-Verbose "No changes found (this may be normal if no changes occurred)"
         }
-        catch {
-            Write-Warning "Failed to get change tracking data for $subscriptionNameToUse : $_"
-            Write-Verbose "Error type: $($_.Exception.GetType().FullName)"
-            Write-Verbose "Error message: $($_.Exception.Message)"
-            if ($_.ScriptStackTrace) {
-                Write-Verbose "Stack trace: $($_.ScriptStackTrace)"
-            }
-            $Errors.Add("Failed to get change tracking data for $subscriptionNameToUse : $_")
+    }
+    catch {
+        Write-Warning "Failed to get change tracking data: $_"
+        Write-Verbose "Error type: $($_.Exception.GetType().FullName)"
+        Write-Verbose "Error message: $($_.Exception.Message)"
+        if ($_.ScriptStackTrace) {
+            Write-Verbose "Stack trace: $($_.ScriptStackTrace)"
         }
+        $Errors.Add("Failed to get change tracking data: $_")
     }
     
     Write-Host "`n  Total changes collected: $($ChangeTrackingData.Count)" -ForegroundColor $(if ($ChangeTrackingData.Count -gt 0) { 'Green' } else { 'Yellow' })

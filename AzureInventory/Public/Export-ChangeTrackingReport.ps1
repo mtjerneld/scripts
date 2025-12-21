@@ -7,7 +7,7 @@
     with summary cards, trend chart, security alerts, and filterable change log.
 
 .PARAMETER ChangeTrackingData
-    Array of change tracking objects from Get-AzureChangeTracking.
+    Array of change tracking objects from Get-AzureChangeAnalysis.
 
 .PARAMETER OutputPath
     Path for the HTML report output.
@@ -45,21 +45,12 @@ function Export-ChangeTrackingReport {
     # Calculate statistics
     $totalChanges = $ChangeTrackingData.Count
     $subscriptionCount = ($ChangeTrackingData | Select-Object -ExpandProperty SubscriptionName -Unique).Count
-    $creates = @($ChangeTrackingData | Where-Object { $_.OperationType -eq 'Create' }).Count
-    $modifies = @($ChangeTrackingData | Where-Object { $_.OperationType -eq 'Modify' }).Count
-    $deletes = @($ChangeTrackingData | Where-Object { $_.OperationType -eq 'Delete' }).Count
-    $actions = @($ChangeTrackingData | Where-Object { $_.OperationType -eq 'Action' }).Count
-    $resourceHealths = @($ChangeTrackingData | Where-Object { $_.OperationType -in @('ResourceHealth', 'Health', 'Incident') }).Count
+    $creates = @($ChangeTrackingData | Where-Object { $_.ChangeType -eq 'Create' }).Count
+    $updates = @($ChangeTrackingData | Where-Object { $_.ChangeType -eq 'Update' }).Count
+    $deletes = @($ChangeTrackingData | Where-Object { $_.ChangeType -eq 'Delete' }).Count
     $highSecurityFlags = @($ChangeTrackingData | Where-Object { $_.SecurityFlag -eq 'high' }).Count
     $mediumSecurityFlags = @($ChangeTrackingData | Where-Object { $_.SecurityFlag -eq 'medium' }).Count
-    
-    # Top callers
-    $topCallers = $ChangeTrackingData | 
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_.Caller) } |
-        Group-Object Caller | 
-        Sort-Object Count -Descending | 
-        Select-Object -First 5 | 
-        ForEach-Object { [PSCustomObject]@{ Caller = $_.Name; Count = $_.Count } }
+    $totalSecurityAlerts = $highSecurityFlags + $mediumSecurityFlags
     
     # Top resource types
     $topResourceTypes = $ChangeTrackingData | 
@@ -68,27 +59,40 @@ function Export-ChangeTrackingReport {
         Select-Object -First 5 | 
         ForEach-Object { [PSCustomObject]@{ ResourceType = $_.Name; Count = $_.Count } }
     
-    # Changes by day (for sparkline)
-    $changesByDay = $ChangeTrackingData | 
-        Where-Object { $_.Timestamp } |
+    # Changes by day (for sparkline) - use ChangeTime instead of Timestamp
+    # First, group changes by day
+    $changesGrouped = $ChangeTrackingData | 
+        Where-Object { $_.ChangeTime } |
         Group-Object { 
-            if ($_.Timestamp -is [DateTime]) {
-                $_.Timestamp.ToString('yyyy-MM-dd')
+            if ($_.ChangeTime -is [DateTime]) {
+                $_.ChangeTime.ToString('yyyy-MM-dd')
             } else {
                 try {
-                    ([DateTime]$_.Timestamp).ToString('yyyy-MM-dd')
+                    ([DateTime]$_.ChangeTime).ToString('yyyy-MM-dd')
                 } catch {
                     (Get-Date).ToString('yyyy-MM-dd')
                 }
             }
-        } | 
-        Sort-Object Name | 
-        ForEach-Object { 
-            [PSCustomObject]@{ Date = [DateTime]$_.Name; Count = $_.Count } 
         }
     
+    # Create a hashtable for quick lookup
+    $changesByDate = @{}
+    foreach ($group in $changesGrouped) {
+        $changesByDate[$group.Name] = $group.Count
+    }
+    
+    # Generate all 14 days (from 13 days ago to today, inclusive)
+    $today = (Get-Date).Date
+    $changesByDay = @()
+    for ($i = 13; $i -ge 0; $i--) {
+        $date = $today.AddDays(-$i)
+        $dateKey = $date.ToString('yyyy-MM-dd')
+        $count = if ($changesByDate.ContainsKey($dateKey)) { $changesByDate[$dateKey] } else { 0 }
+        $changesByDay += [PSCustomObject]@{ Date = $date; Count = $count }
+    }
+    
     # Security alerts (high and medium priority)
-    $securityAlerts = @($ChangeTrackingData | Where-Object { $_.SecurityFlag -in @('high', 'medium') } | Sort-Object Timestamp -Descending)
+    $securityAlerts = @($ChangeTrackingData | Where-Object { $_.SecurityFlag -in @('high', 'medium') } | Sort-Object ChangeTime -Descending)
     
     # Get unique subscriptions for filter
     $allSubscriptions = @($ChangeTrackingData | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object)
@@ -96,27 +100,54 @@ function Export-ChangeTrackingReport {
     # Encode-Html is imported from Private/Helpers/Encode-Html.ps1
     
     # Serialize data for client-side rendering
-    $exportData = $ChangeTrackingData | Sort-Object Timestamp -Descending | ForEach-Object {
+    $exportData = $ChangeTrackingData | Sort-Object ChangeTime -Descending | ForEach-Object {
+        # Serialize ChangedProperties for Update operations
+        $changedPropsJson = $null
+        if ($_.ChangeType -eq 'Update' -and $_.ChangedProperties -and $_.ChangedProperties.Count -gt 0) {
+            $changedPropsJson = $_.ChangedProperties | ConvertTo-Json -Compress
+        }
+        
+        # Safely get all properties with null checks
+        $time = if ($_.ChangeTime -is [DateTime]) { $_.ChangeTime.ToString('yyyy-MM-dd HH:mm') } else { try { ([DateTime]$_.ChangeTime).ToString('yyyy-MM-dd HH:mm') } catch { if ($_.ChangeTime) { $_.ChangeTime.ToString() } else { '' } } }
+        $dateStr = if ($_.ChangeTime -is [DateTime]) { 
+            $dt = $_.ChangeTime
+            "$($dt.ToString('yyyy-MM-dd')) $($dt.ToString('yyyy-MM')) $($dt.ToString('MM-dd')) $($dt.ToString('MMMM')) $($dt.ToString('MMM')) $($dt.Day) $($dt.Year)"
+        } else { 
+            try { 
+                if ($_.ChangeTime) {
+                    $dt = [DateTime]$_.ChangeTime
+                    "$($dt.ToString('yyyy-MM-dd')) $($dt.ToString('yyyy-MM')) $($dt.ToString('MM-dd')) $($dt.ToString('MMMM')) $($dt.ToString('MMM')) $($dt.Day) $($dt.Year)"
+                } else {
+                    ''
+                }
+            } catch { 
+                '' 
+            } 
+        }
+        
         @{
-            time    = if ($_.Timestamp -is [DateTime]) { $_.Timestamp.ToString('yyyy-MM-dd HH:mm') } else { try { ([DateTime]$_.Timestamp).ToString('yyyy-MM-dd HH:mm') } catch { $_.Timestamp } }
-            type    = $_.OperationType
-            res     = $_.ResourceName
-            rg      = $_.ResourceGroup
-            cat     = $_.ResourceCategory
-            caller  = $_.Caller
-            sub     = $_.SubscriptionName
-            sec     = $_.SecurityFlag
-            op      = $_.OperationName
-            id      = $_.ResourceId
-            cType   = $_.CallerType
-            sReason = $_.SecurityReason
-            title   = $_.ChangeTitle
-            desc    = $_.ChangeDescription
+            time    = $time
+            type    = if ($_.ChangeType) { $_.ChangeType } else { '' }
+            res     = if ($_.ResourceName) { $_.ResourceName } else { '' }
+            rg      = if ($_.ResourceGroup) { $_.ResourceGroup } else { '' }
+            cat     = if ($_.ResourceCategory) { $_.ResourceCategory } else { '' }
+            resType = if ($_.ResourceType) { $_.ResourceType } else { '' }
+            sub     = if ($_.SubscriptionName) { $_.SubscriptionName } else { '' }
+            sec     = if ($_.SecurityFlag) { $_.SecurityFlag } else { $null }
+            id      = if ($_.ResourceId) { $_.ResourceId } else { '' }
+            sReason = if ($_.SecurityReason) { $_.SecurityReason } else { $null }
+            changedProps = $changedPropsJson
+            hasChangeDetails = if ($null -ne $_.HasChangeDetails) { $_.HasChangeDetails } else { $false }
+            changeSource = if ($_.ChangeSource) { $_.ChangeSource } else { 'ChangeAnalysis' }
+            caller  = if ($_.Caller) { $_.Caller } else { $null }
+            callerType = if ($_.CallerType) { $_.CallerType } else { $null }
+            clientType = if ($_.ClientType) { $_.ClientType } else { $null }
+            operation = if ($_.Operation) { $_.Operation } else { $null }
             subLower = if ($_.SubscriptionName) { $_.SubscriptionName.ToLower() } else { '' }
             rgLower  = if ($_.ResourceGroup) { $_.ResourceGroup.ToLower() } else { '' }
             catLower = if ($_.ResourceCategory) { $_.ResourceCategory.ToLower() } else { '' }
             # Searchable string for fast filtering - include date for date filtering
-            search   = "$($_.ResourceName) $($_.ResourceCategory) $($_.Caller) $($_.SubscriptionName) $($_.ResourceGroup) $time".ToLower()
+            search   = "$(if ($_.ResourceName) { $_.ResourceName } else { '' }) $(if ($_.ResourceCategory) { $_.ResourceCategory } else { '' }) $(if ($_.SubscriptionName) { $_.SubscriptionName } else { '' }) $(if ($_.ResourceGroup) { $_.ResourceGroup } else { '' }) $(if ($_.Caller) { $_.Caller } else { '' }) $time $dateStr".ToLower()
         }
     }
     
@@ -296,6 +327,7 @@ $(Get-ReportStylesheet)
         /* Specific column widths */
         .change-table th:nth-child(1) { width: 140px; } /* Time */
         .change-table th:nth-child(2) { width: 100px; } /* Type */
+        .change-table th:nth-child(7) { width: 150px; } /* Caller */
         .change-table th:nth-child(8) { width: 80px; } /* Security */
         
         .change-table td {
@@ -432,80 +464,67 @@ $(Get-ReportStylesheet)
                 <div class="value">$creates</div>
                 <div class="label">Created</div>
             </div>
-            <div class="summary-card modify" onclick="setFilter('Type', 'Modify')">
-                <div class="value">$modifies</div>
-                <div class="label">Modified</div>
+            <div class="summary-card modify" onclick="setFilter('Type', 'Update')">
+                <div class="value">$updates</div>
+                <div class="label">Updated</div>
             </div>
             <div class="summary-card delete" onclick="setFilter('Type', 'Delete')">
                 <div class="value">$deletes</div>
                 <div class="label">Deleted</div>
             </div>
-            <div class="summary-card action" onclick="setFilter('Type', 'Action')">
-                <div class="value">$actions</div>
-                <div class="label">Actions</div>
-            </div>
-            <div class="summary-card resourcehealth" onclick="setFilter('Type', 'ResourceHealth')">
-                <div class="value">$resourceHealths</div>
-                <div class="label">Resource Health</div>
-            </div>
             <div class="summary-card security" onclick="scrollToSecurity()">
-                <div class="value">$($highSecurityFlags + $mediumSecurityFlags)</div>
+                <div class="value">$totalSecurityAlerts</div>
                 <div class="label">Security Alerts</div>
             </div>
         </div>
         
         <div class="trend-chart">
-            <h3 style="margin-top: 0; margin-bottom: 15px;">Changes Over Time (30 days or 50k events)</h3>
+            <h3 style="margin-top: 0; margin-bottom: 15px;">Changes Over Time (14 days)</h3>
             <div style="height: 60px; display: flex; align-items: flex-end; gap: 2px;">
 "@
     
-    # Generate sparkline bars and labels
+    # Generate sparkline bars and labels - always show all 14 days
     $barsHtml = ""
     $labelsHtml = ""
     
-    if ($changesByDay.Count -gt 0) {
-        $maxCount = ($changesByDay | Measure-Object -Property Count -Maximum).Maximum
-        $i = 0
-        $totalDays = $changesByDay.Count
-        
-        foreach ($day in $changesByDay) {
-            $height = if ($maxCount -gt 0) { [math]::Round(($day.Count / $maxCount) * 100, 0) } else { 0 }
-            $dateStr = if ($day.Date -is [DateTime]) {
-                $day.Date.ToString('yyyy-MM-dd')
-            } else {
-                try {
-                    ([DateTime]$day.Date).ToString('yyyy-MM-dd')
-                } catch {
-                    (Get-Date).ToString('yyyy-MM-dd')
-                }
-            }
-            
-            $barsHtml += "                <div style='flex: 1; background: var(--accent-blue); height: ${height}%; border-radius: 2px 2px 0 0; cursor: pointer;' title='${dateStr}: $($day.Count) changes' onclick='filterByDate(`"$dateStr`")'></div>`n"
-            
-            $showLabel = ($i -eq 0) -or ($i -eq ($totalDays - 1)) -or ($i % 7 -eq 0)
-            $visibility = if ($showLabel) { "visible" } else { "hidden" }
-            
-            # Use full date format (yyyy-MM-dd) as requested, but small font
-            $dateLabel = if ($day.Date -is [DateTime]) {
-                $day.Date.ToString('yyyy-MM-dd')
-            } else {
-                try { ([DateTime]$day.Date).ToString('yyyy-MM-dd') } catch { $dateStr }
-            }
-            
-            # Align labels to match bars: center for most, left for first, right for last
-            # This ensures labels align correctly with their corresponding bars
-            $textAlign = "center"
-            if ($i -eq 0) { $textAlign = "left" }
-            elseif ($i -eq ($totalDays - 1)) { $textAlign = "right" }
-            
-            $labelsHtml += "                <div style='flex: 1; text-align: $textAlign; visibility: $visibility; font-size: 0.65rem; white-space: nowrap; overflow: visible; min-width: 0;'>$dateLabel</div>`n"
-            
-            $i++
+    # Calculate max count for scaling (use at least 1 to avoid division by zero)
+    $maxCount = ($changesByDay | Measure-Object -Property Count -Maximum).Maximum
+    if ($maxCount -eq 0) { $maxCount = 1 }
+    
+    $totalDays = $changesByDay.Count
+    $i = 0
+    
+    foreach ($day in $changesByDay) {
+        # Calculate height (minimum 2px so zero days are still visible)
+        $height = if ($maxCount -gt 0) { 
+            $calculated = [math]::Round(($day.Count / $maxCount) * 100, 0)
+            if ($calculated -eq 0 -and $day.Count -eq 0) { 2 } else { $calculated }
+        } else { 
+            2 
         }
-        $html += $barsHtml
-    } else {
-        $html += "                <div style='flex: 1; text-align: center; color: var(--text-muted); padding-top: 20px;'>No changes recorded</div>`n"
+        
+        $dateStr = $day.Date.ToString('yyyy-MM-dd')
+        
+        # Use a slightly different color for zero days to make them visible but distinct
+        $barColor = if ($day.Count -eq 0) { 'var(--border-color)' } else { 'var(--accent-blue)' }
+        $barsHtml += "                <div style='flex: 1; background: $barColor; height: ${height}%; border-radius: 2px 2px 0 0; cursor: pointer;' title='${dateStr}: $($day.Count) changes' onclick='filterByDate(`"$dateStr`")'></div>`n"
+        
+        # Show labels for first, last, and every 7th day
+        $showLabel = ($i -eq 0) -or ($i -eq ($totalDays - 1)) -or ($i % 7 -eq 0)
+        $visibility = if ($showLabel) { "visible" } else { "hidden" }
+        
+        $dateLabel = $day.Date.ToString('yyyy-MM-dd')
+        
+        # Align labels to match bars: center for most, left for first, right for last
+        $textAlign = "center"
+        if ($i -eq 0) { $textAlign = "left" }
+        elseif ($i -eq ($totalDays - 1)) { $textAlign = "right" }
+        
+        $labelsHtml += "                <div style='flex: 1; text-align: $textAlign; visibility: $visibility; font-size: 0.65rem; white-space: nowrap; overflow: visible; min-width: 0;'>$dateLabel</div>`n"
+        
+        $i++
     }
+    $html += $barsHtml
     
     $html += @"
             </div>
@@ -515,24 +534,6 @@ $(Get-ReportStylesheet)
         </div>
         
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px;">
-            <div class="insights-panel">
-                <h3>Top Callers</h3>
-                <ul class="insights-list">
-"@
-    
-    foreach ($caller in $topCallers) {
-        $escapedCaller = Encode-Html $caller.Caller
-        $html += "                    <li><strong>$escapedCaller</strong> ($($caller.Count) changes)</li>`n"
-    }
-    
-    if ($topCallers.Count -eq 0) {
-        $html += "                    <li style='color: var(--text-muted);'>No caller data available</li>`n"
-    }
-    
-    $html += @"
-                </ul>
-            </div>
-            
             <div class="insights-panel">
                 <h3>Most Changed Resource Types</h3>
                 <ul class="insights-list">
@@ -545,6 +546,29 @@ $(Get-ReportStylesheet)
     
     if ($topResourceTypes.Count -eq 0) {
         $html += "                    <li style='color: var(--text-muted);'>No resource type data available</li>`n"
+    }
+    
+    $html += @"
+                </ul>
+            </div>
+            
+            <div class="insights-panel">
+                <h3>Changes by Category</h3>
+                <ul class="insights-list">
+"@
+    
+    $changesByCategory = $ChangeTrackingData | 
+        Group-Object ResourceCategory | 
+        Sort-Object Count -Descending | 
+        ForEach-Object { [PSCustomObject]@{ Category = $_.Name; Count = $_.Count } }
+    
+    foreach ($cat in $changesByCategory) {
+        $escapedCat = Encode-Html $cat.Category
+        $html += "                    <li><strong>$escapedCat</strong> ($($cat.Count) changes)</li>`n"
+    }
+    
+    if ($changesByCategory.Count -eq 0) {
+        $html += "                    <li style='color: var(--text-muted);'>No category data available</li>`n"
     }
     
     $html += @"
@@ -568,7 +592,7 @@ $(Get-ReportStylesheet)
                                 <th>Type</th>
                                 <th>Alert</th>
                                 <th>Resource</th>
-                                <th>Caller</th>
+                                <th>Resource Type</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -576,29 +600,25 @@ $(Get-ReportStylesheet)
             # Note: We keep Security Alerts as server-side rendered for now as they are high priority and usually fewer
             foreach ($alert in $securityAlerts) {
                 $alertClass = if ($alert.SecurityFlag -eq 'high') { 'high' } else { 'medium' }
-                $operationType = $alert.OperationType
-                $operationIcon = switch ($operationType) {
+                $changeType = $alert.ChangeType
+                $operationIcon = switch ($changeType) {
                     'Create' { '<span class="operation-icon create">+</span>' }
-                    'Modify' { '<span class="operation-icon modify">~</span>' }
+                    'Update' { '<span class="operation-icon modify">~</span>' }
                     'Delete' { '<span class="operation-icon delete">-</span>' }
-                    'Action' { '<span class="operation-icon action">*</span>' }
                     default { '' }
                 }
                 
                 $escapedReason = Encode-Html $alert.SecurityReason
                 $escapedResource = Encode-Html $alert.ResourceName
-                $escapedCaller = Encode-Html $alert.Caller
-                $escapedOpName = Encode-Html $alert.OperationName
                 $escapedResId = Encode-Html $alert.ResourceId
                 $escapedResGroup = Encode-Html $alert.ResourceGroup
-                $escapedChangeTitle = Encode-Html $alert.ChangeTitle
-                $escapedChangeDescription = Encode-Html $alert.ChangeDescription
+                $escapedResType = Encode-Html $alert.ResourceType
                 
-                $timeStr = if ($alert.Timestamp -is [DateTime]) {
-                    $alert.Timestamp.ToString('yyyy-MM-dd HH:mm')
+                $timeStr = if ($alert.ChangeTime -is [DateTime]) {
+                    $alert.ChangeTime.ToString('yyyy-MM-dd HH:mm')
                 } else {
                     try {
-                        ([DateTime]$alert.Timestamp).ToString('yyyy-MM-dd HH:mm')
+                        ([DateTime]$alert.ChangeTime).ToString('yyyy-MM-dd HH:mm')
                     } catch {
                         (Get-Date).ToString('yyyy-MM-dd HH:mm')
                     }
@@ -609,10 +629,10 @@ $(Get-ReportStylesheet)
                 $alertsHtml += @"
                             <tr class="security-row" onclick="toggleSecurityDetails(this)" style="cursor: pointer;">
                                 <td>$timeStr</td>
-                                <td>$operationIcon $operationType</td>
+                                <td>$operationIcon $changeType</td>
                                 <td>$securityBadge</td>
                                 <td>$escapedResource</td>
-                                <td>$escapedCaller</td>
+                                <td>$escapedResType</td>
                             </tr>
                             <tr class="change-details-row" style="display:none;">
                                 <td colspan="5">
@@ -623,23 +643,9 @@ $(Get-ReportStylesheet)
                                                 <span style="color: var(--accent-red); font-weight: bold;">$escapedReason</span>
                                             </div>
                                             <div>
-                                                <strong>Operation:</strong><br>
-                                                <span style="font-family: 'Consolas', monospace; font-size: 0.9em;">$escapedOpName</span>
+                                                <strong>Change Source:</strong><br>
+                                                <span style="font-family: 'Consolas', monospace; font-size: 0.9em;">$($alert.ChangeSource)</span>
                                             </div>
-                                            
-                                            $(if ($escapedChangeTitle -or $escapedChangeDescription) {
-                                                $detailsHtml = "<div>"
-                                                if ($escapedChangeTitle) {
-                                                    $detailsHtml += "<strong>$escapedChangeTitle</strong><br>"
-                                                } else {
-                                                    $detailsHtml += "<strong>Event Details:</strong><br>"
-                                                }
-                                                if ($escapedChangeDescription) {
-                                                    $detailsHtml += "<span>$escapedChangeDescription</span>"
-                                                }
-                                                $detailsHtml += "</div>"
-                                                $detailsHtml
-                                            } else { '' })
                                             
                                             <div>
                                                 <strong>Resource ID:</strong><br>
@@ -688,13 +694,8 @@ $(Get-ReportStylesheet)
                 <select id="typeFilter">
                     <option value="all">All Types</option>
                     <option value="Create">Create</option>
-                    <option value="Modify">Modify</option>
+                    <option value="Update">Update</option>
                     <option value="Delete">Delete</option>
-                    <option value="Action">Action</option>
-                    <option value="Health">Health</option>
-                    <option value="Incident">Incident</option>
-                    <option value="ServiceHealth">Service Health</option>
-                    <option value="ResourceHealth">Resource Health</option>
                 </select>
             </div>
             <div class="filter-group">
@@ -724,6 +725,15 @@ $(Get-ReportStylesheet)
     }
     
     $html += @"
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Caller Type:</label>
+                <select id="callerTypeFilter">
+                    <option value="all">All Callers</option>
+                    <option value="User">User Only</option>
+                    <option value="System">System Only</option>
+                    <option value="Application">Application Only</option>
                 </select>
             </div>
         </div>
@@ -811,17 +821,42 @@ $(Get-ReportStylesheet)
             let className = '';
             
             if (lowerType === 'create') { icon = '+'; className = 'create'; }
-            else if (lowerType === 'modify') { icon = '~'; className = 'modify'; }
+            else if (lowerType === 'update') { icon = '~'; className = 'modify'; }
             else if (lowerType === 'delete') { icon = '-'; className = 'delete'; }
-            else if (lowerType === 'action') { icon = '*'; className = 'action'; }
-            else if (lowerType === 'health') { icon = 'H'; className = 'health'; }
-            else if (lowerType === 'incident') { icon = 'I'; className = 'incident'; }
-            else if (lowerType === 'resourcehealth') { icon = 'RH'; className = 'resourcehealth'; }
             
             if (icon) {
                 return `<span class="operation-icon ${className}">${icon}</span>`;
             }
             return '';
+        }
+        
+        // Helper to render ChangedProperties table for Update operations
+        function renderChangedProperties(changedPropsJson) {
+            if (!changedPropsJson) return '';
+            
+            try {
+                const props = JSON.parse(changedPropsJson);
+                if (!props || props.length === 0) return '';
+                
+                let html = '<div style="margin-top: 15px;"><strong>Changed Properties:</strong><br>';
+                html += '<table style="width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 0.9em;">';
+                html += '<thead><tr style="background: var(--bg-secondary);"><th style="padding: 8px; text-align: left; border: 1px solid var(--border-color);">Property</th><th style="padding: 8px; text-align: left; border: 1px solid var(--border-color);">From</th><th style="padding: 8px; text-align: left; border: 1px solid var(--border-color);">To</th><th style="padding: 8px; text-align: left; border: 1px solid var(--border-color);">Category</th></tr></thead>';
+                html += '<tbody>';
+                
+                props.forEach(prop => {
+                    const propPath = escapeHtml(prop.PropertyPath || '');
+                    const prevValue = escapeHtml(String(prop.PreviousValue || ''));
+                    const newValue = escapeHtml(String(prop.NewValue || ''));
+                    const category = escapeHtml(prop.ChangeCategory || 'User');
+                    html += `<tr><td style="padding: 8px; border: 1px solid var(--border-color); font-family: 'Consolas', monospace;">${propPath}</td><td style="padding: 8px; border: 1px solid var(--border-color);">${prevValue}</td><td style="padding: 8px; border: 1px solid var(--border-color);">${newValue}</td><td style="padding: 8px; border: 1px solid var(--border-color);">${category}</td></tr>`;
+                });
+                
+                html += '</tbody></table></div>';
+                return html;
+            } catch (e) {
+                console.error('Failed to parse changed properties:', e);
+                return '';
+            }
         }
 
         function getSecurityBadge(flag) {
@@ -859,6 +894,7 @@ $(Get-ReportStylesheet)
                 tr.className = 'change-row';
                 
                 // Build row HTML safely
+                const callerDisplay = item.caller ? escapeHtml(item.caller) : (item.callerType ? `(${escapeHtml(item.callerType)})` : '');
                 tr.innerHTML = `
                     <td>${escapeHtml(item.time)}</td>
                     <td>${getOperationIcon(item.type)} ${escapeHtml(item.type)}</td>
@@ -866,7 +902,7 @@ $(Get-ReportStylesheet)
                     <td>${escapeHtml(item.rg)}</td>
                     <td>${escapeHtml(item.res)}</td>
                     <td>${escapeHtml(item.cat)}</td>
-                    <td>${escapeHtml(item.caller)}</td>
+                    <td>${callerDisplay}${item.clientType ? `<br><small style="color: var(--text-muted);">${escapeHtml(item.clientType)}</small>` : ''}</td>
                     <td>${getSecurityBadge(item.sec)}</td>
                 `;
                 
@@ -882,38 +918,64 @@ $(Get-ReportStylesheet)
                 const detailsTr = document.createElement('tr');
                 detailsTr.className = 'change-details-row';
                 detailsTr.style.display = 'none';
-                detailsTr.innerHTML = `
-                    <td colspan="8">
-                        <div class="change-details">
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
-                                <div>
-                                    <strong>Operation:</strong><br>
-                                    <span style="font-family: 'Consolas', monospace; font-size: 0.9em;">${escapeHtml(item.op)}</span>
-                                    ${item.type === 'Modify' && (item.op || '').endsWith('/write') ? '<br><small style="color: var(--text-muted); font-size: 0.85em;">Modify operations indicate configuration changes</small>' : ''}
-                                </div>
-                                
-                                <div>
-                                    ${item.title ? `<strong>${escapeHtml(item.title)}</strong><br>` : '<strong>Event Details:</strong><br>'}
-                                    ${item.desc ? `<span style='color: var(--text-primary);'>${escapeHtml(item.desc)}</span>` : ''}
-                                </div>
-                                
-                                <div>
-                                    <strong>Resource ID:</strong><br>
-                                    <span style="font-family: 'Consolas', monospace; font-size: 0.85em; word-break: break-all;">${escapeHtml(item.id)}</span>
-                                </div>
-                                <div>
-                                    <strong>Resource Group:</strong><br>
-                                    ${escapeHtml(item.rg)}
-                                </div>
-                                <div>
-                                    <strong>Caller Type:</strong><br>
-                                    ${escapeHtml(item.cType)}
-                                </div>
-                                ${item.sReason ? `<div><strong>Security Reason:</strong><br>${escapeHtml(item.sReason)}</div>` : ''}
-                            </div>
-                        </div>
-                    </td>
-                `;
+                
+                // Build details content
+                let detailsContent = '<div class="change-details"><div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">';
+                
+                // Resource ID
+                detailsContent += `<div><strong>Resource ID:</strong><br><span style="font-family: 'Consolas', monospace; font-size: 0.85em; word-break: break-all;">${escapeHtml(item.id)}</span></div>`;
+                
+                // Resource Group
+                detailsContent += `<div><strong>Resource Group:</strong><br>${escapeHtml(item.rg)}</div>`;
+                
+                // Change Source
+                detailsContent += `<div><strong>Change Source:</strong><br>${escapeHtml(item.changeSource || 'ChangeAnalysis')}</div>`;
+                
+                // Operation (RBAC permission used) - show if available
+                if (item.operation) {
+                    detailsContent += `<div><strong>Operation:</strong><br><span style="font-family: 'Consolas', monospace; font-size: 0.9em;">${escapeHtml(item.operation)}</span></div>`;
+                }
+                
+                // Caller information
+                if (item.caller) {
+                    let callerInfo = escapeHtml(item.caller);
+                    if (item.callerType) {
+                        callerInfo += ` (${escapeHtml(item.callerType)})`;
+                    }
+                    if (item.clientType) {
+                        callerInfo += `<br><small style="color: var(--text-muted);">via ${escapeHtml(item.clientType)}</small>`;
+                    }
+                    detailsContent += `<div><strong>Changed By:</strong><br>${callerInfo}</div>`;
+                }
+                
+                // Security Reason if present
+                if (item.sReason) {
+                    detailsContent += `<div><strong>Security Reason:</strong><br>${escapeHtml(item.sReason)}</div>`;
+                }
+                
+                detailsContent += '</div>';
+                
+                // Add ChangedProperties table for Update operations
+                if (item.type === 'Update') {
+                    if (item.changedProps && item.hasChangeDetails) {
+                        detailsContent += renderChangedProperties(item.changedProps);
+                    } else {
+                        // Show message when change details aren't available
+                        detailsContent += '<div style="margin-top: 15px; padding: 12px; background: var(--bg-secondary); border-radius: 6px; border-left: 4px solid var(--accent-yellow);">';
+                        detailsContent += '<strong style="color: var(--accent-yellow);">Change Details Not Available</strong><br>';
+                        detailsContent += '<span style="color: var(--text-muted); font-size: 0.9em;">';
+                        if (item.callerType === 'System') {
+                            detailsContent += 'This is a system-initiated change. Property-level change details are not available for system changes in Resource Graph Change Analysis.';
+                        } else {
+                            detailsContent += 'Property-level change details are not available for this update. Azure Resource Graph Change Analysis does not always provide property-level details for all resource types or operations. The operation shown above indicates the RBAC permission used, but not the specific properties that changed.';
+                        }
+                        detailsContent += '</span></div>';
+                    }
+                }
+                
+                detailsContent += '</div>';
+                
+                detailsTr.innerHTML = `<td colspan="8">${detailsContent}</td>`;
                 fragment.appendChild(detailsTr);
             });
             
@@ -968,6 +1030,7 @@ $(Get-ReportStylesheet)
             const typeValue = document.getElementById('typeFilter').value;
             const categoryValue = document.getElementById('categoryFilter').value;
             const resourceGroupValue = document.getElementById('resourceGroupFilter').value;
+            const callerTypeValue = document.getElementById('callerTypeFilter').value;
             
             filteredChanges = allChanges.filter(item => {
                 const searchMatch = !searchText || item.search.includes(searchText);
@@ -975,8 +1038,9 @@ $(Get-ReportStylesheet)
                 const typeMatch = typeValue === 'all' || item.type === typeValue;
                 const categoryMatch = categoryValue === 'all' || item.catLower === categoryValue.toLowerCase();
                 const rgMatch = resourceGroupValue === 'all' || item.rgLower === resourceGroupValue.toLowerCase();
+                const callerTypeMatch = callerTypeValue === 'all' || (item.callerType && item.callerType.toLowerCase() === callerTypeValue.toLowerCase());
                 
-                return searchMatch && subMatch && typeMatch && categoryMatch && rgMatch;
+                return searchMatch && subMatch && typeMatch && categoryMatch && rgMatch && callerTypeMatch;
             });
             
             currentPage = 1;
@@ -989,6 +1053,7 @@ $(Get-ReportStylesheet)
         document.getElementById('typeFilter').addEventListener('change', applyFilters);
         document.getElementById('categoryFilter').addEventListener('change', applyFilters);
         document.getElementById('resourceGroupFilter').addEventListener('change', applyFilters);
+        document.getElementById('callerTypeFilter').addEventListener('change', applyFilters);
         
         // Global functions for Summary Cards
         window.setFilter = function(filterType, value) {
@@ -1042,7 +1107,7 @@ $(Get-ReportStylesheet)
         OutputPath = $OutputPath
         TotalChanges = $totalChanges
         Creates = $creates
-        Modifies = $modifies
+        Updates = $updates
         Deletes = $deletes
         HighSecurityFlags = $highSecurityFlags
         MediumSecurityFlags = $mediumSecurityFlags

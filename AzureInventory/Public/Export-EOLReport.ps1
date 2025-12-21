@@ -24,6 +24,7 @@ function Export-EOLReport {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [PSObject[]]$EOLFindings,
 
         [Parameter(Mandatory = $true)]
@@ -33,54 +34,49 @@ function Export-EOLReport {
     )
 
     # With [PSObject[]] parameter type, PowerShell automatically converts List to Array
-    # Check for empty array
+    # Handle null or empty array - still generate report with empty state
     if ($null -eq $EOLFindings -or $EOLFindings.Count -eq 0) {
-        Write-Host "Export-EOLReport: No EOL findings to process" -ForegroundColor Yellow
-        return
-    }
-    
-    Write-Host "Export-EOLReport: Received $($EOLFindings.Count) findings - Type = $($EOLFindings.GetType().FullName)" -ForegroundColor Gray
-    
-    # Validate findings - filter out null items and ensure Component property exists
-    $validFindings = @()
-    $originalCount = $EOLFindings.Count
-    
-    foreach ($finding in $EOLFindings) {
-        if ($null -ne $finding) {
-            # Check for Component property (case-insensitive)
-            $hasComponent = $false
-            $propertyNames = @()
-            if ($finding.PSObject.Properties.Name) {
-                $propertyNames = $finding.PSObject.Properties.Name
-                foreach ($propName in $propertyNames) {
-                    if ($propName -eq 'Component') {
-                        $hasComponent = $true
-                        break
+        Write-Host "Export-EOLReport: No EOL findings provided - generating empty report" -ForegroundColor Yellow
+        $eolFindings = @()
+    } else {
+        Write-Host "Export-EOLReport: Received $($EOLFindings.Count) findings - Type = $($EOLFindings.GetType().FullName)" -ForegroundColor Gray
+        
+        # Validate findings - filter out null items and ensure Component property exists
+        $validFindings = @()
+        $originalCount = $EOLFindings.Count
+        
+        foreach ($finding in $EOLFindings) {
+            if ($null -ne $finding) {
+                # Check for Component property (case-insensitive)
+                $hasComponent = $false
+                $propertyNames = @()
+                if ($finding.PSObject.Properties.Name) {
+                    $propertyNames = $finding.PSObject.Properties.Name
+                    foreach ($propName in $propertyNames) {
+                        if ($propName -eq 'Component') {
+                            $hasComponent = $true
+                            break
+                        }
                     }
                 }
-            }
-            
-            if ($hasComponent) {
-                $validFindings += $finding
-                Write-Verbose "Export-EOLReport: Valid finding - Component: $($finding.Component), Severity: $($finding.Severity)"
-            } else {
-                Write-Host "Export-EOLReport: Skipping invalid finding object (missing Component property)" -ForegroundColor Yellow
-                Write-Host "Export-EOLReport: Finding type: $($finding.GetType().FullName)" -ForegroundColor Yellow
-                Write-Host "Export-EOLReport: Available properties: $($propertyNames -join ', ')" -ForegroundColor Yellow
+                
+                if ($hasComponent) {
+                    $validFindings += $finding
+                    Write-Verbose "Export-EOLReport: Valid finding - Component: $($finding.Component), Severity: $($finding.Severity)"
+                } else {
+                    Write-Host "Export-EOLReport: Skipping invalid finding object (missing Component property)" -ForegroundColor Yellow
+                    Write-Host "Export-EOLReport: Finding type: $($finding.GetType().FullName)" -ForegroundColor Yellow
+                    Write-Host "Export-EOLReport: Available properties: $($propertyNames -join ', ')" -ForegroundColor Yellow
+                }
             }
         }
+        
+        if ($validFindings.Count -lt $originalCount) {
+            Write-Host "Export-EOLReport: Filtered out $($originalCount - $validFindings.Count) invalid findings (had $originalCount, kept $($validFindings.Count))" -ForegroundColor Yellow
+        }
+        
+        $eolFindings = $validFindings
     }
-    
-    if ($validFindings.Count -lt $originalCount) {
-        Write-Host "Export-EOLReport: Filtered out $($originalCount - $validFindings.Count) invalid findings (had $originalCount, kept $($validFindings.Count))" -ForegroundColor Yellow
-    }
-    
-    if ($validFindings.Count -eq 0) {
-        Write-Host "Export-EOLReport: No valid EOL findings to process after validation" -ForegroundColor Yellow
-        return
-    }
-    
-    $eolFindings = $validFindings
 
     Write-Verbose "Export-EOLReport: Final EOL findings count = $($eolFindings.Count)"
     
@@ -157,17 +153,83 @@ function Export-EOLReport {
     $mediumTotal   = @($eolFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
     $lowTotal      = @($eolFindings | Where-Object { $_.Severity -eq 'Low' }).Count
 
-    # Build 24‑month timeline of deadlines by severity with component names
+    # Build timeline of deadlines by severity with component names
+    # Include past months if there are deprecated components with passed dates
     $today = Get-Date
+    $todayMonth = Get-Date -Year $today.Year -Month $today.Month -Day 1
+    
+    # Find earliest deadline date (including past dates)
+    $earliestDate = $null
+    $latestDate = $null
+    foreach ($f in $eolFindings) {
+        if ($f.Deadline -and $f.Deadline -ne "TBD") {
+            try {
+                $d = [DateTime]::Parse($f.Deadline)
+                $dMonth = Get-Date -Year $d.Year -Month $d.Month -Day 1
+                if ($null -eq $earliestDate -or $dMonth -lt $earliestDate) {
+                    $earliestDate = $dMonth
+                }
+                if ($null -eq $latestDate -or $dMonth -gt $latestDate) {
+                    $latestDate = $dMonth
+                }
+            } catch {
+                # ignore invalid date
+            }
+        }
+    }
+    
+    # Determine timeline range
+    # If we have past dates, include up to 6 months before earliest, or 12 months before today (whichever is less)
+    # Otherwise, start from today
+    $startMonth = $todayMonth
+    if ($earliestDate -and $earliestDate -lt $todayMonth) {
+        # Include some past months
+        $monthsBack = [math]::Min(12, [math]::Max(6, [int](($todayMonth - $earliestDate).TotalDays / 30)))
+        $startMonth = $todayMonth.AddMonths(-$monthsBack)
+    }
+    
+    # End month: 24 months from today, or 6 months after latest deadline (whichever is later)
+    $endMonth = $todayMonth.AddMonths(24)
+    if ($latestDate -and $latestDate -gt $endMonth) {
+        $monthsForward = [int](($latestDate - $todayMonth).TotalDays / 30) + 6
+        $endMonth = $todayMonth.AddMonths($monthsForward)
+    }
+    
+    # Ensure we have at least 24 months of timeline (fallback if no dates found)
+    if ($null -eq $earliestDate -and $null -eq $latestDate) {
+        $startMonth = $todayMonth
+        $endMonth = $todayMonth.AddMonths(24)
+    }
+    
+    # Build timeline from startMonth to endMonth
     $months = @()
     $timeline = [System.Collections.Generic.List[PSObject]]::new()
-    for ($i = 0; $i -lt 24; $i++) {
-        $monthDate = $today.AddMonths($i)
-        $monthKey = $monthDate.ToString('yyyy-MM')
+    $currentMonth = $startMonth
+    $currentMonthIndex = 0
+    $todayMonthIndex = -1
+    
+    # Safety check: ensure endMonth is after startMonth
+    if ($endMonth -le $startMonth) {
+        $endMonth = $startMonth.AddMonths(24)
+    }
+    
+    $maxIterations = 100  # Safety limit to prevent infinite loops
+    $iterationCount = 0
+    
+    while ($currentMonth -le $endMonth -and $iterationCount -lt $maxIterations) {
+        $monthKey = $currentMonth.ToString('yyyy-MM')
         $months += $monthKey
+        
+        # Track which index represents the current month
+        if ($currentMonth.Year -eq $todayMonth.Year -and $currentMonth.Month -eq $todayMonth.Month) {
+            $todayMonthIndex = $currentMonthIndex
+        }
+        
+        $isPastMonth = $currentMonth -lt $todayMonth
+        
         $timeline.Add([PSCustomObject]@{
             MonthKey        = $monthKey
-            Label           = $monthDate.ToString('yyyy-MM')
+            Label           = $currentMonth.ToString('yyyy-MM')
             CriticalCount   = 0
             HighCount       = 0
             MediumCount     = 0
@@ -176,7 +238,12 @@ function Export-EOLReport {
             HighComponents     = [System.Collections.Generic.List[string]]::new()
             MediumComponents   = [System.Collections.Generic.List[string]]::new()
             LowComponents      = [System.Collections.Generic.List[string]]::new()
+            IsPastMonth      = $isPastMonth
         })
+        
+        $currentMonth = $currentMonth.AddMonths(1)
+        $currentMonthIndex++
+        $iterationCount++
     }
 
     $timelineByKey = @{}
@@ -273,34 +340,109 @@ function Export-EOLReport {
     }
 
     $timelineArray = @($timeline)
+    
+    # Ensure we have at least some timeline entries (safety check)
+    if ($timelineArray.Count -eq 0) {
+        Write-Warning "Timeline array is empty - creating default 24-month timeline"
+        $timelineArray = @()
+        $currentMonth = $todayMonth
+        for ($i = 0; $i -lt 24; $i++) {
+            $monthDate = $currentMonth.AddMonths($i)
+            $monthKey = $monthDate.ToString('yyyy-MM')
+            $isPastMonth = $monthDate -lt $todayMonth
+            if ($i -eq 0) { $todayMonthIndex = 0 }
+            $timelineArray += [PSCustomObject]@{
+                MonthKey        = $monthKey
+                Label           = $monthDate.ToString('yyyy-MM')
+                CriticalCount   = 0
+                HighCount       = 0
+                MediumCount     = 0
+                LowCount        = 0
+                CriticalComponents = [System.Collections.Generic.List[string]]::new()
+                HighComponents     = [System.Collections.Generic.List[string]]::new()
+                MediumComponents   = [System.Collections.Generic.List[string]]::new()
+                LowComponents      = [System.Collections.Generic.List[string]]::new()
+                IsPastMonth      = $isPastMonth
+            }
+        }
+    }
 
     # Build JSON for chart data and component lists (Severity view)
-    $labelsJson = ($timelineArray | ForEach-Object { '"{0}"' -f $_.Label }) -join ','
-    $criticalSeries = ($timelineArray | ForEach-Object { $_.CriticalCount }) -join ','
-    $highSeries     = ($timelineArray | ForEach-Object { $_.HighCount }) -join ','
-    $mediumSeries   = ($timelineArray | ForEach-Object { $_.MediumCount }) -join ','
-    $lowSeries      = ($timelineArray | ForEach-Object { $_.LowCount }) -join ','
-    
-    # Build component lists JSON for tooltips
-    $criticalComponentsJson = ($timelineArray | ForEach-Object { 
-        $comps = @($_.CriticalComponents)
-        ($comps | ConvertTo-Json -Compress)
-    }) -join ','
-    
-    $highComponentsJson = ($timelineArray | ForEach-Object { 
-        $comps = @($_.HighComponents)
-        ($comps | ConvertTo-Json -Compress)
-    }) -join ','
-    
-    $mediumComponentsJson = ($timelineArray | ForEach-Object { 
-        $comps = @($_.MediumComponents)
-        ($comps | ConvertTo-Json -Compress)
-    }) -join ','
-    
-    $lowComponentsJson = ($timelineArray | ForEach-Object { 
-        $comps = @($_.LowComponents)
-        ($comps | ConvertTo-Json -Compress)
-    }) -join ','
+    # Ensure arrays are never empty - use empty string if no data
+    if ($timelineArray.Count -eq 0) {
+        $labelsJson = ''
+        $isPastMonthJson = ''
+        $criticalSeries = ''
+        $highSeries = ''
+        $mediumSeries = ''
+        $lowSeries = ''
+        $criticalComponentsJson = ''
+        $highComponentsJson = ''
+        $mediumComponentsJson = ''
+        $lowComponentsJson = ''
+    } else {
+        $labelsJson = ($timelineArray | ForEach-Object { '"{0}"' -f $_.Label }) -join ','
+        $isPastMonthJson = ($timelineArray | ForEach-Object { if ($_.IsPastMonth) { 'true' } else { 'false' } }) -join ','
+        $criticalSeries = ($timelineArray | ForEach-Object { $_.CriticalCount }) -join ','
+        $highSeries     = ($timelineArray | ForEach-Object { $_.HighCount }) -join ','
+        $mediumSeries   = ($timelineArray | ForEach-Object { $_.MediumCount }) -join ','
+        $lowSeries      = ($timelineArray | ForEach-Object { $_.LowCount }) -join ','
+        
+        # Build component lists JSON for tooltips
+        # Fix: PowerShell's ConvertTo-Json -Compress on single-element arrays outputs just the string, not an array
+        # We need to explicitly wrap single items to ensure they're always arrays
+        $criticalComponentsJson = ($timelineArray | ForEach-Object { 
+            $comps = @($_.CriticalComponents)
+            if ($comps.Count -eq 0) { 
+                '[]' 
+            } elseif ($comps.Count -eq 1) {
+                # Single item - manually wrap to ensure array format
+                '[' + ($comps[0] | ConvertTo-Json -Compress) + ']'
+            } else {
+                # Multiple items - ConvertTo-Json handles arrays correctly
+                ConvertTo-Json -InputObject $comps -Compress
+            }
+        }) -join ','
+        
+        $highComponentsJson = ($timelineArray | ForEach-Object { 
+            $comps = @($_.HighComponents)
+            if ($comps.Count -eq 0) { 
+                '[]' 
+            } elseif ($comps.Count -eq 1) {
+                # Single item - manually wrap to ensure array format
+                '[' + ($comps[0] | ConvertTo-Json -Compress) + ']'
+            } else {
+                # Multiple items - ConvertTo-Json handles arrays correctly
+                ConvertTo-Json -InputObject $comps -Compress
+            }
+        }) -join ','
+        
+        $mediumComponentsJson = ($timelineArray | ForEach-Object { 
+            $comps = @($_.MediumComponents)
+            if ($comps.Count -eq 0) { 
+                '[]' 
+            } elseif ($comps.Count -eq 1) {
+                # Single item - manually wrap to ensure array format
+                '[' + ($comps[0] | ConvertTo-Json -Compress) + ']'
+            } else {
+                # Multiple items - ConvertTo-Json handles arrays correctly
+                ConvertTo-Json -InputObject $comps -Compress
+            }
+        }) -join ','
+        
+        $lowComponentsJson = ($timelineArray | ForEach-Object { 
+            $comps = @($_.LowComponents)
+            if ($comps.Count -eq 0) { 
+                '[]' 
+            } elseif ($comps.Count -eq 1) {
+                # Single item - manually wrap to ensure array format
+                '[' + ($comps[0] | ConvertTo-Json -Compress) + ']'
+            } else {
+                # Multiple items - ConvertTo-Json handles arrays correctly
+                ConvertTo-Json -InputObject $comps -Compress
+            }
+        }) -join ','
+    }
     
     # Build data for Subscription-stacked view
     $subscriptions = @($eolFindings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object)
@@ -405,17 +547,38 @@ function Export-EOLReport {
         $daysUntil = $comp.DaysUntil
         $topSeverity = $comp.TopSeverity
         $topSeverityLower = $topSeverity.ToLower()
-        $deadlineText = if ($compDeadline) { $compDeadline } else { "N/A" }
+        $deadlineText = if ($compDeadline) { 
+            if ($compDeadline -eq "TBD") { "TBD (To Be Determined)" } else { $compDeadline }
+        } else { 
+            "N/A" 
+        }
         $daysText = if ($null -ne $daysUntil) {
             if ($daysUntil -lt 0) { "Past due ({0} d)" -f [math]::Abs($daysUntil) } else { "{0} d" -f $daysUntil }
         } else {
-            "N/A"
+            if ($compDeadline -eq "TBD") { "TBD" } else { "N/A" }
         }
 
         # Build per‑component resource table
         $resourceRows = ""
         foreach ($f in ($comp.Findings | Sort-Object SubscriptionName, ResourceGroup, ResourceName)) {
-            $subName = if ($f.SubscriptionName) { [System.Web.HttpUtility]::HtmlEncode($f.SubscriptionName) } else { $f.SubscriptionId }
+            # Prefer SubscriptionName, but if missing, try to get it from SubscriptionId
+            $subName = if ($f.SubscriptionName -and $f.SubscriptionName -ne "Unknown") { 
+                [System.Web.HttpUtility]::HtmlEncode($f.SubscriptionName) 
+            } elseif ($f.SubscriptionId) {
+                # Try to get subscription name if we have the ID (suppress warnings/errors)
+                try {
+                    $displayName = Get-SubscriptionDisplayName -SubscriptionId $f.SubscriptionId -ErrorAction SilentlyContinue -WarningAction SilentlyContinue 2>$null
+                    if ($displayName -and $displayName -ne "Unknown" -and $displayName -ne $f.SubscriptionId) {
+                        [System.Web.HttpUtility]::HtmlEncode($displayName)
+                    } else {
+                        [System.Web.HttpUtility]::HtmlEncode($f.SubscriptionId)
+                    }
+                } catch {
+                    [System.Web.HttpUtility]::HtmlEncode($f.SubscriptionId)
+                }
+            } else {
+                "Unknown"
+            }
             $rg      = if ($f.ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($f.ResourceGroup) } else { "N/A" }
             $resName = [System.Web.HttpUtility]::HtmlEncode($f.ResourceName)
             $resType = [System.Web.HttpUtility]::HtmlEncode($f.ResourceType)
@@ -423,13 +586,41 @@ function Export-EOLReport {
             $sevLower = $sev.ToLower()
             $dl      = $f.Deadline
             $di      = $f.DaysUntilDeadline
-            $dlText  = if ($dl) { $dl } else { "N/A" }
+            $dlText  = if ($dl) { 
+                if ($dl -eq "TBD") { "TBD (To Be Determined)" } else { $dl }
+            } else { 
+                "N/A" 
+            }
             $diText  = if ($null -ne $di) {
                 if ($di -lt 0) { "Past due ({0} d)" -f [math]::Abs($di) } else { "{0} d" -f $di }
-            } else { "N/A" }
+            } else {
+                if ($dl -eq "TBD") { "TBD" } else { "N/A" }
+            }
 
             $action  = $f.ActionRequired
-            $actionHtml = if ($action) { [System.Web.HttpUtility]::HtmlEncode($action) } else { "" }
+            # Extract URL from ActionRequired if it contains one and make it clickable
+            $actionHtml = ""
+            if ($action) {
+                # Check if ActionRequired contains a URL (http:// or https://)
+                if ($action -match '(https?://[^\s<>"]+)') {
+                    $actionUrl = $matches[1]
+                    # Split action text: part before URL and the URL itself
+                    $parts = $action -split '(https?://[^\s<>"]+)', 2
+                    $actionText = $parts[0].Trim()
+                    if ([string]::IsNullOrWhiteSpace($actionText)) {
+                        $actionText = "Review retirement notice:"
+                    }
+                    
+                    # Build HTML with clickable link
+                    $escapedText = [System.Web.HttpUtility]::HtmlEncode($actionText)
+                    $escapedUrl = [System.Web.HttpUtility]::HtmlAttributeEncode($actionUrl)
+                    $escapedUrlText = [System.Web.HttpUtility]::HtmlEncode($actionUrl)
+                    $actionHtml = "$escapedText <a href='$escapedUrl' target='_blank' rel='noopener' class='eol-guidance-link' style='color: #ffffff !important; text-decoration: underline !important;'>$escapedUrlText</a>"
+                } else {
+                    # No URL found, just encode the text
+                    $actionHtml = [System.Web.HttpUtility]::HtmlEncode($action)
+                }
+            }
             
             # Use first reference URL if available, otherwise fall back to migrationGuide
             $guideUrl = $null
@@ -441,16 +632,17 @@ function Export-EOLReport {
                 }
             }
             
-            # Fallback to migrationGuide if it looks like a URL
+            # Fallback to migrationGuide if it looks like a URL (and we haven't already used ActionRequired URL)
             if (-not $guideUrl -and $f.MigrationGuide) {
                 if ($f.MigrationGuide -match '^https?://') {
                     $guideUrl = $f.MigrationGuide
                 }
             }
             
-            $guideHtml = if ($guideUrl) { 
+            # Only show "View guidance" link if we have a separate URL (not already in ActionRequired)
+            $guideHtml = if ($guideUrl -and $guideUrl -ne $actionUrl) { 
                 $escapedUrl = [System.Web.HttpUtility]::HtmlAttributeEncode($guideUrl)
-                "<a href='$escapedUrl' target='_blank' rel='noopener' class='eol-guidance-link'>View guidance</a>" 
+                "<a href='$escapedUrl' target='_blank' rel='noopener' class='eol-guidance-link' style='color: #ffffff !important; text-decoration: underline !important;'>View guidance</a>" 
             } else { 
                 "" 
             }
@@ -466,7 +658,7 @@ function Export-EOLReport {
                                     <td>$diText</td>
                                     <td>
                                         <div class="resource-action-text">$actionHtml</div>
-                                        $guideHtml
+                                        <div class="eol-guidance-link-container">$guideHtml</div>
                                     </td>
                                 </tr>
 "@
@@ -723,6 +915,24 @@ $(Get-ReportStylesheet)
             white-space: normal;
             font-size: 0.8rem;
             color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+        
+        .eol-guidance-link-container {
+            margin-top: 4px;
+        }
+        
+        .eol-guidance-link-container a {
+            color: #5490ff !important;
+            text-decoration: underline !important;
+        }
+        
+        .eol-guidance-link-container a:hover {
+            color: #357abd !important;
+        }
+        
+        .eol-guidance-link-container a:visited {
+            color: #7b68ee !important;
         }
 
         .eol-resource-table {
@@ -750,6 +960,10 @@ $(Get-ReportStylesheet)
             font-size: 0.85rem;
             word-wrap: break-word;
         }
+        
+        .eol-resource-table td .eol-guidance-link {
+            color: #5490ff !important;
+        }
 
         .eol-resource-table tbody tr {
             background: transparent;
@@ -776,22 +990,35 @@ $(Get-ReportStylesheet)
             color: #58d68d;
         }
         
-        .eol-guidance-link {
-            color: var(--text-primary) !important;
-            text-decoration: none;
+        /* EOL Guidance Links - White color */
+        .eol-guidance-link,
+        .eol-guidance-link:link,
+        .eol-guidance-link:visited,
+        .eol-guidance-link:hover,
+        .eol-guidance-link:active,
+        .eol-resource-table td .eol-guidance-link,
+        .eol-resource-table td .eol-guidance-link:link,
+        .eol-resource-table td .eol-guidance-link:visited,
+        .eol-resource-table td .eol-guidance-link:hover,
+        .eol-guidance-link-container a,
+        .eol-guidance-link-container a:link,
+        .eol-guidance-link-container a:visited,
+        .eol-guidance-link-container a:hover {
+            color: #ffffff !important;
+            text-decoration: underline !important;
+            font-weight: 500 !important;
         }
         
-        .eol-guidance-link:hover {
-            color: var(--text-primary) !important;
-            text-decoration: underline;
+        .eol-guidance-link:hover,
+        .eol-resource-table td .eol-guidance-link:hover,
+        .eol-guidance-link-container a:hover {
+            color: #e0e0e0 !important;
         }
         
-        .eol-guidance-link:visited {
-            color: var(--text-primary) !important;
-        }
-        
-        .eol-guidance-link:link {
-            color: var(--text-primary) !important;
+        .eol-guidance-link:visited,
+        .eol-resource-table td .eol-guidance-link:visited,
+        .eol-guidance-link-container a:visited {
+            color: #f0f0f0 !important;
         }
     </style>
 </head>
@@ -838,7 +1065,7 @@ $(Get-ReportNavigation -ActivePage "EOL")
         </div>
 
         <div class="timeline-section">
-            <h2>24-Month EOL Timeline</h2>
+            <h2>EOL Timeline$(if ($earliestDate -and $earliestDate -lt $todayMonth) { ' (Includes Past Months)' } else { ' (24-Month)' })</h2>
             <div class="chart-controls" style="margin-bottom: 16px;">
                 <select id="eolChartView" onchange="updateEolChartView()" style="background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 10px; border-radius: 6px; font-size: 0.85rem;">
                     <option value="severity">Stacked by Severity</option>
@@ -888,17 +1115,27 @@ $(if ($componentCount -eq 0) { @"
     </div>
 
     <script>
-        const eolLabels = [$labelsJson];
-        const eolCritical = [$criticalSeries];
-        const eolHigh = [$highSeries];
-        const eolMedium = [$mediumSeries];
-        const eolLow = [$lowSeries];
+        // Initialize chart data arrays - handle empty case
+        const eolLabels = $(if ([string]::IsNullOrWhiteSpace($labelsJson)) { '[]' } else { "[$labelsJson]" });
+        const eolCritical = $(if ([string]::IsNullOrWhiteSpace($criticalSeries)) { '[]' } else { "[$criticalSeries]" });
+        const eolHigh = $(if ([string]::IsNullOrWhiteSpace($highSeries)) { '[]' } else { "[$highSeries]" });
+        const eolMedium = $(if ([string]::IsNullOrWhiteSpace($mediumSeries)) { '[]' } else { "[$mediumSeries]" });
+        const eolLow = $(if ([string]::IsNullOrWhiteSpace($lowSeries)) { '[]' } else { "[$lowSeries]" });
+        const eolIsPastMonth = $(if ([string]::IsNullOrWhiteSpace($isPastMonthJson)) { '[]' } else { "[$isPastMonthJson]" });
+        const eolTodayMonthIndex = $(if ($todayMonthIndex -ge 0) { $todayMonthIndex } else { -1 });
         
         // Component names per month and severity for tooltips
-        const eolCriticalComponents = [$criticalComponentsJson];
-        const eolHighComponents = [$highComponentsJson];
-        const eolMediumComponents = [$mediumComponentsJson];
-        const eolLowComponents = [$lowComponentsJson];
+        const eolCriticalComponents = $(if ([string]::IsNullOrWhiteSpace($criticalComponentsJson)) { '[]' } else { "[$criticalComponentsJson]" });
+        const eolHighComponents = $(if ([string]::IsNullOrWhiteSpace($highComponentsJson)) { '[]' } else { "[$highComponentsJson]" });
+        const eolMediumComponents = $(if ([string]::IsNullOrWhiteSpace($mediumComponentsJson)) { '[]' } else { "[$mediumComponentsJson]" });
+        const eolLowComponents = $(if ([string]::IsNullOrWhiteSpace($lowComponentsJson)) { '[]' } else { "[$lowComponentsJson]" });
+        
+        // Debug logging
+        console.log('EOL Chart Data initialized:', {
+            labelsCount: eolLabels.length,
+            criticalCount: eolCritical.length,
+            todayIndex: eolTodayMonthIndex
+        });
         
         // Data for different chart views - parse JSON strings
         let eolSubscriptionData = [];
@@ -933,6 +1170,48 @@ $(if ($componentCount -eq 0) { @"
         let eolChart = null;
         let currentEolView = 'severity';
         
+        // Function to get background color with opacity based on past month
+        function getBackgroundColor(datasetIndex, dataIndex) {
+            const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+            const baseColors = [
+                'rgba(231, 76, 60, 0.8)',   // Critical
+                'rgba(241, 196, 15, 0.9)',  // High
+                'rgba(52, 152, 219, 0.8)',  // Medium
+                'rgba(39, 174, 96, 0.8)'    // Low
+            ];
+            const baseColor = baseColors[datasetIndex] || 'rgba(128, 128, 128, 0.8)';
+            
+            if (isPast) {
+                // Reduce opacity for past months (multiply alpha by 0.5)
+                return baseColor.replace(/[\d\.]+\)$/g, function(match) {
+                    const alpha = parseFloat(match.replace(')', ''));
+                    return (alpha * 0.5).toFixed(2) + ')';
+                });
+            }
+            return baseColor;
+        }
+        
+        // Function to get border color with opacity based on past month
+        function getBorderColor(datasetIndex, dataIndex) {
+            const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+            const baseColors = [
+                'rgba(231, 76, 60, 1)',     // Critical
+                'rgba(243, 156, 18, 1)',    // High
+                'rgba(52, 152, 219, 1)',    // Medium
+                'rgba(39, 174, 96, 1)'      // Low
+            ];
+            const baseColor = baseColors[datasetIndex] || 'rgba(128, 128, 128, 1)';
+            
+            if (isPast) {
+                // Reduce opacity for past months
+                return baseColor.replace(/[\d\.]+\)$/g, function(match) {
+                    const alpha = parseFloat(match.replace(')', ''));
+                    return (alpha * 0.5).toFixed(2) + ')';
+                });
+            }
+            return baseColor;
+        }
+        
         // Color palette for subscriptions and categories
         const eolChartColors = [
             'rgba(231, 76, 60, 0.8)',   // Red
@@ -964,12 +1243,18 @@ $(if ($componentCount -eq 0) { @"
             let showLegend = true;
             
             if (currentEolView === 'severity') {
-                // Severity view - original stacked by severity
+                // Severity view - original stacked by severity with past month styling
+                // Pre-compute colors for updateEolChart as well
+                const criticalBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(231, 76, 60, 0.4)' : 'rgba(231, 76, 60, 0.8)');
+                const highBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(241, 196, 15, 0.45)' : 'rgba(241, 196, 15, 0.9)');
+                const mediumBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(52, 152, 219, 0.4)' : 'rgba(52, 152, 219, 0.8)');
+                const lowBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(39, 174, 96, 0.4)' : 'rgba(39, 174, 96, 0.8)');
+                
                 datasets = [
                     {
                         label: 'Critical',
                         data: eolCritical,
-                        backgroundColor: 'rgba(231, 76, 60, 0.8)',
+                        backgroundColor: criticalBgUpdate,
                         borderColor: 'rgba(231, 76, 60, 1)',
                         borderWidth: 1,
                         stack: 'severity'
@@ -977,7 +1262,7 @@ $(if ($componentCount -eq 0) { @"
                     {
                         label: 'High',
                         data: eolHigh,
-                        backgroundColor: 'rgba(241, 196, 15, 0.9)',
+                        backgroundColor: highBgUpdate,
                         borderColor: 'rgba(243, 156, 18, 1)',
                         borderWidth: 1,
                         stack: 'severity'
@@ -985,7 +1270,7 @@ $(if ($componentCount -eq 0) { @"
                     {
                         label: 'Medium',
                         data: eolMedium,
-                        backgroundColor: 'rgba(52, 152, 219, 0.8)',
+                        backgroundColor: mediumBgUpdate,
                         borderColor: 'rgba(52, 152, 219, 1)',
                         borderWidth: 1,
                         stack: 'severity'
@@ -993,7 +1278,7 @@ $(if ($componentCount -eq 0) { @"
                     {
                         label: 'Low',
                         data: eolLow,
-                        backgroundColor: 'rgba(39, 174, 96, 0.8)',
+                        backgroundColor: lowBgUpdate,
                         borderColor: 'rgba(39, 174, 96, 1)',
                         borderWidth: 1,
                         stack: 'severity'
@@ -1064,46 +1349,93 @@ $(if ($componentCount -eq 0) { @"
         }
 
         document.addEventListener('DOMContentLoaded', function () {
-            const ctx = document.getElementById('eolTimelineChart').getContext('2d');
-            eolChart = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: eolLabels,
-                    datasets: [
-                        {
-                            label: 'Critical',
-                            data: eolCritical,
-                            backgroundColor: 'rgba(231, 76, 60, 0.8)',
-                            borderColor: 'rgba(231, 76, 60, 1)',
-                            borderWidth: 1,
-                            stack: 'severity'
-                        },
-                        {
-                            label: 'High',
-                            data: eolHigh,
-                            backgroundColor: 'rgba(241, 196, 15, 0.9)',
-                            borderColor: 'rgba(243, 156, 18, 1)',
-                            borderWidth: 1,
-                            stack: 'severity'
-                        },
-                        {
-                            label: 'Medium',
-                            data: eolMedium,
-                            backgroundColor: 'rgba(52, 152, 219, 0.8)',
-                            borderColor: 'rgba(52, 152, 219, 1)',
-                            borderWidth: 1,
-                            stack: 'severity'
-                        },
-                        {
-                            label: 'Low',
-                            data: eolLow,
-                            backgroundColor: 'rgba(39, 174, 96, 0.8)',
-                            borderColor: 'rgba(39, 174, 96, 1)',
-                            borderWidth: 1,
-                            stack: 'severity'
-                        }
-                    ]
-                },
+            const canvas = document.getElementById('eolTimelineChart');
+            if (!canvas) {
+                console.error('EOL timeline chart canvas not found');
+                return;
+            }
+            
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                console.error('Could not get 2d context from canvas');
+                return;
+            }
+            
+            // Validate data arrays
+            if (!Array.isArray(eolLabels) || eolLabels.length === 0) {
+                console.warn('EOL labels array is empty or invalid:', eolLabels);
+            }
+            if (!Array.isArray(eolCritical) || !Array.isArray(eolHigh) || !Array.isArray(eolMedium) || !Array.isArray(eolLow)) {
+                console.error('EOL data arrays are invalid:', {
+                    critical: Array.isArray(eolCritical),
+                    high: Array.isArray(eolHigh),
+                    medium: Array.isArray(eolMedium),
+                    low: Array.isArray(eolLow)
+                });
+                // Don't return - still try to render with empty data
+            }
+            
+            // Ensure arrays have the same length as labels
+            const expectedLength = eolLabels.length;
+            if (eolCritical.length !== expectedLength) {
+                console.warn('EOL Critical array length mismatch:', eolCritical.length, 'expected:', expectedLength);
+            }
+            if (eolHigh.length !== expectedLength) {
+                console.warn('EOL High array length mismatch:', eolHigh.length, 'expected:', expectedLength);
+            }
+            if (eolMedium.length !== expectedLength) {
+                console.warn('EOL Medium array length mismatch:', eolMedium.length, 'expected:', expectedLength);
+            }
+            if (eolLow.length !== expectedLength) {
+                console.warn('EOL Low array length mismatch:', eolLow.length, 'expected:', expectedLength);
+            }
+            
+            try {
+                // Pre-compute colors based on isPast
+                const criticalBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(231, 76, 60, 0.4)' : 'rgba(231, 76, 60, 0.8)');
+                const highBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(241, 196, 15, 0.45)' : 'rgba(241, 196, 15, 0.9)');
+                const mediumBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(52, 152, 219, 0.4)' : 'rgba(52, 152, 219, 0.8)');
+                const lowBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(39, 174, 96, 0.4)' : 'rgba(39, 174, 96, 0.8)');
+                
+                eolChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: eolLabels,
+                        datasets: [
+                            {
+                                label: 'Critical',
+                                data: eolCritical,
+                                backgroundColor: criticalBg,
+                                borderColor: 'rgba(231, 76, 60, 1)',
+                                borderWidth: 1,
+                                stack: 'severity'
+                            },
+                            {
+                                label: 'High',
+                                data: eolHigh,
+                                backgroundColor: highBg,
+                                borderColor: 'rgba(243, 156, 18, 1)',
+                                borderWidth: 1,
+                                stack: 'severity'
+                            },
+                            {
+                                label: 'Medium',
+                                data: eolMedium,
+                                backgroundColor: mediumBg,
+                                borderColor: 'rgba(52, 152, 219, 1)',
+                                borderWidth: 1,
+                                stack: 'severity'
+                            },
+                            {
+                                label: 'Low',
+                                data: eolLow,
+                                backgroundColor: lowBg,
+                                borderColor: 'rgba(39, 174, 96, 1)',
+                                borderWidth: 1,
+                                stack: 'severity'
+                            }
+                        ]
+                    },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
@@ -1127,7 +1459,10 @@ $(if ($componentCount -eq 0) { @"
                             borderWidth: 1,
                             callbacks: {
                                 title: function(context) {
-                                    return context[0].label || '';
+                                    const label = context[0].label || '';
+                                    const dataIndex = context[0].dataIndex;
+                                    const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+                                    return label + (isPast ? ' (Past)' : '');
                                 },
                                 label: function(context) {
                                     const datasetIndex = context.datasetIndex;
@@ -1183,7 +1518,7 @@ $(if ($componentCount -eq 0) { @"
                                     }
                                 }
                             }
-                        }
+                        },
                     },
                     scales: {
                         x: {
@@ -1194,7 +1529,8 @@ $(if ($componentCount -eq 0) { @"
                                 minRotation: 45
                             },
                             grid: {
-                                color: 'rgba(61, 61, 92, 0.4)'
+                                color: 'rgba(61, 61, 92, 0.4)',
+                                lineWidth: 1
                             }
                         },
                         y: {
@@ -1210,7 +1546,51 @@ $(if ($componentCount -eq 0) { @"
                         }
                     }
                 }
-            });
+                });
+                
+                console.log('EOL Chart created successfully');
+            } catch (error) {
+                console.error('Error creating EOL chart:', error);
+                console.error('Chart data:', {
+                    labels: eolLabels,
+                    critical: eolCritical,
+                    high: eolHigh,
+                    medium: eolMedium,
+                    low: eolLow
+                });
+            }
+            
+            // Function to draw vertical line for current month
+            function drawCurrentMonthLine(chart) {
+                if (eolTodayMonthIndex < 0) return;
+                
+                const ctx = chart.ctx;
+                const xScale = chart.scales.x;
+                const yScale = chart.scales.y;
+                
+                const xPos = xScale.getPixelForValue(eolTodayMonthIndex);
+                
+                ctx.save();
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(xPos, yScale.top);
+                ctx.lineTo(xPos, yScale.bottom);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // Draw label
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                ctx.font = 'bold 11px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillRect(xPos - 25, yScale.top + 5, 50, 18);
+                ctx.fillStyle = '#000';
+                ctx.fillText('Today', xPos, yScale.top + 8);
+                
+                ctx.restore();
+            }
 
             initEolFilters();
         });

@@ -99,8 +99,9 @@ function New-EOLFinding {
         [ValidateSet('Critical', 'High', 'Medium', 'Low')]
         [string]$Severity,
         
-        [Parameter(Mandatory = $true)]
-        [int]$DaysUntilDeadline,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [Nullable[int]]$DaysUntilDeadline = $null,
         
         [Parameter(Mandatory = $true)]
         [string]$ActionRequired,

@@ -1211,4 +1211,3 @@ function Get-AzureNetworkInventory {
 
     return $inventory
 }
-

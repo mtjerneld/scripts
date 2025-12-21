@@ -1,4 +1,9 @@
 <#
+.DEPRECATED
+    This file is deprecated. Use Get-AzureChangeAnalysis.ps1 instead for Change Tracking v2.
+    This file is kept for the Get-AzureActivityLogViaRestApi helper function which is still
+    used by Get-AzureChangeAnalysis for security events.
+
 .SYNOPSIS
     Retrieves Azure Activity Log entries via REST API to avoid deprecated PowerShell cmdlet parameters.
 
@@ -173,6 +178,11 @@ function Get-AzureActivityLogViaRestApi {
 }
 
 <#
+.DEPRECATED
+    This function is deprecated. Use Get-AzureChangeAnalysis instead for Change Tracking v2.
+    This function is kept for backward compatibility and for the Get-AzureActivityLogViaRestApi
+    helper function which is still used by Get-AzureChangeAnalysis for security events.
+
 .SYNOPSIS
     Collects Azure Activity Log changes for a subscription.
 

@@ -40,8 +40,22 @@ function Get-SubscriptionDisplayName {
         }
     }
     
-    # Fallback to provided ID
+    # Fallback to provided ID - try to get subscription name from Azure
     if ($SubscriptionId) {
+        try {
+            # Only try to get subscription if it's in the current tenant context
+            $currentContext = Get-AzContext -ErrorAction SilentlyContinue
+            if ($currentContext) {
+                # Suppress warnings and errors when querying subscriptions
+                $sub = Get-AzSubscription -SubscriptionId $SubscriptionId -ErrorAction SilentlyContinue -WarningAction SilentlyContinue 2>$null
+                if ($sub -and $sub.Name) {
+                    return $sub.Name
+                }
+            }
+        }
+        catch {
+            # If we can't get subscription, just return the ID (suppress all errors)
+        }
         return $SubscriptionId
     }
     

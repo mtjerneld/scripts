@@ -42,12 +42,17 @@ function Export-NetworkInventoryReport {
     Write-Verbose "Generating network inventory report to: $OutputPath"
     
     try {
-        # Separate VNets, Virtual WAN Hubs, and Azure Firewalls
-        $vnets = $NetworkInventory | Where-Object { $_.Type -eq "VNet" }
-        $virtualWANHubs = $NetworkInventory | Where-Object { $_.Type -eq "VirtualWANHub" }
-        $azureFirewalls = $NetworkInventory | Where-Object { $_.Type -eq "AzureFirewall" }
+        # Ensure NetworkInventory is not null
+        if (-not $NetworkInventory) {
+            $NetworkInventory = [System.Collections.Generic.List[PSObject]]::new()
+        }
         
-        # Calculate summary metrics
+        # Separate VNets, Virtual WAN Hubs, and Azure Firewalls
+        $vnets = @($NetworkInventory | Where-Object { $_.Type -eq "VNet" })
+        $virtualWANHubs = @($NetworkInventory | Where-Object { $_.Type -eq "VirtualWANHub" })
+        $azureFirewalls = @($NetworkInventory | Where-Object { $_.Type -eq "AzureFirewall" })
+        
+        # Calculate summary metrics - @() ensures array, so Count always works
         $totalVnets = $vnets.Count
         $totalVirtualWANHubs = $virtualWANHubs.Count
         $totalAzureFirewalls = $azureFirewalls.Count
@@ -753,7 +758,7 @@ $(Get-ReportNavigation -ActivePage "Network")
         <div class="summary-grid">
             <div class="summary-card" style="border-top: 3px solid #3498db;">
                 <div class="summary-card-label">VNets</div>
-                <div class="summary-card-value">$totalVnets</div>
+                <div class="summary-card-value">$($totalVnets)</div>
             </div>
             <div class="summary-card" style="border-top: 3px solid #2ecc71;">
                 <div class="summary-card-label">Subnets</div>
