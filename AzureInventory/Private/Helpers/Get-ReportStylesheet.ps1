@@ -262,7 +262,7 @@ function Get-ReportStylesheet {
         .hero {
             background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-surface) 100%);
             border-radius: 16px;
-            padding: 40px;
+            padding: 20px 40px 40px 40px;
             margin-bottom: 30px;
             border: 1px solid var(--border-color);
             text-align: center;
@@ -271,6 +271,7 @@ function Get-ReportStylesheet {
         .hero h1 {
             font-size: 2.5rem;
             font-weight: 700;
+            margin-top: 0;
             margin-bottom: 10px;
         }
         
@@ -1008,7 +1009,7 @@ function Get-ReportStylesheet {
         @media (max-width: 768px) {
             .quick-stats { grid-template-columns: repeat(2, 1fr); }
             .dashboard-grid { grid-template-columns: 1fr; }
-            .hero { padding: 30px 20px; }
+            .hero { padding: 15px 20px 30px 20px; }
             .hero h1 { font-size: 1.8rem; }
             .summary-cards { grid-template-columns: repeat(2, 1fr); }
         }

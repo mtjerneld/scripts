@@ -160,7 +160,7 @@ function Export-DashboardReport {
     }
     
     # Determine highest severity for Advisor card color
-    $advisorHighestSeverityColor = if ($advisorHighCount -gt 0) { 'var(--accent-yellow)' }
+    $advisorHighestSeverityColor = if ($advisorHighCount -gt 0) { 'var(--accent-red)' }
                                    elseif ($advisorMediumCount -gt 0) { 'var(--accent-blue)' }
                                    elseif ($advisorLowCount -gt 0) { 'var(--accent-green)' }
                                    else { '#888' }

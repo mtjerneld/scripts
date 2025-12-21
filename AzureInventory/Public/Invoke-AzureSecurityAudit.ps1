@@ -85,7 +85,7 @@ function Invoke-AzureSecurityAudit {
         return
     }
     
-    Write-Host "`nStarting Azure Security Audit across $($subscriptions.Count) subscription(s)..." -ForegroundColor Cyan
+    Write-Host "`n=== Starting Azure Governance Audit across $($subscriptions.Count) subscription(s) ===" -ForegroundColor Cyan
     
     # Define scanner functions
     $scanners = @{
@@ -123,7 +123,8 @@ function Invoke-AzureSecurityAudit {
     }
     Write-Verbose "SubscriptionNames hashtable has $($subscriptionNames.Count) entries"
     
-    # Scan each subscription
+    # Scan Security Findings
+    Write-Host "`n=== Scanning Security Findings ===" -ForegroundColor Cyan
     $total = $subscriptions.Count
     $current = 0
     
@@ -137,7 +138,7 @@ function Invoke-AzureSecurityAudit {
         }
         
         $subDisplayName = Get-SubscriptionDisplayName -Subscription $sub
-        Write-Host "`n[$current/$total] Scanning: $subDisplayName ($($sub.Id))" -ForegroundColor Yellow
+        Write-Host "`n  [$current/$total] Scanning: $subDisplayName" -ForegroundColor Gray
         
         # Run scanners for this subscription
         Invoke-ScannerForSubscription `
@@ -387,6 +388,7 @@ function Invoke-AzureSecurityAudit {
     }
     
     # Collect Azure Advisor Recommendations
+    Write-Host "`n=== Collecting Azure Advisor Recommendations ===" -ForegroundColor Cyan
     Collect-AdvisorRecommendations -Subscriptions $subscriptions -AdvisorRecommendations $advisorRecommendations -Errors $errors
     
     # Update result with latest advisor recommendations (ensure it's an array)
@@ -395,6 +397,7 @@ function Invoke-AzureSecurityAudit {
     
     # Collect Change Tracking Data (unless skipped)
     if (-not $SkipChangeTracking) {
+        Write-Host "`n=== Collecting Change Tracking Data ===" -ForegroundColor Cyan
         Collect-ChangeTrackingData -Subscriptions $subscriptions -ChangeTrackingData $changeTrackingData -Errors $errors
         
         # Update result with latest change tracking data (ensure it's an array)
@@ -406,6 +409,7 @@ function Invoke-AzureSecurityAudit {
     }
 
     # Collect Network Inventory
+    Write-Host "`n=== Collecting Network Inventory ===" -ForegroundColor Cyan
     Collect-NetworkInventory -Subscriptions $subscriptions -NetworkInventory $networkInventory -Errors $errors
     
     # Update result with latest network inventory (ensure it's an array)
@@ -414,6 +418,7 @@ function Invoke-AzureSecurityAudit {
     
     # Collect Cost Tracking Data
     try {
+        Write-Host "`n=== Collecting Cost Data ===" -ForegroundColor Cyan
         $costTrackingData = Collect-CostData -Subscriptions $subscriptions -DaysToInclude 30 -Errors $errors
         $result.CostTrackingData = $costTrackingData
         Write-Verbose "Updated result.CostTrackingData with cost data for $($costTrackingData.SubscriptionCount) subscriptions"
@@ -440,33 +445,35 @@ function Invoke-AzureSecurityAudit {
                 Convert-EOLResultsToFindings -EOLResults $eolResults -EOLFindings $allEOLFindings
                 
                 $result.EOLStatus = @($eolStatus)
-                Write-Host "  Total EOL findings: $($allEOLFindings.Count)" -ForegroundColor Green
+                Write-Host "  Found $($allEOLFindings.Count) EOL findings" -ForegroundColor Green
                 Write-Verbose "EOLTracking: Found $($eolStatus.Count) EOL component(s), created $($allEOLFindings.Count) total EOL findings"
-                
-                # Update result.EOLFindings AFTER EOL tracking completes (it was set to empty array earlier)
-                $eolFindingsArrayUpdated = @()
-                if ($allEOLFindings -and $allEOLFindings.Count -gt 0) {
-                    if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
-                        foreach ($finding in $allEOLFindings) {
-                            if ($null -ne $finding) {
-                                $eolFindingsArrayUpdated += $finding
-                            }
-                        }
-                    } elseif ($allEOLFindings -is [System.Array]) {
-                        $eolFindingsArrayUpdated = $allEOLFindings
-                    } elseif ($allEOLFindings -is [System.Collections.IEnumerable] -and $allEOLFindings -isnot [string]) {
-                        foreach ($finding in $allEOLFindings) {
-                            if ($null -ne $finding) {
-                                $eolFindingsArrayUpdated += $finding
-                            }
-                        }
-                    } else {
-                        $eolFindingsArrayUpdated = @($allEOLFindings)
-                    }
-                }
-                $result.EOLFindings = $eolFindingsArrayUpdated
-                Write-Verbose "EOLTracking: Updated result.EOLFindings with $($eolFindingsArrayUpdated.Count) findings"
+            } else {
+                Write-Host "  No EOL components found" -ForegroundColor Gray
             }
+            
+            # Update result.EOLFindings AFTER EOL tracking completes (it was set to empty array earlier)
+            $eolFindingsArrayUpdated = @()
+            if ($allEOLFindings -and $allEOLFindings.Count -gt 0) {
+                if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
+                    foreach ($finding in $allEOLFindings) {
+                        if ($null -ne $finding) {
+                            $eolFindingsArrayUpdated += $finding
+                        }
+                    }
+                } elseif ($allEOLFindings -is [System.Array]) {
+                    $eolFindingsArrayUpdated = $allEOLFindings
+                } elseif ($allEOLFindings -is [System.Collections.IEnumerable] -and $allEOLFindings -isnot [string]) {
+                    foreach ($finding in $allEOLFindings) {
+                        if ($null -ne $finding) {
+                            $eolFindingsArrayUpdated += $finding
+                        }
+                    }
+                } else {
+                    $eolFindingsArrayUpdated = @($allEOLFindings)
+                }
+            }
+            $result.EOLFindings = $eolFindingsArrayUpdated
+            Write-Verbose "EOLTracking: Updated result.EOLFindings with $($eolFindingsArrayUpdated.Count) findings"
         }
     }
     catch {

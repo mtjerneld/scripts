@@ -51,7 +51,6 @@ function Collect-CostData {
     $endDate = (Get-Date -Hour 0 -Minute 0 -Second 0 -Millisecond 0).AddDays(-1)
     $startDate = $endDate.AddDays(-($DaysToInclude - 1))
     
-    Write-Host "`n=== Collecting Cost Data ===" -ForegroundColor Cyan
     Write-Host "Period: $($startDate.ToString('yyyy-MM-dd')) to $($endDate.ToString('yyyy-MM-dd')) ($DaysToInclude days)" -ForegroundColor Gray
     
     # Initialize aggregated data structure

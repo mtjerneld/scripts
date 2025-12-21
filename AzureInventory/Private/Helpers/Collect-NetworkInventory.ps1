@@ -41,7 +41,6 @@ function Collect-NetworkInventory {
         $Errors = [System.Collections.Generic.List[string]]::new()
     }
     
-    Write-Host "`n=== Collecting Network Inventory Data ===" -ForegroundColor Cyan
     
     # Check if function exists, if not try to load it directly (similar to Collect-ChangeTrackingData)
     if (-not (Get-Command -Name Get-AzureNetworkInventory -ErrorAction SilentlyContinue)) {

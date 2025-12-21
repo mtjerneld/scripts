@@ -359,6 +359,12 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
             width: 100%;
         }
         
+        /* Fix tooltip line breaks - render \n as line breaks */
+        .vis-tooltip {
+            white-space: pre-line !important;
+            max-width: 300px;
+        }
+        
         /* Fullscreen overlay */
         .diagram-fullscreen {
             display: none;
@@ -1683,8 +1689,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                 foreach ($s in $vnet.Subnets) { $deviceCount += $s.ConnectedDevices.Count }
                 
                 $tooltip = "$($vnet.Name)\nSubscription: $($vnet.SubscriptionName)\nAddress: $($vnet.AddressSpace)\nLocation: $($vnet.Location)\nSubnets: $($vnet.Subnets.Count)\nDevices: $deviceCount"
-                # Escape tooltip for JavaScript
-                $tooltipEscaped = $tooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                # Escape tooltip for JavaScript - keep actual newlines, just escape quotes
+                $tooltipEscaped = $tooltip -replace "`"", "\`""
                 # Escape label for JavaScript
                 $vnetNameEscaped = $vnet.Name -replace "\\", "\\\\" -replace "`"", "\`""
                 # Use subscription color for each VNet
@@ -1695,7 +1701,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     $gwNodeId = $nodeCounter++
                     $gwNodeIdMap[$gw.Id] = $gwNodeId
                     $gwTooltip = "$($gw.Name)\nType: $($gw.Type)\nSKU: $($gw.Sku)\nVPN: $($gw.VpnType)"
-                    $gwTooltipEscaped = $gwTooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                    $gwTooltipEscaped = $gwTooltip -replace "`"", "\`""
                     $gwNameEscaped = $gw.Name -replace "\\", "\\\\" -replace "`"", "\`""
                     $nodesJson.Add("{ id: $gwNodeId, label: `"$gwNameEscaped`", title: `"$gwTooltipEscaped`", color: `"#9b59b6`", shape: `"diamond`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                     $edgesJson.Add("{ from: $nodeId, to: $gwNodeId, color: { color: `"#9b59b6`" }, width: 2, length: 50 }")
@@ -1711,7 +1717,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $fwNodeId = $nodeCounter++
                             $fwNodeIdMap[$fw.Id] = $fwNodeId
                             $fwTooltip = "$($fw.Name)\nType: Azure Firewall\nSKU: $($fw.SkuTier)\nThreat Intel: $($fw.ThreatIntelMode)"
-                            $fwTooltipEscaped = $fwTooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                            $fwTooltipEscaped = $fwTooltip -replace "`"", "\`""
                             $fwNameEscaped = $fw.Name -replace "\\", "\\\\" -replace "`"", "\`""
                             $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                         }
@@ -1740,7 +1746,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $nodeIdMap[$hub.Name] = $hubNodeId
                 $firewallCount = if ($hub.Firewalls) { $hub.Firewalls.Count } else { 0 }
                 $hubTooltip = "$($hub.Name)\nType: Virtual WAN Hub\nLocation: $($hub.Location)\nAddress: $($hub.AddressPrefix)\nER: $($hub.ExpressRouteConnections.Count) | S2S: $($hub.VpnConnections.Count) | Firewalls: $firewallCount"
-                $hubTooltipEscaped = $hubTooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                $hubTooltipEscaped = $hubTooltip -replace "`"", "\`""
                 $hubNameEscaped = $hub.Name -replace "\\", "\\\\" -replace "`"", "\`""
                 $nodesJson.Add("{ id: $hubNodeId, label: `"$hubNameEscaped`", title: `"$hubTooltipEscaped`", color: `"#f39c12`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                 
@@ -1751,7 +1757,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $fwNodeId = $nodeCounter++
                             $fwNodeIdMap[$fw.Id] = $fwNodeId
                             $fwTooltip = "$($fw.Name)\nType: Azure Firewall (Virtual WAN)\nSKU: $($fw.SkuTier)\nThreat Intel: $($fw.ThreatIntelMode)\nHub: $($hub.Name)"
-                            $fwTooltipEscaped = $fwTooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                            $fwTooltipEscaped = $fwTooltip -replace "`"", "\`""
                             $fwNameEscaped = $fw.Name -replace "\\", "\\\\" -replace "`"", "\`""
                             $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                             # Create edge from Hub to Firewall
@@ -1793,7 +1799,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $fwNodeIdMap[$fw.Id] = $fwNodeId
                 $deploymentInfo = if ($fw.DeploymentType -eq "VirtualWAN") { "Virtual WAN Hub: $($fw.VirtualHubName)" } else { "VNet: $($fw.VNetName)" }
                 $fwTooltip = "$($fw.Name)\nType: Azure Firewall\nSKU: $($fw.SkuTier)\nThreat Intel: $($fw.ThreatIntelMode)\n$deploymentInfo"
-                $fwTooltipEscaped = $fwTooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                $fwTooltipEscaped = $fwTooltip -replace "`"", "\`""
                 $fwNameEscaped = $fw.Name -replace "\\", "\\\\" -replace "`"", "\`""
                 $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$fwSubId`" }")
                 
@@ -1843,7 +1849,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $nodeId = $nodeCounter++
                             $nodeIdMap[$remoteVnetName] = $nodeId
                             $tooltip = "$remoteVnetName\nType: Virtual WAN Hub\nSubscription: Unknown\n(No access to this subscription)"
-                            $tooltipEscaped = $tooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                            $tooltipEscaped = $tooltip -replace "`"", "\`""
                             $remoteVnetNameEscaped = $remoteVnetName -replace "\\", "\\\\" -replace "`"", "\`""
                             $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownHubColor`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, group: `"unknown`" }")
                         }
@@ -1855,7 +1861,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $nodeId = $nodeCounter++
                             $nodeIdMap[$remoteVnetName] = $nodeId
                             $tooltip = "$remoteVnetName\nSubscription: Unknown\n(No access to this subscription)"
-                            $tooltipEscaped = $tooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                            $tooltipEscaped = $tooltip -replace "`"", "\`""
                             $remoteVnetNameEscaped = $remoteVnetName -replace "\\", "\\\\" -replace "`"", "\`""
                             $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownVnetColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, group: `"unknown`" }")
                         }
@@ -2012,7 +2018,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                                     # Create on-premises node
                                     $onPremNodeId = $nodeCounter++
                                     $onPremTooltip = "$remoteName\nType: On-Premises Network\nAddress Space: $($conn.RemoteNetwork.AddressSpace)\nGateway IP: $($conn.RemoteNetwork.GatewayIpAddress)"
-                                    $onPremTooltipEscaped = $onPremTooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                                    $onPremTooltipEscaped = $onPremTooltip -replace "`"", "\`""
                                     $remoteNameEscaped = $remoteName -replace "\\", "\\\\" -replace "`"", "\`""
                                     $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#ffffff`", size: 16 } }")
                                     
@@ -2085,8 +2091,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                         }
                         if ($erConn.PeerASN) { $tooltipParts += "Peer ASN: $($erConn.PeerASN)" }
                         $onPremTooltip = $tooltipParts -join "\n"
-                        # Escape the tooltip string for JavaScript (replace actual newlines with \n, escape quotes)
-                        $onPremTooltipEscaped = $onPremTooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                        # Escape the tooltip string for JavaScript - keep actual newlines, just escape quotes
+                        $onPremTooltipEscaped = $onPremTooltip -replace "`"", "\`""
                         $circuitNameEscaped = $circuitName -replace "\\", "\\\\" -replace "`"", "\`""
                         $nodesJson.Add("{ id: $onPremNodeId, label: `"$circuitNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, group: `"onprem`" }")
                     }
@@ -2107,7 +2113,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         $onPremNodeId = $nodeCounter++
                         $nodeIdMap[$onPremKey] = $onPremNodeId
                         $onPremTooltip = "On-Premises Site\n$remoteSiteName\nAddress Space: $($vpnConn.RemoteSiteAddressSpace)"
-                        $onPremTooltipEscaped = $onPremTooltip -replace "\\", "\\\\" -replace "`"", "\`"" -replace "`r`n", "\\n" -replace "`n", "\\n" -replace "`r", "\\n"
+                        $onPremTooltipEscaped = $onPremTooltip -replace "`"", "\`""
                         $remoteSiteNameEscaped = $remoteSiteName -replace "\\", "\\\\" -replace "`"", "\`""
                         $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteSiteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, group: `"onprem`" }")
                     }
@@ -2290,12 +2296,80 @@ $(Get-ReportNavigation -ActivePage "Network")
                 // Toggle physics on/off
                 document.getElementById('togglePhysics').addEventListener('click', function() {
                     physicsEnabled = !physicsEnabled;
-                    options.physics.enabled = physicsEnabled;
-                    network.setOptions(options);
                     this.textContent = physicsEnabled ? 'Disable Physics' : 'Enable Physics';
                     
-                    // If disabling physics, fix all nodes in current positions
                     if (!physicsEnabled) {
+                        // Disabling physics: get current positions and fix nodes
+                        var allNodeIds = nodes.getIds();
+                        var positions = network.getPositions(allNodeIds);
+                        var updates = [];
+                        allNodeIds.forEach(function(nodeId) {
+                            if (positions[nodeId]) {
+                                updates.push({
+                                    id: nodeId,
+                                    x: positions[nodeId].x,
+                                    y: positions[nodeId].y,
+                                    fixed: {
+                                        x: true,
+                                        y: true
+                                    }
+                                });
+                            }
+                        });
+                        if (updates.length > 0) {
+                            nodes.update(updates);
+                        }
+                        // Disable physics after nodes are fixed
+                        options.physics.enabled = false;
+                        network.setOptions(options);
+                    } else {
+                        // Enabling physics: unfix nodes first
+                        var allNodeIds = nodes.getIds();
+                        var updates = [];
+                        allNodeIds.forEach(function(nodeId) {
+                            updates.push({
+                                id: nodeId,
+                                fixed: false
+                            });
+                        });
+                        nodes.update(updates);
+                        // Enable physics after nodes are unfixed
+                        options.physics.enabled = true;
+                        network.setOptions(options);
+                    }
+                });
+                
+                // Reset layout button
+                document.getElementById('resetLayout').addEventListener('click', function() {
+                    // Unfix all nodes to allow physics to reposition them
+                    var allNodeIds = nodes.getIds();
+                    var updates = [];
+                    allNodeIds.forEach(function(nodeId) {
+                        updates.push({
+                            id: nodeId,
+                            fixed: false
+                        });
+                    });
+                    nodes.update(updates);
+                    
+                    // Re-enable physics and force a new stabilization
+                    options.physics.enabled = true;
+                    network.setOptions(options);
+                    physicsEnabled = true;
+                    document.getElementById('togglePhysics').textContent = 'Disable Physics';
+                    
+                    // Fit the view and start a fresh stabilization
+                    network.fit({ animation: false });
+                    network.stabilize(200);
+                    
+                    // Auto-disable after stabilization
+                    network.once('stabilizationEnd', function() {
+                        options.physics.enabled = false;
+                        network.setOptions(options);
+                        physicsEnabled = false;
+                        document.getElementById('togglePhysics').textContent = 'Enable Physics';
+                        
+                        // Fix nodes in their new positions after stabilization
                         var allNodeIds = nodes.getIds();
                         allNodeIds.forEach(function(nodeId) {
                             var position = network.getPositions([nodeId]);
@@ -2311,47 +2385,6 @@ $(Get-ReportNavigation -ActivePage "Network")
                                 });
                             }
                         });
-                    } else {
-                        // If enabling physics, unfix all nodes
-                        var allNodeIds = nodes.getIds();
-                        allNodeIds.forEach(function(nodeId) {
-                            nodes.update({
-                                id: nodeId,
-                                fixed: {
-                                    x: false,
-                                    y: false
-                                }
-                            });
-                        });
-                    }
-                });
-                
-                // Reset layout button
-                document.getElementById('resetLayout').addEventListener('click', function() {
-                    // Unfix all nodes
-                    var allNodeIds = nodes.getIds();
-                    allNodeIds.forEach(function(nodeId) {
-                        nodes.update({
-                            id: nodeId,
-                            fixed: {
-                                x: false,
-                                y: false
-                            }
-                        });
-                    });
-                    
-                    // Re-enable physics temporarily to reset layout
-                    options.physics.enabled = true;
-                    network.setOptions(options);
-                    physicsEnabled = true;
-                    document.getElementById('togglePhysics').textContent = 'Disable Physics';
-                    
-                    // Auto-disable after stabilization
-                    network.once('stabilizationEnd', function() {
-                        options.physics.enabled = false;
-                        network.setOptions(options);
-                        physicsEnabled = false;
-                        document.getElementById('togglePhysics').textContent = 'Enable Physics';
                     });
                 });
                 
@@ -2369,18 +2402,47 @@ $(Get-ReportNavigation -ActivePage "Network")
                     var dataFullscreen = { nodes: nodes, edges: edges };
                     optionsFullscreen = JSON.parse(JSON.stringify(options)); // Clone options
                     
-                    networkFullscreen = new vis.Network(containerFullscreen, dataFullscreen, optionsFullscreen);
+                    // Disable physics initially if it's disabled in main diagram, to preserve positions
                     physicsEnabledFullscreen = physicsEnabled;
-                    
-                    // Sync physics state
                     if (!physicsEnabled) {
                         optionsFullscreen.physics.enabled = false;
-                        networkFullscreen.setOptions(optionsFullscreen);
+                    }
+                    
+                    networkFullscreen = new vis.Network(containerFullscreen, dataFullscreen, optionsFullscreen);
+                    
+                    // Sync positions and fixed state from main diagram immediately
+                    var allNodeIds = nodes.getIds();
+                    var positions = network.getPositions(allNodeIds);
+                    networkFullscreen.setPositions(positions);
+                    
+                    // Also sync fixed state of nodes from the dataset
+                    var nodeUpdates = [];
+                    allNodeIds.forEach(function(nodeId) {
+                        var node = nodes.get(nodeId);
+                        if (node && node.fixed !== undefined) {
+                            if (positions[nodeId]) {
+                                nodeUpdates.push({
+                                    id: nodeId,
+                                    x: positions[nodeId].x,
+                                    y: positions[nodeId].y,
+                                    fixed: node.fixed
+                                });
+                            }
+                        }
+                    });
+                    if (nodeUpdates.length > 0) {
+                        nodes.update(nodeUpdates);
+                        // Update positions again after fixing nodes
+                        networkFullscreen.setPositions(positions);
+                    }
+                    
+                    // Sync physics state UI
+                    if (!physicsEnabled) {
                         physicsEnabledFullscreen = false;
                         document.getElementById('togglePhysicsFullscreen').textContent = 'Enable Physics';
                     }
                     
-                    // Fix all nodes after stabilization
+                    // Fix all nodes after stabilization (only if physics was enabled)
                     networkFullscreen.on('stabilizationEnd', function() {
                         if (physicsEnabledFullscreen) {
                             optionsFullscreen.physics.enabled = false;
@@ -2439,11 +2501,6 @@ $(Get-ReportNavigation -ActivePage "Network")
                             });
                         }
                     });
-                    
-                    // Sync positions from main diagram when opening fullscreen
-                    var allNodeIds = nodes.getIds();
-                    var positions = network.getPositions(allNodeIds);
-                    networkFullscreen.setPositions(positions);
                 }
                 
                 // Open fullscreen
@@ -2456,14 +2513,14 @@ $(Get-ReportNavigation -ActivePage "Network")
                         initializeFullscreenDiagram();
                         
                         if (networkFullscreen) {
-                            // Sync positions from main diagram
+                            // Sync positions from main diagram (positions are already synced in initializeFullscreenDiagram, but refresh to be sure)
                             var allNodeIds = nodes.getIds();
                             var positions = network.getPositions(allNodeIds);
                             networkFullscreen.setPositions(positions);
                             
-                            // Force redraw and fit
+                            // Force redraw and fit to view
                             networkFullscreen.redraw();
-                            networkFullscreen.fit();
+                            networkFullscreen.fit({ animation: false });
                         }
                     }, 50);
                 });
@@ -2485,11 +2542,78 @@ $(Get-ReportNavigation -ActivePage "Network")
                     if (!networkFullscreen || !optionsFullscreen) return;
                     
                     physicsEnabledFullscreen = !physicsEnabledFullscreen;
-                    optionsFullscreen.physics.enabled = physicsEnabledFullscreen;
-                    networkFullscreen.setOptions(optionsFullscreen);
                     this.textContent = physicsEnabledFullscreen ? 'Disable Physics' : 'Enable Physics';
                     
                     if (!physicsEnabledFullscreen) {
+                        // Disabling physics: get current positions and fix nodes
+                        var allNodeIds = nodes.getIds();
+                        var positions = networkFullscreen.getPositions(allNodeIds);
+                        var updates = [];
+                        allNodeIds.forEach(function(nodeId) {
+                            if (positions[nodeId]) {
+                                updates.push({
+                                    id: nodeId,
+                                    x: positions[nodeId].x,
+                                    y: positions[nodeId].y,
+                                    fixed: {
+                                        x: true,
+                                        y: true
+                                    }
+                                });
+                            }
+                        });
+                        if (updates.length > 0) {
+                            nodes.update(updates);
+                        }
+                        // Disable physics after nodes are fixed
+                        optionsFullscreen.physics.enabled = false;
+                        networkFullscreen.setOptions(optionsFullscreen);
+                    } else {
+                        // Enabling physics: unfix nodes first
+                        var allNodeIds = nodes.getIds();
+                        var updates = [];
+                        allNodeIds.forEach(function(nodeId) {
+                            updates.push({
+                                id: nodeId,
+                                fixed: false
+                            });
+                        });
+                        nodes.update(updates);
+                        // Enable physics after nodes are unfixed
+                        optionsFullscreen.physics.enabled = true;
+                        networkFullscreen.setOptions(optionsFullscreen);
+                    }
+                });
+                
+                // Reset layout in fullscreen
+                document.getElementById('resetLayoutFullscreen').addEventListener('click', function() {
+                    if (!networkFullscreen || !optionsFullscreen) return;
+                    
+                    var allNodeIds = nodes.getIds();
+                    var updates = [];
+                    allNodeIds.forEach(function(nodeId) {
+                        updates.push({
+                            id: nodeId,
+                            fixed: false
+                        });
+                    });
+                    nodes.update(updates);
+                    
+                    optionsFullscreen.physics.enabled = true;
+                    networkFullscreen.setOptions(optionsFullscreen);
+                    physicsEnabledFullscreen = true;
+                    document.getElementById('togglePhysicsFullscreen').textContent = 'Disable Physics';
+                    
+                    networkFullscreen.fit({ animation: false });
+                    networkFullscreen.stabilize(200);
+                    
+                    networkFullscreen.once('stabilizationEnd', function() {
+                        optionsFullscreen.physics.enabled = false;
+                        networkFullscreen.setOptions(optionsFullscreen);
+                        physicsEnabledFullscreen = false;
+                        document.getElementById('togglePhysicsFullscreen').textContent = 'Enable Physics';
+                        
+                        // Fix nodes in their new positions after stabilization
                         var allNodeIds = nodes.getIds();
                         allNodeIds.forEach(function(nodeId) {
                             var position = networkFullscreen.getPositions([nodeId]);
@@ -2505,45 +2629,6 @@ $(Get-ReportNavigation -ActivePage "Network")
                                 });
                             }
                         });
-                    } else {
-                        var allNodeIds = nodes.getIds();
-                        allNodeIds.forEach(function(nodeId) {
-                            nodes.update({
-                                id: nodeId,
-                                fixed: {
-                                    x: false,
-                                    y: false
-                                }
-                            });
-                        });
-                    }
-                });
-                
-                // Reset layout in fullscreen
-                document.getElementById('resetLayoutFullscreen').addEventListener('click', function() {
-                    if (!networkFullscreen || !optionsFullscreen) return;
-                    
-                    var allNodeIds = nodes.getIds();
-                    allNodeIds.forEach(function(nodeId) {
-                        nodes.update({
-                            id: nodeId,
-                            fixed: {
-                                x: false,
-                                y: false
-                            }
-                        });
-                    });
-                    
-                    optionsFullscreen.physics.enabled = true;
-                    networkFullscreen.setOptions(optionsFullscreen);
-                    physicsEnabledFullscreen = true;
-                    document.getElementById('togglePhysicsFullscreen').textContent = 'Disable Physics';
-                    
-                    networkFullscreen.once('stabilizationEnd', function() {
-                        optionsFullscreen.physics.enabled = false;
-                        networkFullscreen.setOptions(optionsFullscreen);
-                        physicsEnabledFullscreen = false;
-                        document.getElementById('togglePhysicsFullscreen').textContent = 'Enable Physics';
                     });
                 });
                 

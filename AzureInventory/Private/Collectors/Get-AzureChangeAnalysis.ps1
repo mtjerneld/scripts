@@ -77,16 +77,73 @@ resourcechanges
 | order by changeTime desc
 "@
         
-        # Execute cross-subscription query
+        # Execute cross-subscription query with pagination
         Write-Verbose "Executing Resource Graph query for Change Analysis..."
+        $allQueryResults = [System.Collections.Generic.List[PSObject]]::new()
+        $skipToken = $null
+        $pageCount = 0
+        $batchSize = 1000  # Maximum batch size per Azure Resource Graph query
+        $maxPages = 100    # Safety limit to prevent infinite loops
+        
         try {
-            $queryResult = Search-AzGraph -Query $kqlQuery -Subscription $SubscriptionIds -ErrorAction Stop
-            Write-Verbose "Found $($queryResult.Count) changes from Resource Graph"
+            do {
+                $pageCount++
+                Write-Verbose "Fetching Change Analysis page $pageCount..."
+                
+                if ($skipToken) {
+                    $graphResult = Search-AzGraph -Query $kqlQuery -Subscription $SubscriptionIds -First $batchSize -SkipToken $skipToken -ErrorAction Stop
+                } else {
+                    $graphResult = Search-AzGraph -Query $kqlQuery -Subscription $SubscriptionIds -First $batchSize -ErrorAction Stop
+                }
+                
+                # Handle PSResourceGraphResponse object (standard return type)
+                $hasDataProperty = $graphResult | Get-Member -Name Data -ErrorAction SilentlyContinue
+                if ($hasDataProperty) {
+                    # Standard PSResourceGraphResponse object
+                    if ($graphResult.Data) {
+                        foreach ($item in $graphResult.Data) {
+                            $allQueryResults.Add($item)
+                        }
+                        $itemCount = $graphResult.Data.Count
+                    } else {
+                        $itemCount = 0
+                    }
+                    $hasSkipTokenProperty = $graphResult | Get-Member -Name SkipToken -ErrorAction SilentlyContinue
+                    if ($hasSkipTokenProperty) {
+                        $skipToken = $graphResult.SkipToken
+                    } else {
+                        $skipToken = $null
+                    }
+                    Write-Verbose "Retrieved $itemCount changes (page $pageCount, total: $($allQueryResults.Count))"
+                    if ($pageCount % 10 -eq 0 -and $itemCount -gt 0) {
+                        Write-Host "    Progress: $pageCount pages, $($allQueryResults.Count) changes collected..." -ForegroundColor Gray
+                    }
+                } elseif ($graphResult -is [Array]) {
+                    # Direct array return (backward compatibility)
+                    foreach ($item in $graphResult) {
+                        $allQueryResults.Add($item)
+                    }
+                    $skipToken = $null  # Arrays don't have SkipToken
+                    Write-Verbose "Retrieved $($graphResult.Count) changes (page $pageCount, total: $($allQueryResults.Count))"
+                } else {
+                    Write-Warning "Unexpected result format from Search-AzGraph. Result type: $($graphResult.GetType().FullName)"
+                    break
+                }
+                
+                if ($pageCount -ge $maxPages) {
+                    Write-Warning "Reached maximum page limit ($maxPages). Stopping pagination. Total changes collected: $($allQueryResults.Count)"
+                    break
+                }
+            } while ($skipToken)
+            
+            Write-Verbose "Finished pagination. Total changes from Resource Graph: $($allQueryResults.Count)"
         }
         catch {
             Write-Warning "Resource Graph query failed: $_"
             return @()
         }
+        
+        $queryResult = $allQueryResults
         
         if ($null -eq $queryResult -or $queryResult.Count -eq 0) {
             Write-Host "    No changes found in Resource Graph" -ForegroundColor Yellow

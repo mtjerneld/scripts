@@ -40,7 +40,6 @@ function Collect-AdvisorRecommendations {
         $Errors = [System.Collections.Generic.List[string]]::new()
     }
     
-    Write-Host "`n=== Collecting Azure Advisor Recommendations ===" -ForegroundColor Cyan
     
     # Check if function exists, if not try to load it directly
     if (-not (Get-Command -Name Get-AzureAdvisorRecommendations -ErrorAction SilentlyContinue)) {

@@ -41,7 +41,6 @@ function Collect-ChangeTrackingData {
         $Errors = [System.Collections.Generic.List[string]]::new()
     }
     
-    Write-Host "`n=== Collecting Azure Change Tracking Data (v2 - Change Analysis) ===" -ForegroundColor Cyan
     
     # Check if function exists, if not try to load it directly
     if (-not (Get-Command -Name Get-AzureChangeAnalysis -ErrorAction SilentlyContinue)) {
