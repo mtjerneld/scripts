@@ -911,8 +911,20 @@ $(Get-ReportNavigation -ActivePage "Network")
 "@
                     foreach ($erConn in $hub.ExpressRouteConnections) {
                         $statusColor = if ($erConn.ConnectionStatus -eq "Connected") { "#2ecc71" } else { "#e74c3c" }
-                        $circuitName = if ($erConn.ExpressRouteCircuitName) { $erConn.ExpressRouteCircuitName } else { "Unknown" }
+                        # Get circuit name from multiple possible sources
+                        # Priority: 1) Circuit object Name, 2) ExpressRouteCircuitName (if not Unknown), 3) Extract from CircuitId, 4) Unknown
                         $circuit = $erConn.ExpressRouteCircuit
+                        $circuitName = if ($circuit -and $circuit.Name) {
+                            # Best source: actual circuit object name from API
+                            $circuit.Name
+                        } elseif ($erConn.ExpressRouteCircuitName -and $erConn.ExpressRouteCircuitName -ne "Unknown") { 
+                            $erConn.ExpressRouteCircuitName 
+                        } elseif ($erConn.ExpressRouteCircuitId) {
+                            # Extract name from circuit ID as fallback
+                            ($erConn.ExpressRouteCircuitId -split '/')[-1]
+                        } else { 
+                            "Unknown" 
+                        }
                         $serviceProvider = if ($circuit -and $circuit.ServiceProviderName) { $circuit.ServiceProviderName } else { "N/A" }
                         $peeringLocation = if ($circuit -and $circuit.PeeringLocation) { $circuit.PeeringLocation } else { "N/A" }
                         $bandwidth = if ($circuit -and $circuit.BandwidthInMbps) { "$($circuit.BandwidthInMbps) Mbps" } else { "N/A" }
@@ -1637,6 +1649,29 @@ $(Get-ReportNavigation -ActivePage "Network")
             $subColor = $subColorMap[$subId]
             
             foreach ($vnet in $vnetGroups[$subId]) {
+                # Check if this VNet is actually a Virtual WAN Hub representation (e.g., "HV_p-conhub-sec-vhub_...")
+                # These are created by Azure for peering purposes but should use the hub node instead
+                $isHubRepresentation = $false
+                $matchingHub = $null
+                if ($vnet.Name -like "HV_*") {
+                    # Extract base name by removing "HV_" prefix and GUID suffix
+                    $vnetBaseName = $vnet.Name -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
+                    # Check if this matches any Virtual WAN Hub
+                    $matchingHub = $virtualWANHubs | Where-Object { 
+                        $hubBaseName = $_.Name -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
+                        $_.Name -eq $vnetBaseName -or $hubBaseName -eq $vnetBaseName -or $_.Name -eq $vnet.Name
+                    } | Select-Object -First 1
+                    if ($matchingHub) {
+                        $isHubRepresentation = $true
+                    }
+                }
+                
+                # Skip creating a node for hub representations - they'll be mapped to the hub node later
+                if ($isHubRepresentation) {
+                    Write-Verbose "Skipping VNet node creation for hub representation: $($vnet.Name) (maps to hub: $($matchingHub.Name))"
+                    continue
+                }
+                
                 $nodeId = $nodeCounter++
                 $nodeIdMap[$vnet.Name] = $nodeId
                 $deviceCount = 0
@@ -1722,6 +1757,23 @@ $(Get-ReportNavigation -ActivePage "Network")
             }
         }
         
+        # Map hub representation VNet names to their hub node IDs
+        # These are VNets like "HV_p-conhub-sec-vhub_..." that represent hubs for peering
+        foreach ($vnet in $vnets) {
+            if ($vnet.Name -like "HV_*" -and -not $nodeIdMap.ContainsKey($vnet.Name)) {
+                $vnetBaseName = $vnet.Name -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
+                $matchingHub = $virtualWANHubs | Where-Object { 
+                    $hubBaseName = $_.Name -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
+                    $_.Name -eq $vnetBaseName -or $hubBaseName -eq $vnetBaseName -or $_.Name -eq $vnet.Name
+                } | Select-Object -First 1
+                if ($matchingHub -and $nodeIdMap.ContainsKey($matchingHub.Name)) {
+                    # Map the hub representation VNet name to the hub's node ID
+                    $nodeIdMap[$vnet.Name] = $nodeIdMap[$matchingHub.Name]
+                    Write-Verbose "Mapped hub representation VNet '$($vnet.Name)' to hub node '$($matchingHub.Name)'"
+                }
+            }
+        }
+        
         # Add standalone Azure Firewall nodes (not linked to VNets or Hubs in inventory)
         # These are firewalls that weren't added to any VNet's or Hub's Firewalls list
         foreach ($fw in $azureFirewalls) {
@@ -1763,6 +1815,20 @@ $(Get-ReportNavigation -ActivePage "Network")
             foreach ($peering in $vnet.Peerings) {
                 $remoteVnetName = $peering.RemoteVnetName
                 if ($remoteVnetName -and -not $nodeIdMap.ContainsKey($remoteVnetName)) {
+                    # Skip hub representation VNets (they should already be mapped to hub nodes)
+                    if ($remoteVnetName -like "HV_*") {
+                        $vnetBaseName = $remoteVnetName -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
+                        $foundHub = $virtualWANHubs | Where-Object { 
+                            $hubBaseName = $_.Name -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
+                            $_.Name -eq $vnetBaseName -or $hubBaseName -eq $vnetBaseName -or $_.Name -eq $remoteVnetName
+                        } | Select-Object -First 1
+                        if ($foundHub -and $nodeIdMap.ContainsKey($foundHub.Name)) {
+                            # Map to existing hub node
+                            $nodeIdMap[$remoteVnetName] = $nodeIdMap[$foundHub.Name]
+                            continue
+                        }
+                    }
+                    
                     # Check if this is a Virtual WAN hub or a VNet
                     if ($peering.IsVirtualWANHub) {
                         # Check if this hub is actually in our inventory (might be in different subscription)
@@ -1920,34 +1986,8 @@ $(Get-ReportNavigation -ActivePage "Network")
             }
         }
         
-        # Connect duplicate Virtual WAN Hub nodes (e.g., "p-conhub-sec-vhub" and "HV_p-conhub-sec-vhub_...")
-        # This handles cases where peerings reference hubs with different naming conventions
-        foreach ($hub in $virtualWANHubs) {
-            if (-not $nodeIdMap.ContainsKey($hub.Name)) { continue }
-            $hubNodeId = $nodeIdMap[$hub.Name]
-            $hubBaseName = $hub.Name -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
-            
-            # Check if there's an "unknown" hub node that matches this hub
-            foreach ($remoteName in $nodeIdMap.Keys) {
-                if ($remoteName -ne $hub.Name -and $nodeIdMap.ContainsKey($remoteName)) {
-                    $remoteBaseName = $remoteName -replace '^HV_', '' -replace '_[a-f0-9-]+$', ''
-                    
-                    # If base names match, connect the nodes
-                    if ($hubBaseName -eq $remoteBaseName -or 
-                        ($remoteName -like "HV_*" -and $remoteName -like "*$hubBaseName*") -or
-                        ($hub.Name -like "HV_*" -and $hub.Name -like "*$remoteBaseName*")) {
-                        $remoteNodeId = $nodeIdMap[$remoteName]
-                        $connectionKey = if ($hubNodeId -lt $remoteNodeId) { "$hubNodeId-$remoteNodeId" } else { "$remoteNodeId-$hubNodeId" }
-                        
-                        # Only add connection if not already processed
-                        if (-not $processedPeerings.Contains($connectionKey)) {
-                            [void]$processedPeerings.Add($connectionKey)
-                            $edgesJson.Add("{ from: $hubNodeId, to: $remoteNodeId, color: { color: `"#f39c12`" }, width: 3, length: 100, title: `"Virtual WAN Hub Internal Connection`", dashes: false }")
-                        }
-                    }
-                }
-            }
-        }
+        # Note: Duplicate Virtual WAN Hub nodes (e.g., "p-conhub-sec-vhub" and "HV_p-conhub-sec-vhub_...")
+        # are now prevented from being created. Hub representation VNets are mapped to hub nodes above.
         
         # Add S2S tunnel edges and on-premises nodes from classic gateways
         foreach ($vnet in $vnets) {
@@ -2008,21 +2048,29 @@ $(Get-ReportNavigation -ActivePage "Network")
             # ExpressRoute connections
             if ($hub.ExpressRouteConnections) {
                 foreach ($erConn in $hub.ExpressRouteConnections) {
-                    $circuitName = if ($erConn.ExpressRouteCircuitName) { 
+                    # Get circuit name from multiple possible sources
+                    # Priority: 1) Circuit object Name, 2) ExpressRouteCircuitName (if not Unknown), 3) Extract from CircuitId, 4) Unknown
+                    $circuit = $erConn.ExpressRouteCircuit
+                    $circuitName = if ($circuit -and $circuit.Name) {
+                        # Best source: actual circuit object name from API
+                        ($circuit.Name -replace "`r`n", " " -replace "`n", " " -replace "`r", " ").Trim()
+                    } elseif ($erConn.ExpressRouteCircuitName -and $erConn.ExpressRouteCircuitName -ne "Unknown") { 
                         ($erConn.ExpressRouteCircuitName -replace "`r`n", " " -replace "`n", " " -replace "`r", " ").Trim()
+                    } elseif ($erConn.ExpressRouteCircuitId) { 
+                        # Extract name from circuit ID as fallback
+                        (($erConn.ExpressRouteCircuitId -split '/')[-1] -replace "`r`n", " " -replace "`n", " " -replace "`r", " ").Trim()
                     } else { 
-                        if ($erConn.ExpressRouteCircuitId) { 
-                            (($erConn.ExpressRouteCircuitId -split '/')[-1] -replace "`r`n", " " -replace "`n", " " -replace "`r", " ").Trim()
-                        } else { 
-                            "Unknown Circuit" 
-                        } 
+                        "Unknown Circuit" 
                     }
                     $onPremKey = "onprem-er-$circuitName"
                     
                     if (-not $nodeIdMap.ContainsKey($onPremKey)) {
                         $onPremNodeId = $nodeCounter++
                         $nodeIdMap[$onPremKey] = $onPremNodeId
-                        $circuit = $erConn.ExpressRouteCircuit
+                        # Use circuit object if not already retrieved above
+                        if (-not $circuit) {
+                            $circuit = $erConn.ExpressRouteCircuit
+                        }
                         $tooltipParts = @("ExpressRoute Circuit", $circuitName)
                         if ($circuit) {
                             if ($circuit.ServiceProviderName) { $tooltipParts += "Provider: $($circuit.ServiceProviderName)" }

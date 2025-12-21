@@ -928,7 +928,17 @@ function Get-AzureNetworkInventory {
                             $erConnections = Get-AzExpressRouteConnection -ResourceGroupName $erRes.ResourceGroupName -ExpressRouteGatewayName $erRes.Name -ErrorAction SilentlyContinue
                             if ($erConnections) {
                                 foreach ($erConn in $erConnections) {
-                                    $circuitId = if ($erConn.ExpressRouteCircuit -and $erConn.ExpressRouteCircuit.Id) { $erConn.ExpressRouteCircuit.Id } else { $null }
+                                    # Try multiple ways to get the circuit ID
+                                    $circuitId = $null
+                                    if ($erConn.ExpressRouteCircuit -and $erConn.ExpressRouteCircuit.Id) {
+                                        $circuitId = $erConn.ExpressRouteCircuit.Id
+                                    } elseif ($erConn.ExpressRouteCircuitId) {
+                                        $circuitId = $erConn.ExpressRouteCircuitId
+                                    } elseif ($erConn.Id -and $erConn.Id -match '/expressRouteCircuits/([^/]+)') {
+                                        # Try to extract from connection ID if it contains circuit reference
+                                        $circuitId = $matches[0] -replace '/expressRouteConnections/.*$', ''
+                                    }
+                                    
                                     $circuitName = if ($circuitId) { ($circuitId -split '/')[-1] } else { "Unknown" }
                                     $circuitInfo = $null
                                     
