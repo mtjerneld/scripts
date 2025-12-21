@@ -427,9 +427,11 @@ function Invoke-AzureSecurityAudit {
     try {
         $subIdsForEol = @($subscriptions.Id)
         if ($subIdsForEol.Count -gt 0) {
+            Write-Host "`n=== Collecting EOL Status ===" -ForegroundColor Cyan
             Write-Verbose "Running EOL tracking across $($subIdsForEol.Count) subscription(s)"
             $eolResults = Get-AzureEOLStatus -SubscriptionIds $subIdsForEol
             if ($eolResults) {
+                Write-Host "  Found $($eolResults.Count) EOL component(s)" -ForegroundColor Green
                 foreach ($eolComponent in $eolResults) {
                     $eolStatus.Add($eolComponent)
                 }
@@ -438,12 +440,41 @@ function Invoke-AzureSecurityAudit {
                 Convert-EOLResultsToFindings -EOLResults $eolResults -EOLFindings $allEOLFindings
                 
                 $result.EOLStatus = @($eolStatus)
+                Write-Host "  Total EOL findings: $($allEOLFindings.Count)" -ForegroundColor Green
                 Write-Verbose "EOLTracking: Found $($eolStatus.Count) EOL component(s), created $($allEOLFindings.Count) total EOL findings"
+                
+                # Update result.EOLFindings AFTER EOL tracking completes (it was set to empty array earlier)
+                $eolFindingsArrayUpdated = @()
+                if ($allEOLFindings -and $allEOLFindings.Count -gt 0) {
+                    if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
+                        foreach ($finding in $allEOLFindings) {
+                            if ($null -ne $finding) {
+                                $eolFindingsArrayUpdated += $finding
+                            }
+                        }
+                    } elseif ($allEOLFindings -is [System.Array]) {
+                        $eolFindingsArrayUpdated = $allEOLFindings
+                    } elseif ($allEOLFindings -is [System.Collections.IEnumerable] -and $allEOLFindings -isnot [string]) {
+                        foreach ($finding in $allEOLFindings) {
+                            if ($null -ne $finding) {
+                                $eolFindingsArrayUpdated += $finding
+                            }
+                        }
+                    } else {
+                        $eolFindingsArrayUpdated = @($allEOLFindings)
+                    }
+                }
+                $result.EOLFindings = $eolFindingsArrayUpdated
+                Write-Verbose "EOLTracking: Updated result.EOLFindings with $($eolFindingsArrayUpdated.Count) findings"
             }
         }
     }
     catch {
         Write-Warning "EOL tracking failed: $_"
+        Write-Verbose "EOL tracking error details: $($_.Exception.Message)"
+        if ($_.Exception.InnerException) {
+            Write-Verbose "EOL tracking inner exception: $($_.Exception.InnerException.Message)"
+        }
     }
     
     # Generate reports
@@ -537,6 +568,19 @@ function Invoke-AzureSecurityAudit {
             $subnetCount += $vnet.Subnets.Count
         }
         Write-Host "  Subnets: $subnetCount" -ForegroundColor White
+    }
+    
+    # EOL Status summary
+    if ($allEOLFindings.Count -gt 0) {
+        $eolCritical = @($allEOLFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
+        $eolHigh = @($allEOLFindings | Where-Object { $_.Severity -eq 'High' }).Count
+        $eolMedium = @($allEOLFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
+        $eolLow = @($allEOLFindings | Where-Object { $_.Severity -eq 'Low' }).Count
+        $eolComponentCount = ($allEOLFindings | Select-Object -ExpandProperty Component -Unique).Count
+        Write-Host "`nEOL Status:" -ForegroundColor Cyan
+        Write-Host "  Components: $eolComponentCount" -ForegroundColor White
+        Write-Host "  Total Findings: $($allEOLFindings.Count)" -ForegroundColor White
+        Write-Host "  Critical: $eolCritical  High: $eolHigh  Medium: $eolMedium  Low: $eolLow" -ForegroundColor White
     }
     
     if ($errors.Count -gt 0) {

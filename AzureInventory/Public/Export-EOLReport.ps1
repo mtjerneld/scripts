@@ -1065,7 +1065,7 @@ $(Get-ReportNavigation -ActivePage "EOL")
         </div>
 
         <div class="timeline-section">
-            <h2>EOL Timeline$(if ($earliestDate -and $earliestDate -lt $todayMonth) { ' (Includes Past Months)' } else { ' (24-Month)' })</h2>
+            <h2>EOL Timeline</h2>
             <div class="chart-controls" style="margin-bottom: 16px;">
                 <select id="eolChartView" onchange="updateEolChartView()" style="background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 10px; border-radius: 6px; font-size: 0.85rem;">
                     <option value="severity">Stacked by Severity</option>
@@ -1077,7 +1077,7 @@ $(Get-ReportNavigation -ActivePage "EOL")
                 <div class="timeline-legend-item"><span class="timeline-legend-color timeline-legend-critical"></span> Critical (&lt; 0d or &lt; 90d)</div>
                 <div class="timeline-legend-item"><span class="timeline-legend-color timeline-legend-high"></span> High (90-180d)</div>
                 <div class="timeline-legend-item"><span class="timeline-legend-color timeline-legend-medium"></span> Medium (180-365d)</div>
-                <div class="timeline-legend-item"><span class="timeline-legend-color timeline-legend-low"></span> Low (365-730d)</div>
+                <div class="timeline-legend-item"><span class="timeline-legend-color timeline-legend-low"></span> Low (> 365d)</div>
             </div>
             <div class="chart-container">
                 <canvas id="eolTimelineChart"></canvas>

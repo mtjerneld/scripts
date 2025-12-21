@@ -45,8 +45,7 @@ function Get-AzureEOLStatus {
         return @()
     }
 
-    Write-Host "Using EOL data from: $($eolData.Source)" -ForegroundColor Gray
-    Write-Verbose "EOL data source: $($eolData.Source)"
+    Write-Verbose "Using EOL data from: $($eolData.Source)"
 
     $serviceList = $eolData.ServiceList
     $kqlQuery = $eolData.ResourceListKQL
@@ -97,7 +96,7 @@ function Get-AzureEOLStatus {
         }
     }
 
-    Write-Host "Loaded $loadedCount EOL service definitions (skipped $skippedCount)" -ForegroundColor Gray
+    Write-Verbose "Loaded $loadedCount EOL service definitions (skipped $skippedCount)"
     $sampleIds = $serviceLookup.Keys | Sort-Object | Select-Object -First 10
     Write-Verbose "Sample ServiceIDs in lookup: $($sampleIds -join ', ')..."
     
@@ -113,8 +112,7 @@ function Get-AzureEOLStatus {
 
     # Use Search-AzGraph's -Subscription parameter instead of modifying the KQL query
     # This is cleaner and more reliable than injecting subscription filters into the query
-    Write-Host "Executing Microsoft EOL KQL query against Azure Resource Graph..." -ForegroundColor Gray
-    Write-Host "  Querying $($SubscriptionIds.Count) subscription(s): $($SubscriptionIds -join ', ')" -ForegroundColor Gray
+    Write-Host "  Querying $($SubscriptionIds.Count) subscription(s)..." -ForegroundColor Gray
     Write-Verbose "KQL query (first 500 chars): $($kqlQuery.Substring(0, [Math]::Min(500, $kqlQuery.Length)))"
     
     # Check if we have Resource Graph access
@@ -137,8 +135,7 @@ function Get-AzureEOLStatus {
         Write-Verbose "Calling Search-AzGraph with query length: $($kqlQuery.Length) characters"
         $queryResult = Search-AzGraph -Query $kqlQuery -Subscription $SubscriptionIds -ErrorAction Stop
         $queryDuration = (Get-Date) - $queryStartTime
-        Write-Host "Resource Graph query completed in $([math]::Round($queryDuration.TotalSeconds, 2)) seconds" -ForegroundColor Gray
-        Write-Host "  Query returned $($queryResult.Count) resource(s)" -ForegroundColor Gray
+        Write-Host "  Found $($queryResult.Count) resource(s) with EOL components" -ForegroundColor Green
         if ($queryResult.Count -gt 0) {
             Write-Verbose "First result sample: $($queryResult[0] | ConvertTo-Json -Depth 2 -Compress)"
         }
@@ -153,7 +150,7 @@ function Get-AzureEOLStatus {
         Write-Host "  Troubleshooting:" -ForegroundColor Yellow
         Write-Host "  - Ensure you have 'Reader' role on the subscriptions" -ForegroundColor Yellow
         Write-Host "  - Check that Resource Graph queries are enabled for your tenant" -ForegroundColor Yellow
-        Write-Host "  - Verify subscription IDs are correct: $($SubscriptionIds -join ', ')" -ForegroundColor Yellow
+        Write-Verbose "  - Subscription IDs: $($SubscriptionIds -join ', ')"
         return @()
     }
 

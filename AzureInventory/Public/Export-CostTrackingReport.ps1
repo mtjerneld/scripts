@@ -1860,6 +1860,12 @@ $datasetsByResourceJsonString
         }
         
         function updateChart() {
+            // Ensure chart is initialized before updating
+            if (!costChart) {
+                console.warn('Chart not initialized yet, skipping update');
+                return;
+            }
+            
             const view = currentView;
             const categoryFilter = currentCategoryFilter;
             const stacked = view !== 'total';
@@ -1874,17 +1880,34 @@ $datasetsByResourceJsonString
             
             if (view === 'total') {
                 // Show only total (filtered by category and subscription)
-                // Reuse the helper function for consistency
                 const totalData = rawDailyData.map(day => {
-                    const total = getFilteredDayTotal(day, categoryFilter, selectedSubscriptions);
-                    return isNaN(total) ? 0 : total; // Ensure we always return a valid number
+                    let dayTotal = 0;
+                    if (categoryFilter === 'all') {
+                        // Sum all categories for selected subscriptions
+                        Object.entries(day.categories || {}).forEach(([cat, catData]) => {
+                            if (selectedSubscriptions.size === 0) {
+                                dayTotal += catData.total || 0;
+                            } else {
+                                selectedSubscriptions.forEach(sub => {
+                                    dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
+                                });
+                            }
+                        });
+                    } else {
+                        // Single category
+                        const catData = day.categories && day.categories[categoryFilter];
+                        if (catData) {
+                            if (selectedSubscriptions.size === 0) {
+                                dayTotal = catData.total || 0;
+                            } else {
+                                selectedSubscriptions.forEach(sub => {
+                                    dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
+                                });
+                            }
+                        }
+                    }
+                    return dayTotal;
                 });
-                
-                // Ensure data array length matches labels
-                if (totalData.length !== chartLabels.length) {
-                    console.warn(`Data length mismatch: ${totalData.length} data points vs ${chartLabels.length} labels`);
-                }
-                
                 datasets = [{
                     label: categoryFilter === 'all' ? 'Total Cost' : categoryFilter,
                     data: totalData,
