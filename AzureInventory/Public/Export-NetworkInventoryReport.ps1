@@ -2645,7 +2645,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     improvedLayout: true,
                     hierarchical: {
                         enabled: false,
-                        direction: 'LR',
+                        direction: 'DU',
                         sortMethod: 'directed',
                         levelSeparation: 200,
                         nodeSpacing: 200,
@@ -2693,7 +2693,7 @@ $(Get-ReportNavigation -ActivePage "Network")
             edges: {
                 smooth: {
                     type: 'cubicBezier',
-                    forceDirection: 'horizontal',
+                    forceDirection: 'vertical',
                     roundness: 0.5
                 },
                 arrows: {
@@ -2833,7 +2833,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     if (hierarchicalEnabled) {
                         // Enable hierarchical layout (tree style)
                         options.layout.hierarchical.enabled = true;
-                        options.layout.hierarchical.direction = 'LR';
+                        options.layout.hierarchical.direction = 'DU';
                         options.layout.hierarchical.sortMethod = 'directed';
                         options.layout.hierarchical.levelSeparation = 200;
                         options.layout.hierarchical.nodeSpacing = 200;
