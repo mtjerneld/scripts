@@ -1939,6 +1939,58 @@ $(Get-ReportNavigation -ActivePage "Network")
         # Map for firewall nodes
         $fwNodeIdMap = @{}
         
+        # Map VNet names to their levels (for edge styling)
+        $vnetLevelMap = @{}
+        
+        # Detect hub VNet (has gateway + peerings, or most peerings)
+        $hubVnetName = $null
+        $maxPeerings = 0
+        
+        foreach ($vnet in $vnets) {
+            # Skip hub representations (HV_* VNets)
+            if ($vnet.Name -like "HV_*") { continue }
+            
+            $hasGateway = $vnet.Gateways -and $vnet.Gateways.Count -gt 0
+            $peeringCount = if ($vnet.Peerings) { $vnet.Peerings.Count } else { 0 }
+            
+            if ($hasGateway -and $peeringCount -gt 0 -and $peeringCount -gt $maxPeerings) {
+                $maxPeerings = $peeringCount
+                $hubVnetName = $vnet.Name
+            }
+        }
+        
+        # Fallback: most peerings if no gateway-based hub found
+        if (-not $hubVnetName) {
+            foreach ($vnet in $vnets) {
+                if ($vnet.Name -like "HV_*") { continue }
+                $peeringCount = if ($vnet.Peerings) { $vnet.Peerings.Count } else { 0 }
+                if ($peeringCount -gt $maxPeerings) {
+                    $maxPeerings = $peeringCount
+                    $hubVnetName = $vnet.Name
+                }
+            }
+        }
+        
+        # Build map of spoke VNets (VNets peered to hub)
+        $spokeVnets = @{}
+        if ($hubVnetName) {
+            foreach ($vnet in $vnets) {
+                if ($vnet.Name -eq $hubVnetName) { continue }
+                if ($vnet.Name -like "HV_*") { continue }
+                if ($vnet.Peerings) {
+                    foreach ($peering in $vnet.Peerings) {
+                        if ($peering.RemoteVnetName -eq $hubVnetName) {
+                            $spokeVnets[$vnet.Name] = $true
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        
+        # Debug: Output hub detection results
+        Write-Verbose "Hub Detection: hubVnetName = '$hubVnetName', spokeVnets = $($spokeVnets.Keys -join ', ')"
+        
         # Create nodes grouped by subscription
         foreach ($subId in $vnetGroups.Keys) {
             # Ensure subscription color is assigned (build color map if missing)
@@ -1981,8 +2033,23 @@ $(Get-ReportNavigation -ActivePage "Network")
                 # Escape tooltip and label for JavaScript
                 $tooltipEscaped = Format-JsString $tooltip
                 $vnetNameEscaped = Format-JsString $vnet.Name
+                
+                # Determine VNet level: Hub (2), Spoke (3), or Isolated (4)
+                $vnetLevel = 4  # Default: Isolated
+                if ($vnet.Name -eq $hubVnetName) {
+                    $vnetLevel = 2  # Hub VNet
+                } elseif ($spokeVnets.ContainsKey($vnet.Name)) {
+                    $vnetLevel = 3  # Spoke VNet
+                }
+                
+                # Store level in map for edge styling
+                $vnetLevelMap[$vnet.Name] = $vnetLevel
+                
+                # Debug: Log level assignment for VNets
+                Write-Verbose "VNet '$($vnet.Name)': level=$vnetLevel (hub='$hubVnetName', isSpoke=$($spokeVnets.ContainsKey($vnet.Name)))"
+                
                 # Use subscription color for each VNet (no group to avoid group color overrides)
-                $nodesJson.Add("{ id: $nodeId, label: `"$vnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$subColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, level: 1 }")
+                $nodesJson.Add("{ id: $nodeId, label: `"$vnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$subColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, level: $vnetLevel }")
                 
                 # Add gateway nodes
                 foreach ($gw in $vnet.Gateways) {
@@ -1991,7 +2058,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     $gwTooltip = "$($gw.Name)`nType: $($gw.Type)`nSKU: $($gw.Sku)`nVPN: $($gw.VpnType)"
                     $gwTooltipEscaped = Format-JsString $gwTooltip
                     $gwNameEscaped = Format-JsString $gw.Name
-                    $nodesJson.Add("{ id: $gwNodeId, label: `"$gwNameEscaped`", title: `"$gwTooltipEscaped`", color: `"#9b59b6`", shape: `"diamond`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
+                    $nodesJson.Add("{ id: $gwNodeId, label: `"$gwNameEscaped`", title: `"$gwTooltipEscaped`", color: `"#9b59b6`", shape: `"diamond`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 1 }")
                     $edgesJson.Add("{ from: $nodeId, to: $gwNodeId, color: { color: `"#9b59b6`" }, width: 2, length: 50 }")
                 }
                 
@@ -2007,6 +2074,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $fwTooltip = "$($fw.Name)`nType: Azure Firewall`nSKU: $($fw.SkuTier)`nThreat Intel: $($fw.ThreatIntelMode)"
                             $fwTooltipEscaped = Format-JsString $fwTooltip
                             $fwNameEscaped = Format-JsString $fw.Name
+                            # Firewalls stay at level 2 (same as gateway level)
                             $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
                         }
                         
@@ -2036,7 +2104,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $hubTooltip = "$($hub.Name)`nType: Virtual WAN Hub`nLocation: $($hub.Location)`nAddress: $($hub.AddressPrefix)`nER: $($hub.ExpressRouteConnections.Count) | S2S: $($hub.VpnConnections.Count) | Firewalls: $firewallCount"
                 $hubTooltipEscaped = Format-JsString $hubTooltip
                 $hubNameEscaped = Format-JsString $hub.Name
-                $nodesJson.Add("{ id: $hubNodeId, label: `"$hubNameEscaped`", title: `"$hubTooltipEscaped`", color: `"#f39c12`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, level: 0 }")
+                # Virtual WAN Hubs are at level 2 (same as hub VNet)
+                $nodesJson.Add("{ id: $hubNodeId, label: `"$hubNameEscaped`", title: `"$hubTooltipEscaped`", color: `"#f39c12`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
                 
                 # Add Virtual WAN-integrated Azure Firewall nodes
                 if ($hub.Firewalls -and $hub.Firewalls.Count -gt 0) {
@@ -2139,7 +2208,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $tooltip = "$remoteVnetName`nType: Virtual WAN Hub`nSubscription: Unknown`n(No access to this subscription)"
                             $tooltipEscaped = Format-JsString $tooltip
                             $remoteVnetNameEscaped = Format-JsString $remoteVnetName
-                            $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownHubColor`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, level: 0 }")
+                            # Unknown Virtual WAN Hub - treat as level 2 (same as known hubs)
+                            $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownHubColor`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
                         }
                     } else {
                         # Check if this VNet is actually in our inventory (might be in different subscription)
@@ -2151,7 +2221,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $tooltip = "$remoteVnetName`nSubscription: Unknown`n(No access to this subscription)"
                             $tooltipEscaped = Format-JsString $tooltip
                             $remoteVnetNameEscaped = Format-JsString $remoteVnetName
-                            $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownVnetColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, level: 1 }")
+                            # Unknown remote VNet - treat as isolated (level 4)
+                            $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownVnetColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, level: 4 }")
                         }
                     }
                 }
@@ -2240,7 +2311,18 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $arrowDirection = ", arrows: `"from`""  # Remote VNet uses this gateway
                         }
                         
-                        $edgesJson.Add("{ from: $fromId, to: $toId, color: { color: `"$edgeColor`" }, dashes: $edgeDashes, width: 2, title: `"$edgeTitle`"$arrowDirection }")
+                        # Check if this is a spoke-to-spoke peering (both VNets are level 3)
+                        $fromLevel = if ($vnetLevelMap.ContainsKey($vnet.Name)) { $vnetLevelMap[$vnet.Name] } else { 4 }
+                        $toLevel = if ($vnetLevelMap.ContainsKey($remoteVnetName)) { $vnetLevelMap[$remoteVnetName] } else { 4 }
+                        $isSpokeToSpoke = ($fromLevel -eq 3) -and ($toLevel -eq 3) -and (-not $peering.IsVirtualWANHub)
+                        
+                        # Add curved smooth settings for spoke-to-spoke peerings
+                        $smoothOption = ""
+                        if ($isSpokeToSpoke) {
+                            $smoothOption = ", smooth: { type: 'curvedCW', roundness: 0.5 }"
+                        }
+                        
+                        $edgesJson.Add("{ from: $fromId, to: $toId, color: { color: `"$edgeColor`" }, dashes: $edgeDashes, width: 2, title: `"$edgeTitle`"$arrowDirection$smoothOption }")
                     }
                 } else {
                     # Debug: Log if we can't find the target node
@@ -2329,7 +2411,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                     if ($p2sAuthTypeRaw) { $p2sLines += "Authentication: $p2sAuthTypeRaw" }
                     $p2sTooltip = $p2sLines -join "`n"
                     $p2sTooltipEscaped = Format-JsString $p2sTooltip
-                    $nodesJson.Add("{ id: $p2sNodeId, label: `"P2S Clients`", title: `"$p2sTooltipEscaped`", color: `"#2980b9`", shape: `"box`", size: 18, font: { color: `"#e8e8e8`", size: 14 }, level: 3 }")
+                    # P2S Clients are at level 0 (on-premises level)
+                    $nodesJson.Add("{ id: $p2sNodeId, label: `"P2S Clients`", title: `"$p2sTooltipEscaped`", color: `"#2980b9`", shape: `"box`", size: 18, font: { color: `"#e8e8e8`", size: 14 }, level: 0 }")
                     $edgesJson.Add("{ from: $p2sNodeId, to: $gwNodeId, color: { color: `"#2980b9`" }, dashes: true, width: 2, title: `"P2S Clients`", arrows: `"to`" }")
                 }
 
@@ -2351,7 +2434,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                                 $onPremTooltip = "Name: $connNameForTooltip`nLGW: $remoteName`nType: On-Premises Network`nAddress Space: $($conn.RemoteNetwork.AddressSpace)`nGateway IP: $($conn.RemoteNetwork.GatewayIpAddress)"
                                 $onPremTooltipEscaped = Format-JsString $onPremTooltip
                                 $remoteNameEscaped = Format-JsString $remoteName
-                                $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#ffffff`", size: 16 }, level: 3 }")
+                                # On-premises sites are at level 0
+                                $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#ffffff`", size: 16 }, level: 0 }")
                                     
                                     # Add S2S edge
                                     $statusColor = if ($conn.ConnectionStatus -eq "Connected") { "#16a085" } else { "#e74c3c" }
@@ -2425,7 +2509,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                         # Escape the tooltip and name for JavaScript
                         $onPremTooltipEscaped = Format-JsString $onPremTooltip
                         $circuitNameEscaped = Format-JsString $circuitName
-                        $nodesJson.Add("{ id: $onPremNodeId, label: `"$circuitNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, level: 3 }")
+                        # ExpressRoute circuits are at level 0 (on-premises level)
+                        $nodesJson.Add("{ id: $onPremNodeId, label: `"$circuitNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, level: 0 }")
                     }
                     
                     $onPremNodeId = $nodeIdMap[$onPremKey]
@@ -2446,7 +2531,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                         $onPremTooltip = "On-Premises Site`n$remoteSiteName`nAddress Space: $($vpnConn.RemoteSiteAddressSpace)"
                         $onPremTooltipEscaped = Format-JsString $onPremTooltip
                         $remoteSiteNameEscaped = Format-JsString $remoteSiteName
-                        $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteSiteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, level: 3 }")
+                        # VPN Sites are at level 0 (on-premises level)
+                        $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteSiteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, level: 0 }")
                     }
                     
                     $onPremNodeId = $nodeIdMap[$onPremKey]
@@ -2472,6 +2558,14 @@ $(Get-ReportNavigation -ActivePage "Network")
         # Build JavaScript array strings - use empty string if no data
         $jsNodesArrayContent = if ($nodesJsonString) { "`n            $nodesJsonString`n        " } else { "" }
         $jsEdgesArrayContent = if ($edgesJsonString) { "`n            $edgesJsonString`n        " } else { "" }
+        
+        # Escape hubVnetName for JavaScript injection (wrap in quotes and escape)
+        $hubVnetNameEscaped = if ($hubVnetName) { 
+            $escaped = Format-JsString $hubVnetName
+            "`"$escaped`""
+        } else { 
+            "null" 
+        }
 
         $html += @"
         </div>
@@ -2485,6 +2579,24 @@ $(Get-ReportNavigation -ActivePage "Network")
         // Initialize vis.js network diagram
         var nodesData = [$jsNodesArrayContent];
         var edgesData = [$jsEdgesArrayContent];
+        
+        // Debug: Log hub detection and node levels
+        try {
+            console.log('Hub Detection Debug:');
+            console.log('Detected hub VNet:', $hubVnetNameEscaped);
+            console.log('Node levels:');
+            if (nodesData && Array.isArray(nodesData) && nodesData.length > 0) {
+                nodesData.forEach(function(node) {
+                    if (node && node.label) {
+                        console.log('  ' + node.label + ': level=' + (node.level !== undefined ? node.level : 'undefined') + ', shape=' + (node.shape || 'undefined'));
+                    }
+                });
+            } else {
+                console.log('  No nodes found or nodesData is not an array');
+            }
+        } catch (e) {
+            console.error('Error in debug logging:', e);
+        }
         var nodes = new vis.DataSet(nodesData);
         var edges = new vis.DataSet(edgesData);
         
@@ -2533,10 +2645,11 @@ $(Get-ReportNavigation -ActivePage "Network")
                     improvedLayout: true,
                     hierarchical: {
                         enabled: false,
-                        direction: 'UD',
+                        direction: 'LR',
                         sortMethod: 'directed',
-                        levelSeparation: 150,
+                        levelSeparation: 200,
                         nodeSpacing: 200,
+                        treeSpacing: 200,
                         blockShifting: true,
                         edgeMinimization: true,
                         parentCentralization: true
@@ -2579,7 +2692,8 @@ $(Get-ReportNavigation -ActivePage "Network")
             },
             edges: {
                 smooth: {
-                    type: 'continuous',
+                    type: 'cubicBezier',
+                    forceDirection: 'horizontal',
                     roundness: 0.5
                 },
                 arrows: {
@@ -2719,10 +2833,11 @@ $(Get-ReportNavigation -ActivePage "Network")
                     if (hierarchicalEnabled) {
                         // Enable hierarchical layout (tree style)
                         options.layout.hierarchical.enabled = true;
-                        options.layout.hierarchical.direction = 'UD';
+                        options.layout.hierarchical.direction = 'LR';
                         options.layout.hierarchical.sortMethod = 'directed';
-                        options.layout.hierarchical.levelSeparation = 150;
+                        options.layout.hierarchical.levelSeparation = 200;
                         options.layout.hierarchical.nodeSpacing = 200;
+                        options.layout.hierarchical.treeSpacing = 200;
                         options.layout.hierarchical.blockShifting = true;
                         options.layout.hierarchical.edgeMinimization = true;
                         options.layout.hierarchical.parentCentralization = true;
@@ -2997,10 +3112,11 @@ $(Get-ReportNavigation -ActivePage "Network")
 
                     if (hierarchicalEnabledFullscreen) {
                         optionsFullscreen.layout.hierarchical.enabled = true;
-                        optionsFullscreen.layout.hierarchical.direction = 'UD';
+                        optionsFullscreen.layout.hierarchical.direction = 'LR';
                         optionsFullscreen.layout.hierarchical.sortMethod = 'directed';
-                        optionsFullscreen.layout.hierarchical.levelSeparation = 150;
+                        optionsFullscreen.layout.hierarchical.levelSeparation = 200;
                         optionsFullscreen.layout.hierarchical.nodeSpacing = 200;
+                        optionsFullscreen.layout.hierarchical.treeSpacing = 200;
                         optionsFullscreen.layout.hierarchical.blockShifting = true;
                         optionsFullscreen.layout.hierarchical.edgeMinimization = true;
                         optionsFullscreen.layout.hierarchical.parentCentralization = true;
