@@ -2034,13 +2034,18 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $tooltipEscaped = Format-JsString $tooltip
                 $vnetNameEscaped = Format-JsString $vnet.Name
                 
-                # Determine VNet level: Hub (2), Spoke (3), or Isolated (4)
-                $vnetLevel = 4  # Default: Isolated
+                # Determine VNet level: Hub (2), Spoke (3), or Isolated (2)
+                $vnetLevel = 2  # Default: Isolated VNets on same level as hubs for visibility
                 if ($vnet.Name -eq $hubVnetName) {
-                    $vnetLevel = 2  # Hub VNet
+                    $vnetLevel = 2  # Main hub VNet
+                } elseif ($vnet.Gateways -and $vnet.Gateways.Count -gt 0) {
+                    $vnetLevel = 2  # VNet with gateway is a hub (e.g., vnet-ext with vgw-ext)
                 } elseif ($spokeVnets.ContainsKey($vnet.Name)) {
-                    $vnetLevel = 3  # Spoke VNet
+                    $vnetLevel = 3  # Spoke VNet (peered to hub)
+                } elseif ($vnet.Peerings -and $vnet.Peerings.Count -gt 0) {
+                    $vnetLevel = 3  # Other peered VNets
                 }
+                # Isolated VNets (no gateways, no peerings) default to level 2
                 
                 # Store level in map for edge styling
                 $vnetLevelMap[$vnet.Name] = $vnetLevel
