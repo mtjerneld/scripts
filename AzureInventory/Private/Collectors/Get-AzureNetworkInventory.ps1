@@ -386,6 +386,78 @@ function Get-AzureNetworkInventory {
                         }
                     }
 
+                    # Extract P2S (Point-to-Site) configuration if present
+                    $p2sAddressPools = $null
+                    $p2sTunnelType = $null
+                    $p2sAuthType = $null
+                    
+                    if ($gw.VpnClientConfiguration) {
+                        # Extract address pools
+                        if ($gw.VpnClientConfiguration.VpnClientAddressPool -and $gw.VpnClientConfiguration.VpnClientAddressPool.AddressPrefixes) {
+                            $p2sAddressPools = $gw.VpnClientConfiguration.VpnClientAddressPool.AddressPrefixes
+                        }
+                        
+                        # Extract tunnel types (protocols) - format as "OpenVPN (SSL)" if applicable
+                        if ($gw.VpnClientConfiguration.VpnClientProtocols) {
+                            $protocols = $gw.VpnClientConfiguration.VpnClientProtocols
+                            $protocolStrings = @()
+                            foreach ($protocol in $protocols) {
+                                if ($protocol -eq "OpenVPN") {
+                                    # Check if it's OpenVPN with SSL
+                                    $protocolStrings += "OpenVPN (SSL)"
+                                } else {
+                                    $protocolStrings += $protocol
+                                }
+                            }
+                            $p2sTunnelType = $protocolStrings -join ', '
+                        }
+                        
+                        # Extract authentication types - check multiple possible locations
+                        $authTypes = @()
+                        if ($gw.VpnClientConfiguration.VpnClientAuthenticationTypes) {
+                            foreach ($authType in $gw.VpnClientConfiguration.VpnClientAuthenticationTypes) {
+                                # Normalize authentication type names
+                                $normalizedAuth = switch ($authType) {
+                                    "AAD" { "Azure Active Directory" }
+                                    "AzureAD" { "Azure Active Directory" }
+                                    "AzureActiveDirectory" { "Azure Active Directory" }
+                                    "Radius" { "Radius" }
+                                    "Certificate" { "Certificate" }
+                                    default { $authType }
+                                }
+                                if ($authTypes -notcontains $normalizedAuth) {
+                                    $authTypes += $normalizedAuth
+                                }
+                            }
+                        }
+                        # Check for Radius authentication (presence of RadiusServers indicates Radius auth)
+                        if ($gw.VpnClientConfiguration.RadiusServers -and $gw.VpnClientConfiguration.RadiusServers.Count -gt 0) {
+                            if ($authTypes -notcontains "Radius") {
+                                $authTypes += "Radius"
+                            }
+                        }
+                        # Check for Azure AD authentication - check multiple property names
+                        if ($gw.VpnClientConfiguration.AadAuthenticationParameters -or 
+                            $gw.VpnClientConfiguration.AadTenant -or 
+                            ($gw.VpnClientConfiguration.VpnClientAuthenticationTypes -contains "AAD") -or
+                            ($gw.VpnClientConfiguration.VpnClientAuthenticationTypes -contains "AzureAD") -or
+                            ($gw.VpnClientConfiguration.VpnClientAuthenticationTypes -contains "AzureActiveDirectory")) {
+                            if ($authTypes -notcontains "Azure Active Directory") {
+                                $authTypes += "Azure Active Directory"
+                            }
+                        }
+                        # Check for Certificate authentication (if root certificates are present)
+                        if ($gw.VpnClientConfiguration.VpnClientRootCertificates -and $gw.VpnClientConfiguration.VpnClientRootCertificates.Count -gt 0) {
+                            if ($authTypes -notcontains "Certificate") {
+                                $authTypes += "Certificate"
+                            }
+                        }
+                        # If we found any auth types, join them
+                        if ($authTypes.Count -gt 0) {
+                            $p2sAuthType = $authTypes -join ', '
+                        }
+                    }
+
                     $vnetObj.Gateways.Add([PSCustomObject]@{
                         Name = $gw.Name
                         Id = $gw.Id
@@ -394,6 +466,9 @@ function Get-AzureNetworkInventory {
                         VpnType = $gw.VpnType
                         PublicIp = $pipId
                         Connections = $gwConnections
+                        P2SAddressPools = $p2sAddressPools
+                        P2STunnelType = $p2sTunnelType
+                        P2SAuthType = $p2sAuthType
                     })
                 }
             }

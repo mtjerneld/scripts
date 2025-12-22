@@ -54,6 +54,128 @@ function Export-NetworkInventoryReport {
         return $Text -replace '\\', '\\\\' -replace '"', '\"' -replace "`r`n", '\n' -replace "`n", '\n' -replace "`r", '\n'
     }
     
+    # Helper function to check if two CIDR subnets overlap
+    function Test-SubnetOverlap {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)]
+            [string]$Subnet1,
+            [Parameter(Mandatory=$true)]
+            [string]$Subnet2
+        )
+        
+        try {
+            # Parse CIDR notation (e.g., "10.0.0.0/24")
+            # Match separately to avoid $Matches being overwritten
+            if (-not ($Subnet1 -match '^(\d+\.\d+\.\d+\.\d+)/(\d+)$')) {
+                return $false
+            }
+            $ip1Str = $Matches[1]
+            $prefix1 = [int]$Matches[2]
+            
+            if (-not ($Subnet2 -match '^(\d+\.\d+\.\d+\.\d+)/(\d+)$')) {
+                return $false
+            }
+            $ip2Str = $Matches[1]
+            $prefix2 = [int]$Matches[2]
+            
+            # Validate prefix length
+            if ($prefix1 -lt 0 -or $prefix1 -gt 32 -or $prefix2 -lt 0 -or $prefix2 -gt 32) {
+                return $false
+            }
+            
+            $ip1 = [System.Net.IPAddress]::Parse($ip1Str)
+            $ip2 = [System.Net.IPAddress]::Parse($ip2Str)
+            
+            # Get network addresses as bytes
+            $ip1Bytes = $ip1.GetAddressBytes()
+            $ip2Bytes = $ip2.GetAddressBytes()
+            
+            # Convert to uint32 (network byte order - big endian)
+            $ip1Uint = [uint32]$ip1Bytes[0] * 16777216 + [uint32]$ip1Bytes[1] * 65536 + [uint32]$ip1Bytes[2] * 256 + [uint32]$ip1Bytes[3]
+            $ip2Uint = [uint32]$ip2Bytes[0] * 16777216 + [uint32]$ip2Bytes[1] * 65536 + [uint32]$ip2Bytes[2] * 256 + [uint32]$ip2Bytes[3]
+            
+            # Calculate network addresses by masking out host bits
+            # Network mask: all 1s in network portion
+            $hostBits1 = 32 - $prefix1
+            $hostBits2 = 32 - $prefix2
+            
+            # Calculate number of hosts: 2^hostBits - 1 (for broadcast), but we need the mask
+            # Network mask = ~(2^hostBits - 1) = MaxValue - (2^hostBits - 1)
+            $hostCount1 = [Math]::Pow(2, $hostBits1) - 1
+            $hostCount2 = [Math]::Pow(2, $hostBits2) - 1
+            
+            $networkMask1 = [uint32]::MaxValue - [uint32]$hostCount1
+            $networkMask2 = [uint32]::MaxValue - [uint32]$hostCount2
+            
+            # Calculate network addresses (IP AND network mask)
+            $network1 = $ip1Uint -band $networkMask1
+            $network2 = $ip2Uint -band $networkMask2
+            
+            # Calculate broadcast addresses (network + host count)
+            $broadcast1 = $network1 + [uint32]$hostCount1
+            $broadcast2 = $network2 + [uint32]$hostCount2
+            
+            # Two ranges overlap if: range1.start <= range2.end AND range2.start <= range1.end
+            # This means: network1 <= broadcast2 AND network2 <= broadcast1
+            return ($network1 -le $broadcast2 -and $network2 -le $broadcast1)
+        }
+        catch {
+            return $false
+        }
+    }
+    
+    # Helper function to find overlapping subnets across connections
+    function Find-OverlappingSubnets {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)]
+            [array]$Connections
+        )
+        
+        $overlaps = @()
+        $subnetMap = @{}  # subnet -> connection name
+        
+        foreach ($conn in $Connections) {
+            if (-not $conn.RemoteNetwork -or -not $conn.RemoteNetwork.AddressSpace) { continue }
+            
+            $connName = if ($conn.RemoteNetworkName) { $conn.RemoteNetworkName } else { "Unknown" }
+            $subnets = $conn.RemoteNetwork.AddressSpace -split ',' | ForEach-Object { $_.Trim() }
+            
+            foreach ($subnet in $subnets) {
+                if ($subnet -notmatch '^\d+\.\d+\.\d+\.\d+/\d+$') { continue }
+                
+                # Check for exact duplicate first
+                if ($subnetMap.ContainsKey($subnet)) {
+                    # Exact duplicate subnet in multiple connections
+                    $overlaps += [PSCustomObject]@{
+                        Subnet = $subnet
+                        Connection1 = $subnetMap[$subnet]
+                        Connection2 = $connName
+                        Type = "Duplicate"
+                    }
+                } else {
+                    # Check for range overlaps with existing subnets
+                    foreach ($existingSubnet in $subnetMap.Keys) {
+                        if (Test-SubnetOverlap -Subnet1 $subnet -Subnet2 $existingSubnet) {
+                            $overlaps += [PSCustomObject]@{
+                                Subnet = "$subnet vs $existingSubnet"
+                                Connection1 = $subnetMap[$existingSubnet]
+                                Connection2 = $connName
+                                Type = "Overlap"
+                            }
+                        }
+                    }
+                    # Track this subnet with its connection
+                    $subnetMap[$subnet] = $connName
+                }
+            }
+        }
+        
+        # Force array return to prevent PowerShell unwrapping single-item arrays
+        return , $overlaps
+    }
+    
     try {
         # Ensure NetworkInventory is not null
         if (-not $NetworkInventory) {
@@ -1371,18 +1493,98 @@ $(Get-ReportNavigation -ActivePage "Network")
                                 <strong>$(Encode-Html $gw.Name)</strong> <span class="badge-gw">$(Encode-Html $gw.Type)</span>
                                 <span style="margin-left:10px; font-size:0.9em; color:var(--text-secondary);">SKU: $(Encode-Html $gw.Sku) | VPN: $(Encode-Html $gw.VpnType)</span>
 "@
+
+                        # Show P2S (Point-to-Site) client configuration if present
+                        $p2sAddressPools = $null
+                        if ($gw.P2SAddressPools) {
+                            $p2sAddressPools = ($gw.P2SAddressPools | ForEach-Object { Encode-Html $_ }) -join ', '
+                        } elseif ($gw.P2SAddressPool) {
+                            $p2sAddressPools = Encode-Html $gw.P2SAddressPool
+                        } elseif ($gw.VpnClientAddressPools) {
+                            $p2sAddressPools = ($gw.VpnClientAddressPools | ForEach-Object { Encode-Html $_ }) -join ', '
+                        } elseif ($gw.VpnClientAddressPool) {
+                            $p2sAddressPools = Encode-Html $gw.VpnClientAddressPool
+                        }
+
+                        $p2sTunnelType = $null
+                        if ($gw.P2STunnelType) {
+                            $p2sTunnelType = Encode-Html $gw.P2STunnelType
+                        } elseif ($gw.VpnClientProtocols) {
+                            $p2sTunnelType = ($gw.VpnClientProtocols | ForEach-Object { Encode-Html $_ }) -join ', '
+                        }
+
+                        $p2sAuthType = $null
+                        if ($gw.P2SAuthType) {
+                            $p2sAuthType = Encode-Html $gw.P2SAuthType
+                        } elseif ($gw.P2SAuthenticationType) {
+                            $p2sAuthType = Encode-Html $gw.P2SAuthenticationType
+                        } elseif ($gw.VpnClientAuthenticationTypes) {
+                            $p2sAuthType = ($gw.VpnClientAuthenticationTypes | ForEach-Object { Encode-Html $_ }) -join ', '
+                        } elseif ($gw.VpnClientAuthenticationType) {
+                            $p2sAuthType = Encode-Html $gw.VpnClientAuthenticationType
+                        }
+
+                        if ($p2sAddressPools -or $p2sTunnelType -or $p2sAuthType) {
+                            $html += @"
+                                <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(155, 89, 182, 0.3);">
+                                    <div style="font-size:0.85em; color:var(--text-secondary); margin-bottom:4px;"><strong>P2S Clients:</strong></div>
+"@
+                            if ($p2sAddressPools) {
+                                $html += @"
+                                    <div style="margin-left:12px; font-size:0.85em;">Address pool(s): $p2sAddressPools</div>
+"@
+                            }
+                            if ($p2sTunnelType) {
+                                $html += @"
+                                    <div style="margin-left:12px; font-size:0.85em;">Tunnel type: $p2sTunnelType</div>
+"@
+                            }
+                            if ($p2sAuthType) {
+                                $html += @"
+                                    <div style="margin-left:12px; font-size:0.85em;">Authentication: $p2sAuthType</div>
+"@
+                            }
+                            $html += @"
+                                </div>
+"@
+                        }
+
                         # Show S2S connections
                         if ($gw.Connections -and $gw.Connections.Count -gt 0) {
+                            # Check for overlapping subnets across connections
+                            $overlaps = Find-OverlappingSubnets -Connections $gw.Connections
+                            
                             $html += @"
                                 <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(155, 89, 182, 0.3);">
                                     <div style="font-size:0.85em; color:var(--text-secondary); margin-bottom:4px;"><strong>S2S Connections:</strong></div>
 "@
+                            
+                            # Show warning if overlaps detected (handle single-item array unwrapping)
+                            $overlapCount = @($overlaps).Count
+                            if ($overlapCount -gt 0) {
+                                # Build overlap details with connection names for better context
+                                $overlapDetailsParts = $overlaps | ForEach-Object {
+                                    if ($_.Type -eq "Duplicate") {
+                                        "$(Encode-Html $_.Subnet) in $(Encode-Html $_.Connection1) and $(Encode-Html $_.Connection2)"
+                                    } else {
+                                        "$(Encode-Html $_.Subnet) between $(Encode-Html $_.Connection1) and $(Encode-Html $_.Connection2)"
+                                    }
+                                }
+                                $overlapDetailsHtml = $overlapDetailsParts -join '; '
+                                $html += @"
+                                    <div style="margin-left:12px; margin-bottom:6px; padding:6px; background-color:rgba(241, 196, 15, 0.15); border-left:3px solid var(--network-yellow); border-radius:3px; font-size:0.85em;">
+                                        <span style="color:var(--network-yellow); font-weight:bold;">&#9888; Warning:</span> <span style="color:var(--text-secondary);">Overlapping remote subnets detected: $overlapDetailsHtml</span>
+                                    </div>
+"@
+                            }
+                            
                             foreach ($conn in $gw.Connections) {
                                 $statusColor = if ($conn.ConnectionStatus -eq "Connected") { "#2ecc71" } else { "#e74c3c" }
                                 $remoteType = if ($conn.RemoteNetwork -and $conn.RemoteNetwork.Type -eq "OnPremises") { "On-Premises" } else { "VNet" }
+                                $connName = if ($conn.Name) { Encode-Html $conn.Name } else { "Unknown" }
                                 $html += @"
                                     <div style="margin-left:12px; margin-bottom:4px; font-size:0.85em;">
-                                        <span style="color: $statusColor; font-weight: bold; margin-right: 4px;">*</span> $(Encode-Html $conn.RemoteNetworkName) ($remoteType)
+                                        <span style="color: $statusColor; font-weight: bold; margin-right: 4px;">*</span> <strong>$connName</strong> &#8594; $(Encode-Html $conn.RemoteNetworkName) ($remoteType)
                                         <span style="color:var(--text-secondary); margin-left:8px;">- $(Encode-Html $conn.ConnectionStatus)</span>
 "@
                                 if ($conn.RemoteNetwork -and $conn.RemoteNetwork.AddressSpace) {
@@ -2086,9 +2288,51 @@ $(Get-ReportNavigation -ActivePage "Network")
         # Note: Duplicate Virtual WAN Hub nodes (e.g., "p-conhub-sec-vhub" and "HV_p-conhub-sec-vhub_...")
         # are now prevented from being created. Hub representation VNets are mapped to hub nodes above.
         
-        # Add S2S tunnel edges and on-premises nodes from classic gateways
+        # Add S2S tunnel edges, P2S clients, and on-premises nodes from classic gateways
         foreach ($vnet in $vnets) {
             foreach ($gw in $vnet.Gateways) {
+                # Add P2S clients as a separate node (if configured)
+                $p2sAddressPoolsRaw = $null
+                if ($gw.P2SAddressPools) {
+                    $p2sAddressPoolsRaw = $gw.P2SAddressPools -join ', '
+                } elseif ($gw.P2SAddressPool) {
+                    $p2sAddressPoolsRaw = $gw.P2SAddressPool
+                } elseif ($gw.VpnClientAddressPools) {
+                    $p2sAddressPoolsRaw = $gw.VpnClientAddressPools -join ', '
+                } elseif ($gw.VpnClientAddressPool) {
+                    $p2sAddressPoolsRaw = $gw.VpnClientAddressPool
+                }
+
+                $p2sTunnelTypeRaw = $null
+                if ($gw.P2STunnelType) {
+                    $p2sTunnelTypeRaw = $gw.P2STunnelType
+                } elseif ($gw.VpnClientProtocols) {
+                    $p2sTunnelTypeRaw = $gw.VpnClientProtocols -join ', '
+                }
+
+                $p2sAuthTypeRaw = $null
+                if ($gw.P2SAuthType) {
+                    $p2sAuthTypeRaw = $gw.P2SAuthType
+                } elseif ($gw.P2SAuthenticationType) {
+                    $p2sAuthTypeRaw = $gw.P2SAuthenticationType
+                } elseif ($gw.VpnClientAuthenticationTypes) {
+                    $p2sAuthTypeRaw = $gw.VpnClientAuthenticationTypes -join ', '
+                } elseif ($gw.VpnClientAuthenticationType) {
+                    $p2sAuthTypeRaw = $gw.VpnClientAuthenticationType
+                }
+
+                if ($p2sAddressPoolsRaw -or $p2sTunnelTypeRaw -or $p2sAuthTypeRaw) {
+                    $p2sNodeId = $nodeCounter++
+                    $p2sLines = @("P2S Clients")
+                    if ($p2sAddressPoolsRaw) { $p2sLines += "Address pool(s): $p2sAddressPoolsRaw" }
+                    if ($p2sTunnelTypeRaw) { $p2sLines += "Tunnel type: $p2sTunnelTypeRaw" }
+                    if ($p2sAuthTypeRaw) { $p2sLines += "Authentication: $p2sAuthTypeRaw" }
+                    $p2sTooltip = $p2sLines -join "`n"
+                    $p2sTooltipEscaped = Format-JsString $p2sTooltip
+                    $nodesJson.Add("{ id: $p2sNodeId, label: `"P2S Clients`", title: `"$p2sTooltipEscaped`", color: `"#2980b9`", shape: `"box`", size: 18, font: { color: `"#e8e8e8`", size: 14 }, level: 3 }")
+                    $edgesJson.Add("{ from: $p2sNodeId, to: $gwNodeId, color: { color: `"#2980b9`" }, dashes: true, width: 2, title: `"P2S Clients`", arrows: `"to`" }")
+                }
+
                 if ($gw.Connections -and $gw.Connections.Count -gt 0) {
                     $gwNodeId = $gwNodeIdMap[$gw.Id]
                     
@@ -2103,7 +2347,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                                 if ($conn.RemoteNetwork.Type -eq "OnPremises") {
                                     # Create on-premises node
                                 $onPremNodeId = $nodeCounter++
-                                $onPremTooltip = "$remoteName`nType: On-Premises Network`nAddress Space: $($conn.RemoteNetwork.AddressSpace)`nGateway IP: $($conn.RemoteNetwork.GatewayIpAddress)"
+                                $connNameForTooltip = if ($conn.Name) { $conn.Name } else { "Unknown" }
+                                $onPremTooltip = "Name: $connNameForTooltip`nLGW: $remoteName`nType: On-Premises Network`nAddress Space: $($conn.RemoteNetwork.AddressSpace)`nGateway IP: $($conn.RemoteNetwork.GatewayIpAddress)"
                                 $onPremTooltipEscaped = Format-JsString $onPremTooltip
                                 $remoteNameEscaped = Format-JsString $remoteName
                                 $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#ffffff`", size: 16 }, level: 3 }")
@@ -2291,7 +2536,10 @@ $(Get-ReportNavigation -ActivePage "Network")
                         direction: 'UD',
                         sortMethod: 'directed',
                         levelSeparation: 150,
-                        nodeSpacing: 100
+                        nodeSpacing: 200,
+                        blockShifting: true,
+                        edgeMinimization: true,
+                        parentCentralization: true
                     }
                 },
                 physics: {
@@ -2474,7 +2722,10 @@ $(Get-ReportNavigation -ActivePage "Network")
                         options.layout.hierarchical.direction = 'UD';
                         options.layout.hierarchical.sortMethod = 'directed';
                         options.layout.hierarchical.levelSeparation = 150;
-                        options.layout.hierarchical.nodeSpacing = 100;
+                        options.layout.hierarchical.nodeSpacing = 200;
+                        options.layout.hierarchical.blockShifting = true;
+                        options.layout.hierarchical.edgeMinimization = true;
+                        options.layout.hierarchical.parentCentralization = true;
                         network.setOptions(options);
                         // Force vis-network to re-apply hierarchical layout
                         network.setData({ nodes: nodes, edges: edges });
@@ -2749,7 +3000,10 @@ $(Get-ReportNavigation -ActivePage "Network")
                         optionsFullscreen.layout.hierarchical.direction = 'UD';
                         optionsFullscreen.layout.hierarchical.sortMethod = 'directed';
                         optionsFullscreen.layout.hierarchical.levelSeparation = 150;
-                        optionsFullscreen.layout.hierarchical.nodeSpacing = 100;
+                        optionsFullscreen.layout.hierarchical.nodeSpacing = 200;
+                        optionsFullscreen.layout.hierarchical.blockShifting = true;
+                        optionsFullscreen.layout.hierarchical.edgeMinimization = true;
+                        optionsFullscreen.layout.hierarchical.parentCentralization = true;
                         networkFullscreen.setOptions(optionsFullscreen);
                         // Force vis-network to re-apply hierarchical layout in fullscreen
                         networkFullscreen.setData({ nodes: nodes, edges: edges });
