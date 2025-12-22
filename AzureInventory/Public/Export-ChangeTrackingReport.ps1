@@ -161,7 +161,7 @@ function Export-ChangeTrackingReport {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Azure Change Tracking Report</title>
+    <title>Azure Change Tracking Report (14 days)</title>
     <style>
 $(Get-ReportStylesheet)
         /* Change Tracking specific styles */
@@ -449,7 +449,7 @@ $(Get-ReportStylesheet)
     
     <div class="container">
         <div class="page-header">
-            <h1>Change Tracking</h1>
+            <h1>Change Tracking (14 days)</h1>
             <div class="metadata">
                 <p><strong>Tenant:</strong> $TenantId</p>
                 <p><strong>Scanned:</strong> $timestamp</p>

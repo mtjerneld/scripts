@@ -97,23 +97,26 @@ resourcechanges
                 }
                 
                 # Handle PSResourceGraphResponse object (standard return type)
-                $hasDataProperty = $graphResult | Get-Member -Name Data -ErrorAction SilentlyContinue
-                if ($hasDataProperty) {
+                # Check if it's a PSResourceGraphResponse by checking for Data property
+                if ($graphResult.PSObject.Properties['Data']) {
                     # Standard PSResourceGraphResponse object
-                    if ($graphResult.Data) {
-                        foreach ($item in $graphResult.Data) {
+                    $data = $graphResult.Data
+                    if ($data) {
+                        foreach ($item in $data) {
                             $allQueryResults.Add($item)
                         }
-                        $itemCount = $graphResult.Data.Count
+                        $itemCount = $data.Count
                     } else {
                         $itemCount = 0
                     }
-                    $hasSkipTokenProperty = $graphResult | Get-Member -Name SkipToken -ErrorAction SilentlyContinue
-                    if ($hasSkipTokenProperty) {
+                    
+                    # Check for SkipToken property
+                    if ($graphResult.PSObject.Properties['SkipToken']) {
                         $skipToken = $graphResult.SkipToken
                     } else {
                         $skipToken = $null
                     }
+                    
                     Write-Verbose "Retrieved $itemCount changes (page $pageCount, total: $($allQueryResults.Count))"
                     if ($pageCount % 10 -eq 0 -and $itemCount -gt 0) {
                         Write-Host "    Progress: $pageCount pages, $($allQueryResults.Count) changes collected..." -ForegroundColor Gray
@@ -127,6 +130,7 @@ resourcechanges
                     Write-Verbose "Retrieved $($graphResult.Count) changes (page $pageCount, total: $($allQueryResults.Count))"
                 } else {
                     Write-Warning "Unexpected result format from Search-AzGraph. Result type: $($graphResult.GetType().FullName)"
+                    Write-Verbose "Result properties: $($graphResult.PSObject.Properties.Name -join ', ')"
                     break
                 }
                 
