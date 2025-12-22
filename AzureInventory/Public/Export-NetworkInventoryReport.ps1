@@ -306,6 +306,7 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
             display: flex;
             gap: 20px;
             font-size: 0.85em;
+            flex-wrap: wrap;
         }
         
         .diagram-controls {
@@ -1141,17 +1142,18 @@ $(Get-ReportNavigation -ActivePage "Network")
                 <h2>Network Topology</h2>
                 <div style="display: flex; align-items: center; gap: 20px;">
                     <div class="diagram-legend">
-                        <div class="legend-item"><div class="legend-dot" style="background: var(--network-blue);"></div> VNet - color by subscription</div>
-                        <div class="legend-item"><div class="legend-diamond"></div> Gateway</div>
-                        <div class="legend-item"><div class="legend-hexagon" style="background: var(--network-orange); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
-                        <div class="legend-item"><div class="legend-box" style="background: var(--network-red); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
-                        <div class="legend-item"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
-                        <div class="legend-item"><div class="legend-line peering"></div> Peering</div>
-                        <div class="legend-item"><div class="legend-line s2s"></div> S2S Tunnel / ExpressRoute</div>
+                        <div class="legend-item" id="legend-vnet"><div class="legend-dot" style="background: var(--network-blue);"></div> VNet - color by subscription</div>
+                        <div class="legend-item" id="legend-gateway"><div class="legend-diamond"></div> Gateway</div>
+                        <div class="legend-item" id="legend-hub"><div class="legend-hexagon" style="background: var(--network-orange); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
+                        <div class="legend-item" id="legend-firewall"><div class="legend-box" style="background: var(--network-red); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
+                        <div class="legend-item" id="legend-onprem"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
+                        <div class="legend-item" id="legend-peering"><div class="legend-line peering"></div> Peering</div>
+                        <div class="legend-item" id="legend-s2s"><div class="legend-line s2s"></div> S2S Tunnel / ExpressRoute</div>
                     </div>
                     <div class="diagram-controls">
                         <button class="diagram-btn" id="resetLayout">Reset Layout</button>
                         <button class="diagram-btn" id="togglePhysics">Disable Physics</button>
+                        <button class="diagram-btn" id="toggleLayout">Hierarchical Layout</button>
                         <button class="diagram-btn" id="openFullscreen">Fullscreen</button>
                     </div>
                 </div>
@@ -1165,17 +1167,18 @@ $(Get-ReportNavigation -ActivePage "Network")
                 <h2>Network Topology - Fullscreen</h2>
                 <div style="display: flex; align-items: center; gap: 15px;">
                     <div class="diagram-legend">
-                        <div class="legend-item"><div class="legend-dot" style="background: var(--network-blue);"></div> VNet - color by subscription</div>
-                        <div class="legend-item"><div class="legend-diamond"></div> Gateway</div>
-                        <div class="legend-item"><div class="legend-hexagon" style="background: var(--network-orange); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
-                        <div class="legend-item"><div class="legend-box" style="background: var(--network-red); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
-                        <div class="legend-item"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
-                        <div class="legend-item"><div class="legend-line peering"></div> Peering</div>
-                        <div class="legend-item"><div class="legend-line s2s"></div> S2S Tunnel / ExpressRoute</div>
+                        <div class="legend-item" id="legend-vnet-fullscreen"><div class="legend-dot" style="background: var(--network-blue);"></div> VNet - color by subscription</div>
+                        <div class="legend-item" id="legend-gateway-fullscreen"><div class="legend-diamond"></div> Gateway</div>
+                        <div class="legend-item" id="legend-hub-fullscreen"><div class="legend-hexagon" style="background: var(--network-orange); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
+                        <div class="legend-item" id="legend-firewall-fullscreen"><div class="legend-box" style="background: var(--network-red); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
+                        <div class="legend-item" id="legend-onprem-fullscreen"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
+                        <div class="legend-item" id="legend-peering-fullscreen"><div class="legend-line peering"></div> Peering</div>
+                        <div class="legend-item" id="legend-s2s-fullscreen"><div class="legend-line s2s"></div> S2S Tunnel / ExpressRoute</div>
                     </div>
                     <div class="diagram-controls">
                         <button class="diagram-btn" id="resetLayoutFullscreen">Reset Layout</button>
                         <button class="diagram-btn" id="togglePhysicsFullscreen">Disable Physics</button>
+                        <button class="diagram-btn" id="toggleLayoutFullscreen">Hierarchical Layout</button>
                         <button class="diagram-fullscreen-close" id="closeFullscreen">Close Fullscreen</button>
                     </div>
                 </div>
@@ -1776,8 +1779,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                 # Escape tooltip and label for JavaScript
                 $tooltipEscaped = Format-JsString $tooltip
                 $vnetNameEscaped = Format-JsString $vnet.Name
-                # Use subscription color for each VNet
-                $nodesJson.Add("{ id: $nodeId, label: `"$vnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$subColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
+                # Use subscription color for each VNet (no group to avoid group color overrides)
+                $nodesJson.Add("{ id: $nodeId, label: `"$vnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$subColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, level: 1 }")
                 
                 # Add gateway nodes
                 foreach ($gw in $vnet.Gateways) {
@@ -1786,7 +1789,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     $gwTooltip = "$($gw.Name)`nType: $($gw.Type)`nSKU: $($gw.Sku)`nVPN: $($gw.VpnType)"
                     $gwTooltipEscaped = Format-JsString $gwTooltip
                     $gwNameEscaped = Format-JsString $gw.Name
-                    $nodesJson.Add("{ id: $gwNodeId, label: `"$gwNameEscaped`", title: `"$gwTooltipEscaped`", color: `"#9b59b6`", shape: `"diamond`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
+                    $nodesJson.Add("{ id: $gwNodeId, label: `"$gwNameEscaped`", title: `"$gwTooltipEscaped`", color: `"#9b59b6`", shape: `"diamond`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
                     $edgesJson.Add("{ from: $nodeId, to: $gwNodeId, color: { color: `"#9b59b6`" }, width: 2, length: 50 }")
                 }
                 
@@ -1802,7 +1805,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $fwTooltip = "$($fw.Name)`nType: Azure Firewall`nSKU: $($fw.SkuTier)`nThreat Intel: $($fw.ThreatIntelMode)"
                             $fwTooltipEscaped = Format-JsString $fwTooltip
                             $fwNameEscaped = Format-JsString $fw.Name
-                            $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
+                            $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
                         }
                         
                         # Always create edge from VNet to Firewall (if both nodes exist)
@@ -1831,7 +1834,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $hubTooltip = "$($hub.Name)`nType: Virtual WAN Hub`nLocation: $($hub.Location)`nAddress: $($hub.AddressPrefix)`nER: $($hub.ExpressRouteConnections.Count) | S2S: $($hub.VpnConnections.Count) | Firewalls: $firewallCount"
                 $hubTooltipEscaped = Format-JsString $hubTooltip
                 $hubNameEscaped = Format-JsString $hub.Name
-                $nodesJson.Add("{ id: $hubNodeId, label: `"$hubNameEscaped`", title: `"$hubTooltipEscaped`", color: `"#f39c12`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
+                $nodesJson.Add("{ id: $hubNodeId, label: `"$hubNameEscaped`", title: `"$hubTooltipEscaped`", color: `"#f39c12`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, level: 0 }")
                 
                 # Add Virtual WAN-integrated Azure Firewall nodes
                 if ($hub.Firewalls -and $hub.Firewalls.Count -gt 0) {
@@ -1842,7 +1845,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $fwTooltip = "$($fw.Name)`nType: Azure Firewall (Virtual WAN)`nSKU: $($fw.SkuTier)`nThreat Intel: $($fw.ThreatIntelMode)`nHub: $($hub.Name)"
                             $fwTooltipEscaped = Format-JsString $fwTooltip
                             $fwNameEscaped = Format-JsString $fw.Name
-                            $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
+                            $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
                             # Create edge from Hub to Firewall
                             $edgesJson.Add("{ from: $hubNodeId, to: $fwNodeId, color: { color: `"#e74c3c`" }, width: 2, length: 50, title: `"Azure Firewall in Virtual WAN Hub`" }")
                         }
@@ -1884,7 +1887,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $fwTooltip = "$($fw.Name)`nType: Azure Firewall`nSKU: $($fw.SkuTier)`nThreat Intel: $($fw.ThreatIntelMode)`n$deploymentInfo"
                 $fwTooltipEscaped = Format-JsString $fwTooltip
                 $fwNameEscaped = Format-JsString $fw.Name
-                $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$fwSubId`" }")
+                $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
                 
                 # Try to link to VNet if VNetName is known and VNet node exists
                 if ($fw.VNetName -and $nodeIdMap.ContainsKey($fw.VNetName)) {
@@ -1934,7 +1937,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $tooltip = "$remoteVnetName`nType: Virtual WAN Hub`nSubscription: Unknown`n(No access to this subscription)"
                             $tooltipEscaped = Format-JsString $tooltip
                             $remoteVnetNameEscaped = Format-JsString $remoteVnetName
-                            $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownHubColor`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, group: `"unknown`" }")
+                            $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownHubColor`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, level: 0 }")
                         }
                     } else {
                         # Check if this VNet is actually in our inventory (might be in different subscription)
@@ -1946,7 +1949,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $tooltip = "$remoteVnetName`nSubscription: Unknown`n(No access to this subscription)"
                             $tooltipEscaped = Format-JsString $tooltip
                             $remoteVnetNameEscaped = Format-JsString $remoteVnetName
-                            $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownVnetColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, group: `"unknown`" }")
+                            $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownVnetColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, level: 1 }")
                         }
                     }
                 }
@@ -2099,11 +2102,11 @@ $(Get-ReportNavigation -ActivePage "Network")
                                 
                                 if ($conn.RemoteNetwork.Type -eq "OnPremises") {
                                     # Create on-premises node
-                                    $onPremNodeId = $nodeCounter++
-                                    $onPremTooltip = "$remoteName`nType: On-Premises Network`nAddress Space: $($conn.RemoteNetwork.AddressSpace)`nGateway IP: $($conn.RemoteNetwork.GatewayIpAddress)"
-                                    $onPremTooltipEscaped = Format-JsString $onPremTooltip
-                                    $remoteNameEscaped = Format-JsString $remoteName
-                                    $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#ffffff`", size: 16 } }")
+                                $onPremNodeId = $nodeCounter++
+                                $onPremTooltip = "$remoteName`nType: On-Premises Network`nAddress Space: $($conn.RemoteNetwork.AddressSpace)`nGateway IP: $($conn.RemoteNetwork.GatewayIpAddress)"
+                                $onPremTooltipEscaped = Format-JsString $onPremTooltip
+                                $remoteNameEscaped = Format-JsString $remoteName
+                                $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#ffffff`", size: 16 }, level: 3 }")
                                     
                                     # Add S2S edge
                                     $statusColor = if ($conn.ConnectionStatus -eq "Connected") { "#16a085" } else { "#e74c3c" }
@@ -2177,7 +2180,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         # Escape the tooltip and name for JavaScript
                         $onPremTooltipEscaped = Format-JsString $onPremTooltip
                         $circuitNameEscaped = Format-JsString $circuitName
-                        $nodesJson.Add("{ id: $onPremNodeId, label: `"$circuitNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, group: `"onprem`" }")
+                        $nodesJson.Add("{ id: $onPremNodeId, label: `"$circuitNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, level: 3 }")
                     }
                     
                     $onPremNodeId = $nodeIdMap[$onPremKey]
@@ -2198,7 +2201,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         $onPremTooltip = "On-Premises Site`n$remoteSiteName`nAddress Space: $($vpnConn.RemoteSiteAddressSpace)"
                         $onPremTooltipEscaped = Format-JsString $onPremTooltip
                         $remoteSiteNameEscaped = Format-JsString $remoteSiteName
-                        $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteSiteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, group: `"onprem`" }")
+                        $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteSiteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, level: 3 }")
                     }
                     
                     $onPremNodeId = $nodeIdMap[$onPremKey]
@@ -2240,6 +2243,41 @@ $(Get-ReportNavigation -ActivePage "Network")
         var nodes = new vis.DataSet(nodesData);
         var edges = new vis.DataSet(edgesData);
         
+        // Helper to show/hide legend items based on actual topology contents
+        function updateLegendVisibility() {
+            var hasGateway = nodesData.some(function (n) { return n.shape === 'diamond'; });
+            var hasHub = nodesData.some(function (n) { return n.shape === 'hexagon'; });
+            var hasFirewall = nodesData.some(function (n) { return n.shape === 'box' && n.color === '#e74c3c'; });
+            var hasOnPrem = nodesData.some(function (n) { return n.shape === 'box' && n.color === '#34495e'; });
+            var hasPeering = edgesData.some(function (e) { return e.dashes === false || e.dashes === undefined; });
+            var hasS2S = edgesData.some(function (e) { return e.dashes === true; });
+
+            function setLegendVisible(id, visible) {
+                var el = document.getElementById(id);
+                if (el) {
+                    el.style.display = visible ? '' : 'none';
+                }
+            }
+
+            // Main diagram legend
+            setLegendVisible('legend-gateway', hasGateway);
+            setLegendVisible('legend-hub', hasHub);
+            setLegendVisible('legend-firewall', hasFirewall);
+            setLegendVisible('legend-onprem', hasOnPrem);
+            setLegendVisible('legend-peering', hasPeering);
+            setLegendVisible('legend-s2s', hasS2S);
+
+            // Fullscreen legend
+            setLegendVisible('legend-gateway-fullscreen', hasGateway);
+            setLegendVisible('legend-hub-fullscreen', hasHub);
+            setLegendVisible('legend-firewall-fullscreen', hasFirewall);
+            setLegendVisible('legend-onprem-fullscreen', hasOnPrem);
+            setLegendVisible('legend-peering-fullscreen', hasPeering);
+            setLegendVisible('legend-s2s-fullscreen', hasS2S);
+        }
+
+        updateLegendVisibility();
+
         var container = document.getElementById('network-diagram');
         if (!container) {
             console.error('Network diagram container not found!');
@@ -2251,7 +2289,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                     hierarchical: {
                         enabled: false,
                         direction: 'UD',
-                        sortMethod: 'directed'
+                        sortMethod: 'directed',
+                        levelSeparation: 150,
+                        nodeSpacing: 100
                     }
                 },
                 physics: {
@@ -2309,8 +2349,9 @@ $(Get-ReportNavigation -ActivePage "Network")
             try {
                 var network = new vis.Network(container, data, options);
                 
-                // Track physics state
+                // Track physics and layout state
                 var physicsEnabled = true;
+                var hierarchicalEnabled = false;
                 
                 // Disable physics after initial stabilization so nodes stay where dragged
                 network.on('stabilizationEnd', function() {
@@ -2421,6 +2462,32 @@ $(Get-ReportNavigation -ActivePage "Network")
                         network.setOptions(options);
                     }
                 });
+
+                // Toggle layout between free and hierarchical (layout only, keep colors/styles unchanged)
+                document.getElementById('toggleLayout').addEventListener('click', function () {
+                    hierarchicalEnabled = !hierarchicalEnabled;
+                    this.textContent = hierarchicalEnabled ? 'Free Layout' : 'Hierarchical Layout';
+
+                    if (hierarchicalEnabled) {
+                        // Enable hierarchical layout (tree style)
+                        options.layout.hierarchical.enabled = true;
+                        options.layout.hierarchical.direction = 'UD';
+                        options.layout.hierarchical.sortMethod = 'directed';
+                        options.layout.hierarchical.levelSeparation = 150;
+                        options.layout.hierarchical.nodeSpacing = 100;
+                        network.setOptions(options);
+                        // Force vis-network to re-apply hierarchical layout
+                        network.setData({ nodes: nodes, edges: edges });
+                        network.fit({ animation: { duration: 500, easing: 'easeInOutQuad' } });
+                    } else {
+                        // Return to free layout (no hierarchical constraints)
+                        options.layout.hierarchical.enabled = false;
+                        network.setOptions(options);
+                        // Force layout refresh back to free layout
+                        network.setData({ nodes: nodes, edges: edges });
+                        network.fit({ animation: { duration: 500, easing: 'easeInOutQuad' } });
+                    }
+                });
                 
                 // Reset layout button
                 document.getElementById('resetLayout').addEventListener('click', function() {
@@ -2474,6 +2541,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                 // Fullscreen functionality
                 var networkFullscreen = null;
                 var physicsEnabledFullscreen = true;
+                var hierarchicalEnabledFullscreen = false;
                 var optionsFullscreen = null;
                 
                 function initializeFullscreenDiagram() {
@@ -2665,6 +2733,33 @@ $(Get-ReportNavigation -ActivePage "Network")
                         // Enable physics after nodes are unfixed
                         optionsFullscreen.physics.enabled = true;
                         networkFullscreen.setOptions(optionsFullscreen);
+                    }
+                });
+
+                // Toggle layout in fullscreen between free and hierarchical (layout only)
+                document.getElementById('toggleLayoutFullscreen').addEventListener('click', function () {
+                    if (!networkFullscreen || !optionsFullscreen) {
+                        return;
+                    }
+                    hierarchicalEnabledFullscreen = !hierarchicalEnabledFullscreen;
+                    this.textContent = hierarchicalEnabledFullscreen ? 'Free Layout' : 'Hierarchical Layout';
+
+                    if (hierarchicalEnabledFullscreen) {
+                        optionsFullscreen.layout.hierarchical.enabled = true;
+                        optionsFullscreen.layout.hierarchical.direction = 'UD';
+                        optionsFullscreen.layout.hierarchical.sortMethod = 'directed';
+                        optionsFullscreen.layout.hierarchical.levelSeparation = 150;
+                        optionsFullscreen.layout.hierarchical.nodeSpacing = 100;
+                        networkFullscreen.setOptions(optionsFullscreen);
+                        // Force vis-network to re-apply hierarchical layout in fullscreen
+                        networkFullscreen.setData({ nodes: nodes, edges: edges });
+                        networkFullscreen.fit({ animation: { duration: 500, easing: 'easeInOutQuad' } });
+                    } else {
+                        optionsFullscreen.layout.hierarchical.enabled = false;
+                        networkFullscreen.setOptions(optionsFullscreen);
+                        // Force layout refresh back to free layout in fullscreen
+                        networkFullscreen.setData({ nodes: nodes, edges: edges });
+                        networkFullscreen.fit({ animation: { duration: 500, easing: 'easeInOutQuad' } });
                     }
                 });
                 
