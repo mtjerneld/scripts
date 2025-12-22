@@ -41,6 +41,19 @@ function Export-NetworkInventoryReport {
     
     Write-Verbose "Generating network inventory report to: $OutputPath"
     
+    # Helper function to escape strings for JavaScript
+    function Format-JsString {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
+            [string]$Text
+        )
+        # Escape backslashes, quotes, and convert actual newlines to \n escape sequence
+        # PowerShell uses `n for newlines, but JavaScript strings require \n escape sequences
+        # The CSS white-space: pre-line will render \n as line breaks in the browser
+        return $Text -replace '\\', '\\\\' -replace '"', '\"' -replace "`r`n", '\n' -replace "`n", '\n' -replace "`r", '\n'
+    }
+    
     try {
         # Ensure NetworkInventory is not null
         if (-not $NetworkInventory) {
@@ -224,13 +237,6 @@ function Export-NetworkInventoryReport {
                     [void]$uniquePeerings.Add($peeringKey)
                 }
             }
-            
-            # Count Virtual WAN-integrated firewalls
-            if ($hub.Firewalls) {
-                foreach ($fw in $hub.Firewalls) {
-                    # These are already counted in $totalAzureFirewalls, but we track them separately if needed
-                }
-            }
         }
         
         # Set total peerings to unique count (each bidirectional peering counted once)
@@ -262,7 +268,18 @@ function Export-NetworkInventoryReport {
     <style type="text/css">
 $(Get-ReportStylesheet -IncludeReportSpecific)
 
-        /* Network Specific Styles */
+        /* Network Specific Styles - Additional Color Variables */
+        :root {
+            --network-blue: #3498db;
+            --network-red: #e74c3c;
+            --network-green: #2ecc71;
+            --network-yellow: #f1c40f;
+            --network-purple: #9b59b6;
+            --network-teal: #16a085;
+            --network-orange: #f39c12;
+            --network-gray: #95a5a6;
+        }
+        
         .network-diagram-container {
             background: var(--bg-surface);
             border: 1px solid var(--border-color);
@@ -328,7 +345,7 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
         .legend-diamond {
             width: 10px;
             height: 10px;
-            background: #9b59b6;
+            background: var(--network-purple);
             transform: rotate(45deg);
         }
         
@@ -339,15 +356,15 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
         }
         
         .legend-line.peering {
-            background: #2ecc71;
+            background: var(--network-green);
             height: 2px;
         }
         
         .legend-line.s2s {
             background: repeating-linear-gradient(
                 to right,
-                #16a085 0px,
-                #16a085 4px,
+                var(--network-teal) 0px,
+                var(--network-teal) 4px,
                 transparent 4px,
                 transparent 8px
             );
@@ -363,6 +380,33 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
         .vis-tooltip {
             white-space: pre-line !important;
             max-width: 300px;
+        }
+        
+        /* Summary card border color classes */
+        .summary-card.blue-border { border-top: 3px solid var(--network-blue); }
+        .summary-card.green-border { border-top: 3px solid var(--network-green); }
+        .summary-card.yellow-border { border-top: 3px solid var(--network-yellow); }
+        .summary-card.purple-border { border-top: 3px solid var(--network-purple); }
+        .summary-card.teal-border { border-top: 3px solid var(--network-teal); }
+        .summary-card.red-border { border-top: 3px solid var(--network-red); }
+        .summary-card.gray-border { border-top: 3px solid var(--network-gray); }
+        .summary-card.orange-border { border-top: 3px solid var(--network-orange); }
+        
+        /* Summary card value color classes */
+        .summary-card-value.blue { color: var(--network-blue); }
+        .summary-card-value.green { color: var(--network-green); }
+        .summary-card-value.red { color: var(--network-red); }
+        .summary-card-value.white { color: var(--text-primary); }
+        
+        /* Badge color classes */
+        .badge-firewall {
+            background-color: rgba(231, 76, 60, 0.2);
+            color: var(--network-red);
+        }
+        
+        .badge-endpoint {
+            background-color: rgba(52, 152, 219, 0.2);
+            color: var(--network-blue);
         }
         
         /* Fullscreen overlay */
@@ -559,7 +603,7 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
 
         .badge-nsg {
             background-color: rgba(46, 204, 113, 0.2);
-            color: #2ecc71;
+            color: var(--network-green);
             padding: 2px 8px;
             border-radius: 4px;
             font-size: 0.8em;
@@ -567,7 +611,7 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
 
         .badge-gw {
             background-color: rgba(155, 89, 182, 0.2);
-            color: #9b59b6;
+            color: var(--network-purple);
             padding: 2px 6px;
             border-radius: 4px;
             font-size: 0.8em;
@@ -606,7 +650,7 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
         
         .risk-badge.critical {
             background-color: rgba(231, 76, 60, 0.2);
-            color: #e74c3c;
+            color: var(--network-red);
         }
         
         .risk-badge.high {
@@ -616,12 +660,12 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
         
         .risk-badge.medium {
             background-color: rgba(241, 196, 15, 0.2);
-            color: #f1c40f;
+            color: var(--network-yellow);
         }
         
         .no-nsg-badge {
             background-color: rgba(231, 76, 60, 0.15);
-            color: #e74c3c;
+            color: var(--network-red);
             padding: 2px 8px;
             border-radius: 4px;
             font-size: 0.8em;
@@ -638,7 +682,7 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
         
         .security-risks-header {
             font-weight: 600;
-            color: #e74c3c;
+            color: var(--network-red);
             margin-bottom: 8px;
             display: flex;
             align-items: center;
@@ -695,7 +739,7 @@ $(Get-ReportStylesheet -IncludeReportSpecific)
             align-items: center;
             gap: 12px;
             font-weight: 600;
-            color: #e74c3c;
+            color: var(--network-red);
         }
         
         .risk-summary-badges {
@@ -762,42 +806,42 @@ $(Get-ReportNavigation -ActivePage "Network")
         </div>
         
         <div class="summary-grid">
-            <div class="summary-card" style="border-top: 3px solid #3498db;">
+            <div class="summary-card blue-border">
                 <div class="summary-card-label">VNets</div>
                 <div class="summary-card-value">$($totalVnets)</div>
             </div>
-            <div class="summary-card" style="border-top: 3px solid #2ecc71;">
+            <div class="summary-card green-border">
                 <div class="summary-card-label">Subnets</div>
                 <div class="summary-card-value">$totalSubnets</div>
             </div>
-            <div class="summary-card" style="border-top: 3px solid #f1c40f;">
+            <div class="summary-card yellow-border">
                 <div class="summary-card-label">NSGs</div>
                 <div class="summary-card-value">$totalNsgs</div>
             </div>
-            <div class="summary-card" style="border-top: 3px solid #9b59b6;">
+            <div class="summary-card purple-border">
                 <div class="summary-card-label">Gateways</div>
                 <div class="summary-card-value">$totalGateways</div>
             </div>
-            <div class="summary-card" style="border-top: 3px solid #16a085;">
+            <div class="summary-card teal-border">
                 <div class="summary-card-label">Peerings</div>
                 <div class="summary-card-value">$totalPeerings</div>
             </div>
-            <div class="summary-card" style="border-top: 3px solid #95a5a6;">
+            <div class="summary-card gray-border">
                 <div class="summary-card-label">Devices</div>
                 <div class="summary-card-value">$totalDevices</div>
             </div>
-            <div class="summary-card" style="border-top: 3px solid #e74c3c;">
+            <div class="summary-card red-border">
                 <div class="summary-card-label">Security Risks</div>
-                <div class="summary-card-value" style="color: $(if ($totalRisks -gt 0) { '#e74c3c' } else { '#2ecc71' });">$totalRisks</div>
+                <div class="summary-card-value $(if ($totalRisks -gt 0) { 'red' } else { 'white' })">$totalRisks</div>
             </div>
             $(if ($subnetsWithServiceEndpoints -gt 0) {
-                "<div class='summary-card' style='border-top: 3px solid #3498db;'><div class='summary-card-label'>Subnets with Service Endpoints</div><div class='summary-card-value' style='color: #3498db;'>$subnetsWithServiceEndpoints</div></div>"
+                "<div class='summary-card blue-border'><div class='summary-card-label'>Subnets with Service Endpoints</div><div class='summary-card-value blue'>$subnetsWithServiceEndpoints</div></div>"
             })
             $(if ($totalVirtualWANHubs -gt 0) {
-                "<div class='summary-card' style='border-top: 3px solid #f39c12;'><div class='summary-card-label'>Virtual WAN Hubs</div><div class='summary-card-value' style='color: #f39c12;'>$totalVirtualWANHubs</div></div>"
+                "<div class='summary-card orange-border'><div class='summary-card-label'>Virtual WAN Hubs</div><div class='summary-card-value' style='color: var(--network-orange);'>$totalVirtualWANHubs</div></div>"
             })
             $(if ($totalAzureFirewalls -gt 0) {
-                "<div class='summary-card' style='border-top: 3px solid #e74c3c;'><div class='summary-card-label'>Azure Firewalls</div><div class='summary-card-value' style='color: #e74c3c;'>$totalAzureFirewalls</div></div>"
+                "<div class='summary-card red-border'><div class='summary-card-label'>Azure Firewalls</div><div class='summary-card-value red'>$totalAzureFirewalls</div></div>"
             })
         </div>
 "@
@@ -844,20 +888,30 @@ $(Get-ReportNavigation -ActivePage "Network")
 "@
             foreach ($risk in $sortedAllRisks) {
                 $severityLower = $risk.Severity.ToLower()
+                # Cache HTML-encoded values for risk properties
+                $riskSeverityHtml = Encode-Html $risk.Severity
+                $riskNsgNameHtml = Encode-Html $risk.NsgName
+                $riskVNetNameHtml = Encode-Html $risk.VNetName
+                $riskSubnetNameHtml = Encode-Html $risk.SubnetName
+                $riskRuleNameHtml = Encode-Html $risk.RuleName
+                $riskPortHtml = Encode-Html $risk.Port
+                $riskPortNameHtml = Encode-Html $risk.PortName
+                $riskSourceHtml = Encode-Html $risk.Source
+                $riskDescriptionHtml = Encode-Html $risk.Description
                 $destination = if ($risk.Destination) { Encode-Html $risk.Destination } else { "<span style='color:var(--text-muted);'>Any</span>" }
                 $subscriptionName = if ($risk.SubscriptionName) { Encode-Html $risk.SubscriptionName } else { "<span style='color:var(--text-muted);'>Unknown</span>" }
                 $html += @"
                         <tr class="risk-row $severityLower">
-                            <td><span class="risk-badge $severityLower">$(Encode-Html $risk.Severity)</span></td>
+                            <td><span class="risk-badge $severityLower">$riskSeverityHtml</span></td>
                             <td>$subscriptionName</td>
-                            <td>$(Encode-Html $risk.NsgName)</td>
-                            <td>$(Encode-Html $risk.VNetName)</td>
-                            <td>$(Encode-Html $risk.SubnetName)</td>
-                            <td>$(Encode-Html $risk.RuleName)</td>
-                            <td>$(Encode-Html $risk.Port) ($(Encode-Html $risk.PortName))</td>
-                            <td>$(Encode-Html $risk.Source)</td>
+                            <td>$riskNsgNameHtml</td>
+                            <td>$riskVNetNameHtml</td>
+                            <td>$riskSubnetNameHtml</td>
+                            <td>$riskRuleNameHtml</td>
+                            <td>$riskPortHtml ($riskPortNameHtml)</td>
+                            <td>$riskSourceHtml</td>
                             <td>$destination</td>
-                            <td>$(Encode-Html $risk.Description)</td>
+                            <td>$riskDescriptionHtml</td>
                         </tr>
 "@
             }
@@ -889,7 +943,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     $(if ($hub.ExpressRouteConnections.Count -gt 0) { "<span class='badge'>$($hub.ExpressRouteConnections.Count) ER</span>" })
                     $(if ($hub.VpnConnections.Count -gt 0) { "<span class='badge'>$($hub.VpnConnections.Count) S2S</span>" })
                     $(if ($hub.Peerings.Count -gt 0) { "<span class='badge'>$($hub.Peerings.Count) Peerings</span>" })
-                    $(if ($hub.Firewalls -and $hub.Firewalls.Count -gt 0) { "<span class='badge' style='background-color: rgba(231, 76, 60, 0.2); color: #e74c3c;'>$($hub.Firewalls.Count) Firewall$(if ($hub.Firewalls.Count -ne 1) { 's' })</span>" })
+                    $(if ($hub.Firewalls -and $hub.Firewalls.Count -gt 0) { "<span class='badge badge-firewall'>$($hub.Firewalls.Count) Firewall$(if ($hub.Firewalls.Count -ne 1) { 's' })</span>" })
                 </span>
             </div>
             <div class="subscription-content vwan-hub-content" id="$hubId" style="display: none;">
@@ -1087,10 +1141,10 @@ $(Get-ReportNavigation -ActivePage "Network")
                 <h2>Network Topology</h2>
                 <div style="display: flex; align-items: center; gap: 20px;">
                     <div class="diagram-legend">
-                        <div class="legend-item"><div class="legend-dot" style="background: #3498db;"></div> VNet - color by subscription</div>
+                        <div class="legend-item"><div class="legend-dot" style="background: var(--network-blue);"></div> VNet - color by subscription</div>
                         <div class="legend-item"><div class="legend-diamond"></div> Gateway</div>
-                        <div class="legend-item"><div class="legend-hexagon" style="background: #f39c12; width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
-                        <div class="legend-item"><div class="legend-box" style="background: #e74c3c; width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
+                        <div class="legend-item"><div class="legend-hexagon" style="background: var(--network-orange); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
+                        <div class="legend-item"><div class="legend-box" style="background: var(--network-red); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
                         <div class="legend-item"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
                         <div class="legend-item"><div class="legend-line peering"></div> Peering</div>
                         <div class="legend-item"><div class="legend-line s2s"></div> S2S Tunnel / ExpressRoute</div>
@@ -1111,10 +1165,10 @@ $(Get-ReportNavigation -ActivePage "Network")
                 <h2>Network Topology - Fullscreen</h2>
                 <div style="display: flex; align-items: center; gap: 15px;">
                     <div class="diagram-legend">
-                        <div class="legend-item"><div class="legend-dot" style="background: #3498db;"></div> VNet - color by subscription</div>
+                        <div class="legend-item"><div class="legend-dot" style="background: var(--network-blue);"></div> VNet - color by subscription</div>
                         <div class="legend-item"><div class="legend-diamond"></div> Gateway</div>
-                        <div class="legend-item"><div class="legend-hexagon" style="background: #f39c12; width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
-                        <div class="legend-item"><div class="legend-box" style="background: #e74c3c; width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
+                        <div class="legend-item"><div class="legend-hexagon" style="background: var(--network-orange); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
+                        <div class="legend-item"><div class="legend-box" style="background: var(--network-red); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
                         <div class="legend-item"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
                         <div class="legend-item"><div class="legend-line peering"></div> Peering</div>
                         <div class="legend-item"><div class="legend-line s2s"></div> S2S Tunnel / ExpressRoute</div>
@@ -1160,31 +1214,59 @@ $(Get-ReportNavigation -ActivePage "Network")
         <div class="topology-tree">
 "@
 
+        # Pre-compute risk counts per VNet and subscription to avoid duplicate loops
+        $vnetRiskCounts = @{}
+        $subscriptionRiskCounts = @{}
+        
+        foreach ($vnet in $vnets) {
+            $vnetCritical = 0
+            $vnetHigh = 0
+            $vnetMedium = 0
+            $deviceCount = 0
+            
+            foreach ($subnet in $vnet.Subnets) {
+                $deviceCount += $subnet.ConnectedDevices.Count
+                if ($subnet.NsgRisks) {
+                    foreach ($risk in $subnet.NsgRisks) {
+                        switch ($risk.Severity) {
+                            "Critical" { $vnetCritical++ }
+                            "High" { $vnetHigh++ }
+                            "Medium" { $vnetMedium++ }
+                        }
+                    }
+                }
+            }
+            
+            $vnetRiskCounts[$vnet.Name] = @{
+                Critical = $vnetCritical
+                High = $vnetHigh
+                Medium = $vnetMedium
+                DeviceCount = $deviceCount
+            }
+            
+            # Accumulate subscription totals
+            $subId = $vnet.SubscriptionId
+            if (-not $subscriptionRiskCounts.ContainsKey($subId)) {
+                $subscriptionRiskCounts[$subId] = @{ Critical = 0; High = 0; Medium = 0; DeviceCount = 0 }
+            }
+            $subscriptionRiskCounts[$subId].Critical += $vnetCritical
+            $subscriptionRiskCounts[$subId].High += $vnetHigh
+            $subscriptionRiskCounts[$subId].Medium += $vnetMedium
+            $subscriptionRiskCounts[$subId].DeviceCount += $deviceCount
+        }
+
         # Generate VNets grouped by subscription
         foreach ($subId in $subscriptions.Keys) {
             $sub = $subscriptions[$subId]
             $subColor = $subColorMap[$subId]
             $subVnetCount = $sub.VNets.Count
-            $subDeviceCount = 0
-            $subCriticalRisks = 0
-            $subHighRisks = 0
-            $subMediumRisks = 0
             
-            foreach ($v in $sub.VNets) {
-                foreach ($s in $v.Subnets) {
-                    $subDeviceCount += $s.ConnectedDevices.Count
-                    # Count security risks for this subscription
-                    if ($s.NsgRisks) {
-                        foreach ($risk in $s.NsgRisks) {
-                            switch ($risk.Severity) {
-                                "Critical" { $subCriticalRisks++ }
-                                "High" { $subHighRisks++ }
-                                "Medium" { $subMediumRisks++ }
-                            }
-                        }
-                    }
-                }
-            }
+            # Use pre-computed risk counts
+            $subRiskData = $subscriptionRiskCounts[$subId]
+            $subDeviceCount = if ($subRiskData) { $subRiskData.DeviceCount } else { 0 }
+            $subCriticalRisks = if ($subRiskData) { $subRiskData.Critical } else { 0 }
+            $subHighRisks = if ($subRiskData) { $subRiskData.High } else { 0 }
+            $subMediumRisks = if ($subRiskData) { $subRiskData.Medium } else { 0 }
             
             # Build risk badges HTML for subscription header
             $subRiskBadgesHtml = ""
@@ -1221,32 +1303,27 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $vnetId = "vnet-" + [Guid]::NewGuid().ToString()
                 $vnetSearchText = "$($vnet.Name) $($vnet.AddressSpace) $($vnet.Location) $($vnet.SubscriptionName)".ToLower()
                 
-                # Count risks for this VNet
-                $vnetCritical = 0
-                $vnetHigh = 0
-                $vnetMedium = 0
-                foreach ($subnet in $vnet.Subnets) {
-                    if ($subnet.NsgRisks) {
-                        foreach ($risk in $subnet.NsgRisks) {
-                            switch ($risk.Severity) {
-                                "Critical" { $vnetCritical++ }
-                                "High" { $vnetHigh++ }
-                                "Medium" { $vnetMedium++ }
-                            }
-                        }
-                    }
-                }
+                # Cache HTML-encoded values to avoid repeated Encode-Html calls
+                $vnetNameHtml = Encode-Html $vnet.Name
+                $vnetAddressHtml = Encode-Html $vnet.AddressSpace
+                $vnetLocationHtml = Encode-Html $vnet.Location
+                
+                # Use pre-computed risk counts for this VNet
+                $vnetRiskData = $vnetRiskCounts[$vnet.Name]
+                $vnetCritical = if ($vnetRiskData) { $vnetRiskData.Critical } else { 0 }
+                $vnetHigh = if ($vnetRiskData) { $vnetRiskData.High } else { 0 }
+                $vnetMedium = if ($vnetRiskData) { $vnetRiskData.Medium } else { 0 }
 
                 $html += @"
-                <div class="vnet-box" data-searchable="$vnetSearchText" data-vnet-name="$(Encode-Html $vnet.Name)">
+                <div class="vnet-box" data-searchable="$vnetSearchText" data-vnet-name="$vnetNameHtml">
                     <div class="vnet-header" onclick="toggleVNet('$vnetId')">
                         <div class="vnet-title">
                             <span class="expand-icon" id="icon-$vnetId"></span>
-                            $(Encode-Html $vnet.Name)
-                            <span style="font-weight:normal; color:var(--text-secondary); font-size:0.9em; margin-left:10px;">$(Encode-Html $vnet.AddressSpace)</span>
+                            $vnetNameHtml
+                            <span style="font-weight:normal; color:var(--text-secondary); font-size:0.9em; margin-left:10px;">$vnetAddressHtml</span>
                         </div>
                         <div class="vnet-meta">
-                            <span>$(Encode-Html $vnet.Location)</span>
+                            <span>$vnetLocationHtml</span>
                             <span>Subnets: $($vnet.Subnets.Count)</span>
                             <span>Peerings: $($vnet.Peerings.Count)</span>
 "@
@@ -1337,7 +1414,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         $threatIntelColor = if ($fw.ThreatIntelMode -in @("Alert", "Deny")) { "#2ecc71" } else { "#e74c3c" }
                         $html += @"
                             <div style="padding:8px 12px; background:rgba(231, 76, 60, 0.1); border-radius:4px; margin-bottom:5px;">
-                                <strong>$(Encode-Html $fw.Name)</strong> <span class="badge" style="background-color: rgba(231, 76, 60, 0.2); color: #e74c3c;">Firewall</span>
+                                <strong>$(Encode-Html $fw.Name)</strong> <span class="badge badge-firewall">Firewall</span>
                                 <div style="margin-top:6px; font-size:0.85em; color:var(--text-secondary);">
                                     <div>SKU: $(Encode-Html $fw.SkuTier) | Threat Intel: <span style="color: $threatIntelColor;">$(Encode-Html $fw.ThreatIntelMode)</span></div>
                                     $(if ($fw.PrivateIP) { "<div>Private IP: $(Encode-Html $fw.PrivateIP)</div>" })
@@ -1479,7 +1556,7 @@ $(Get-ReportNavigation -ActivePage "Network")
 "@
                             foreach ($endpoint in $serviceEndpointsList) {
                                 $html += @"
-                                        <span class='badge' style='background-color: rgba(52, 152, 219, 0.2); color: #3498db; margin-right: 5px; margin-bottom: 3px; display: inline-block;'>$(Encode-Html $endpoint.Trim())</span>
+                                        <span class='badge badge-endpoint' style='margin-right: 5px; margin-bottom: 3px; display: inline-block;'>$(Encode-Html $endpoint.Trim())</span>
 "@
                             }
                             $html += @"
@@ -1514,15 +1591,22 @@ $(Get-ReportNavigation -ActivePage "Network")
 "@
                         foreach ($risk in $subnet.NsgRisks) {
                             $severityLower = $risk.Severity.ToLower()
+                            # Cache HTML-encoded values for risk properties
+                            $riskSeverityHtml = Encode-Html $risk.Severity
+                            $riskRuleNameHtml = Encode-Html $risk.RuleName
+                            $riskPortHtml = Encode-Html $risk.Port
+                            $riskPortNameHtml = Encode-Html $risk.PortName
+                            $riskSourceHtml = Encode-Html $risk.Source
+                            $riskDescriptionHtml = Encode-Html $risk.Description
                             $destination = if ($risk.Destination) { Encode-Html $risk.Destination } else { "<span style='color:var(--text-muted);'>Any</span>" }
                             $html += @"
                                             <tr class="risk-row $severityLower">
-                                                <td><span class="risk-badge $severityLower">$(Encode-Html $risk.Severity)</span></td>
-                                                <td>$(Encode-Html $risk.RuleName)</td>
-                                                <td>$(Encode-Html $risk.Port) ($(Encode-Html $risk.PortName))</td>
-                                                <td>$(Encode-Html $risk.Source)</td>
+                                                <td><span class="risk-badge $severityLower">$riskSeverityHtml</span></td>
+                                                <td>$riskRuleNameHtml</td>
+                                                <td>$riskPortHtml ($riskPortNameHtml)</td>
+                                                <td>$riskSourceHtml</td>
                                                 <td>$destination</td>
-                                                <td>$(Encode-Html $risk.Description)</td>
+                                                <td>$riskDescriptionHtml</td>
                                             </tr>
 "@
                         }
@@ -1688,11 +1772,10 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $deviceCount = 0
                 foreach ($s in $vnet.Subnets) { $deviceCount += $s.ConnectedDevices.Count }
                 
-                $tooltip = "$($vnet.Name)\nSubscription: $($vnet.SubscriptionName)\nAddress: $($vnet.AddressSpace)\nLocation: $($vnet.Location)\nSubnets: $($vnet.Subnets.Count)\nDevices: $deviceCount"
-                # Escape tooltip for JavaScript - keep actual newlines, just escape quotes
-                $tooltipEscaped = $tooltip -replace "`"", "\`""
-                # Escape label for JavaScript
-                $vnetNameEscaped = $vnet.Name -replace "\\", "\\\\" -replace "`"", "\`""
+                $tooltip = "$($vnet.Name)`nSubscription: $($vnet.SubscriptionName)`nAddress: $($vnet.AddressSpace)`nLocation: $($vnet.Location)`nSubnets: $($vnet.Subnets.Count)`nDevices: $deviceCount"
+                # Escape tooltip and label for JavaScript
+                $tooltipEscaped = Format-JsString $tooltip
+                $vnetNameEscaped = Format-JsString $vnet.Name
                 # Use subscription color for each VNet
                 $nodesJson.Add("{ id: $nodeId, label: `"$vnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$subColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                 
@@ -1700,9 +1783,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                 foreach ($gw in $vnet.Gateways) {
                     $gwNodeId = $nodeCounter++
                     $gwNodeIdMap[$gw.Id] = $gwNodeId
-                    $gwTooltip = "$($gw.Name)\nType: $($gw.Type)\nSKU: $($gw.Sku)\nVPN: $($gw.VpnType)"
-                    $gwTooltipEscaped = $gwTooltip -replace "`"", "\`""
-                    $gwNameEscaped = $gw.Name -replace "\\", "\\\\" -replace "`"", "\`""
+                    $gwTooltip = "$($gw.Name)`nType: $($gw.Type)`nSKU: $($gw.Sku)`nVPN: $($gw.VpnType)"
+                    $gwTooltipEscaped = Format-JsString $gwTooltip
+                    $gwNameEscaped = Format-JsString $gw.Name
                     $nodesJson.Add("{ id: $gwNodeId, label: `"$gwNameEscaped`", title: `"$gwTooltipEscaped`", color: `"#9b59b6`", shape: `"diamond`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                     $edgesJson.Add("{ from: $nodeId, to: $gwNodeId, color: { color: `"#9b59b6`" }, width: 2, length: 50 }")
                 }
@@ -1716,9 +1799,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                         } else {
                             $fwNodeId = $nodeCounter++
                             $fwNodeIdMap[$fw.Id] = $fwNodeId
-                            $fwTooltip = "$($fw.Name)\nType: Azure Firewall\nSKU: $($fw.SkuTier)\nThreat Intel: $($fw.ThreatIntelMode)"
-                            $fwTooltipEscaped = $fwTooltip -replace "`"", "\`""
-                            $fwNameEscaped = $fw.Name -replace "\\", "\\\\" -replace "`"", "\`""
+                            $fwTooltip = "$($fw.Name)`nType: Azure Firewall`nSKU: $($fw.SkuTier)`nThreat Intel: $($fw.ThreatIntelMode)"
+                            $fwTooltipEscaped = Format-JsString $fwTooltip
+                            $fwNameEscaped = Format-JsString $fw.Name
                             $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                         }
                         
@@ -1745,9 +1828,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $hubNodeId = $nodeCounter++
                 $nodeIdMap[$hub.Name] = $hubNodeId
                 $firewallCount = if ($hub.Firewalls) { $hub.Firewalls.Count } else { 0 }
-                $hubTooltip = "$($hub.Name)\nType: Virtual WAN Hub\nLocation: $($hub.Location)\nAddress: $($hub.AddressPrefix)\nER: $($hub.ExpressRouteConnections.Count) | S2S: $($hub.VpnConnections.Count) | Firewalls: $firewallCount"
-                $hubTooltipEscaped = $hubTooltip -replace "`"", "\`""
-                $hubNameEscaped = $hub.Name -replace "\\", "\\\\" -replace "`"", "\`""
+                $hubTooltip = "$($hub.Name)`nType: Virtual WAN Hub`nLocation: $($hub.Location)`nAddress: $($hub.AddressPrefix)`nER: $($hub.ExpressRouteConnections.Count) | S2S: $($hub.VpnConnections.Count) | Firewalls: $firewallCount"
+                $hubTooltipEscaped = Format-JsString $hubTooltip
+                $hubNameEscaped = Format-JsString $hub.Name
                 $nodesJson.Add("{ id: $hubNodeId, label: `"$hubNameEscaped`", title: `"$hubTooltipEscaped`", color: `"#f39c12`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                 
                 # Add Virtual WAN-integrated Azure Firewall nodes
@@ -1756,9 +1839,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                         if (-not $fwNodeIdMap.ContainsKey($fw.Id)) {
                             $fwNodeId = $nodeCounter++
                             $fwNodeIdMap[$fw.Id] = $fwNodeId
-                            $fwTooltip = "$($fw.Name)\nType: Azure Firewall (Virtual WAN)\nSKU: $($fw.SkuTier)\nThreat Intel: $($fw.ThreatIntelMode)\nHub: $($hub.Name)"
-                            $fwTooltipEscaped = $fwTooltip -replace "`"", "\`""
-                            $fwNameEscaped = $fw.Name -replace "\\", "\\\\" -replace "`"", "\`""
+                            $fwTooltip = "$($fw.Name)`nType: Azure Firewall (Virtual WAN)`nSKU: $($fw.SkuTier)`nThreat Intel: $($fw.ThreatIntelMode)`nHub: $($hub.Name)"
+                            $fwTooltipEscaped = Format-JsString $fwTooltip
+                            $fwNameEscaped = Format-JsString $fw.Name
                             $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$subId`" }")
                             # Create edge from Hub to Firewall
                             $edgesJson.Add("{ from: $hubNodeId, to: $fwNodeId, color: { color: `"#e74c3c`" }, width: 2, length: 50, title: `"Azure Firewall in Virtual WAN Hub`" }")
@@ -1798,9 +1881,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                 $fwNodeId = $nodeCounter++
                 $fwNodeIdMap[$fw.Id] = $fwNodeId
                 $deploymentInfo = if ($fw.DeploymentType -eq "VirtualWAN") { "Virtual WAN Hub: $($fw.VirtualHubName)" } else { "VNet: $($fw.VNetName)" }
-                $fwTooltip = "$($fw.Name)\nType: Azure Firewall\nSKU: $($fw.SkuTier)\nThreat Intel: $($fw.ThreatIntelMode)\n$deploymentInfo"
-                $fwTooltipEscaped = $fwTooltip -replace "`"", "\`""
-                $fwNameEscaped = $fw.Name -replace "\\", "\\\\" -replace "`"", "\`""
+                $fwTooltip = "$($fw.Name)`nType: Azure Firewall`nSKU: $($fw.SkuTier)`nThreat Intel: $($fw.ThreatIntelMode)`n$deploymentInfo"
+                $fwTooltipEscaped = Format-JsString $fwTooltip
+                $fwNameEscaped = Format-JsString $fw.Name
                 $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, group: `"$fwSubId`" }")
                 
                 # Try to link to VNet if VNetName is known and VNet node exists
@@ -1848,9 +1931,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                             # This is a Virtual WAN hub not in our inventory
                             $nodeId = $nodeCounter++
                             $nodeIdMap[$remoteVnetName] = $nodeId
-                            $tooltip = "$remoteVnetName\nType: Virtual WAN Hub\nSubscription: Unknown\n(No access to this subscription)"
-                            $tooltipEscaped = $tooltip -replace "`"", "\`""
-                            $remoteVnetNameEscaped = $remoteVnetName -replace "\\", "\\\\" -replace "`"", "\`""
+                            $tooltip = "$remoteVnetName`nType: Virtual WAN Hub`nSubscription: Unknown`n(No access to this subscription)"
+                            $tooltipEscaped = Format-JsString $tooltip
+                            $remoteVnetNameEscaped = Format-JsString $remoteVnetName
                             $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownHubColor`", shape: `"hexagon`", size: 30, font: { color: `"#e8e8e8`", size: 16 }, group: `"unknown`" }")
                         }
                     } else {
@@ -1860,9 +1943,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                             # This remote VNet is not in our inventory - create a node for it
                             $nodeId = $nodeCounter++
                             $nodeIdMap[$remoteVnetName] = $nodeId
-                            $tooltip = "$remoteVnetName\nSubscription: Unknown\n(No access to this subscription)"
-                            $tooltipEscaped = $tooltip -replace "`"", "\`""
-                            $remoteVnetNameEscaped = $remoteVnetName -replace "\\", "\\\\" -replace "`"", "\`""
+                            $tooltip = "$remoteVnetName`nSubscription: Unknown`n(No access to this subscription)"
+                            $tooltipEscaped = Format-JsString $tooltip
+                            $remoteVnetNameEscaped = Format-JsString $remoteVnetName
                             $nodesJson.Add("{ id: $nodeId, label: `"$remoteVnetNameEscaped`", title: `"$tooltipEscaped`", color: `"$unknownVnetColor`", shape: `"dot`", size: 25, font: { color: `"#e8e8e8`", size: 16 }, group: `"unknown`" }")
                         }
                     }
@@ -2017,9 +2100,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                                 if ($conn.RemoteNetwork.Type -eq "OnPremises") {
                                     # Create on-premises node
                                     $onPremNodeId = $nodeCounter++
-                                    $onPremTooltip = "$remoteName\nType: On-Premises Network\nAddress Space: $($conn.RemoteNetwork.AddressSpace)\nGateway IP: $($conn.RemoteNetwork.GatewayIpAddress)"
-                                    $onPremTooltipEscaped = $onPremTooltip -replace "`"", "\`""
-                                    $remoteNameEscaped = $remoteName -replace "\\", "\\\\" -replace "`"", "\`""
+                                    $onPremTooltip = "$remoteName`nType: On-Premises Network`nAddress Space: $($conn.RemoteNetwork.AddressSpace)`nGateway IP: $($conn.RemoteNetwork.GatewayIpAddress)"
+                                    $onPremTooltipEscaped = Format-JsString $onPremTooltip
+                                    $remoteNameEscaped = Format-JsString $remoteName
                                     $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#ffffff`", size: 16 } }")
                                     
                                     # Add S2S edge
@@ -2090,10 +2173,10 @@ $(Get-ReportNavigation -ActivePage "Network")
                             if ($circuit.SkuTier) { $tooltipParts += "SKU: $($circuit.SkuTier)" }
                         }
                         if ($erConn.PeerASN) { $tooltipParts += "Peer ASN: $($erConn.PeerASN)" }
-                        $onPremTooltip = $tooltipParts -join "\n"
-                        # Escape the tooltip string for JavaScript - keep actual newlines, just escape quotes
-                        $onPremTooltipEscaped = $onPremTooltip -replace "`"", "\`""
-                        $circuitNameEscaped = $circuitName -replace "\\", "\\\\" -replace "`"", "\`""
+                        $onPremTooltip = $tooltipParts -join "`n"
+                        # Escape the tooltip and name for JavaScript
+                        $onPremTooltipEscaped = Format-JsString $onPremTooltip
+                        $circuitNameEscaped = Format-JsString $circuitName
                         $nodesJson.Add("{ id: $onPremNodeId, label: `"$circuitNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, group: `"onprem`" }")
                     }
                     
@@ -2112,9 +2195,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                     if (-not $nodeIdMap.ContainsKey($onPremKey)) {
                         $onPremNodeId = $nodeCounter++
                         $nodeIdMap[$onPremKey] = $onPremNodeId
-                        $onPremTooltip = "On-Premises Site\n$remoteSiteName\nAddress Space: $($vpnConn.RemoteSiteAddressSpace)"
-                        $onPremTooltipEscaped = $onPremTooltip -replace "`"", "\`""
-                        $remoteSiteNameEscaped = $remoteSiteName -replace "\\", "\\\\" -replace "`"", "\`""
+                        $onPremTooltip = "On-Premises Site`n$remoteSiteName`nAddress Space: $($vpnConn.RemoteSiteAddressSpace)"
+                        $onPremTooltipEscaped = Format-JsString $onPremTooltip
+                        $remoteSiteNameEscaped = Format-JsString $remoteSiteName
                         $nodesJson.Add("{ id: $onPremNodeId, label: `"$remoteSiteNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, group: `"onprem`" }")
                     }
                     
