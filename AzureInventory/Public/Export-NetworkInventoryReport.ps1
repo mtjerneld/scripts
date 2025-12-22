@@ -2924,6 +2924,13 @@ $(Get-ReportNavigation -ActivePage "Network")
                     var dataFullscreen = { nodes: nodes, edges: edges };
                     optionsFullscreen = JSON.parse(JSON.stringify(options)); // Clone options
                     
+                    // Sync hierarchical state from main diagram
+                    hierarchicalEnabledFullscreen = hierarchicalEnabled;
+                    if (hierarchicalEnabled) {
+                        optionsFullscreen.layout.hierarchical.enabled = true;
+                        optionsFullscreen.layout.hierarchical.direction = 'DU';
+                    }
+                    
                     // Disable physics initially if it's disabled in main diagram, to preserve positions
                     physicsEnabledFullscreen = physicsEnabled;
                     if (!physicsEnabled) {
@@ -3117,7 +3124,7 @@ $(Get-ReportNavigation -ActivePage "Network")
 
                     if (hierarchicalEnabledFullscreen) {
                         optionsFullscreen.layout.hierarchical.enabled = true;
-                        optionsFullscreen.layout.hierarchical.direction = 'LR';
+                        optionsFullscreen.layout.hierarchical.direction = 'DU';
                         optionsFullscreen.layout.hierarchical.sortMethod = 'directed';
                         optionsFullscreen.layout.hierarchical.levelSeparation = 200;
                         optionsFullscreen.layout.hierarchical.nodeSpacing = 200;
