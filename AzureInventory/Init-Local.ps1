@@ -36,6 +36,7 @@ $functionsToRemove = @(
     'Export-NetworkInventoryReport',
     'Export-CostTrackingReport',
     'Export-EOLReport',
+    'Export-RBACReport',
     # Helper functions
     'Get-SubscriptionContext',
     'Invoke-AzureApiWithRetry',
@@ -82,13 +83,15 @@ $functionsToRemove = @(
     'Format-ExtendedPropertiesDetails',
     'Get-AzureNetworkInventory',
     'Get-AzureCostData',
+    'Get-AzureRBACInventory',
     # Test functions
     'Test-ChangeTracking',
     'Test-EOLTracking',
     'Test-CostTracking',
     'Test-SecurityReport',
     'Test-Advisor',
-    'Test-VMBackup'
+    'Test-VMBackup',
+    'Test-RBAC'
 )
 
 foreach ($funcName in $functionsToRemove) {
@@ -1135,6 +1138,88 @@ Write-Host \"`n=== Testing Cost Tracking ===\" -ForegroundColor Cyan
     }
 }
 
+# Quick test wrapper for RBAC/IAM Inventory report
+function Test-RBAC {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$SubscriptionIds,
+
+        [Parameter(Mandatory = $false)]
+        [string]$OutputPath = "rbac-test.html"
+    )
+
+    Write-Host "`n=== Testing RBAC/IAM Inventory Report ===" -ForegroundColor Cyan
+
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Error "Not connected to Azure. Run Connect-AzAccount first."
+        return
+    }
+
+    if (-not (Get-Command -Name Get-AzureRBACInventory -ErrorAction SilentlyContinue)) {
+        Write-Error "Get-AzureRBACInventory function not found. Make sure Init-Local.ps1 has loaded all functions."
+        return
+    }
+
+    if (-not (Get-Command -Name Export-RBACReport -ErrorAction SilentlyContinue)) {
+        Write-Error "Export-RBACReport function not found. Make sure Init-Local.ps1 has loaded all functions."
+        return
+    }
+
+    # Get subscriptions in scope
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $subscriptionResult = Get-SubscriptionsToScan -SubscriptionIds $SubscriptionIds -Errors $errors
+    $subscriptions = $subscriptionResult.Subscriptions
+
+    if ($subscriptions.Count -eq 0) {
+        Write-Error "No subscriptions found to scan for RBAC inventory."
+        return
+    }
+
+    Write-Host "Collecting RBAC inventory from $($subscriptions.Count) subscription(s)..." -ForegroundColor Cyan
+
+    $tenantId = if ($context.Tenant) { $context.Tenant.Id } else { "Unknown" }
+    $subIdsForRBAC = @($subscriptions.Id)
+
+    try {
+        $rbacData = Get-AzureRBACInventory -SubscriptionIds $subIdsForRBAC -TenantId $tenantId
+
+        Write-Host "`nRBAC Inventory Collection Summary:" -ForegroundColor Green
+        Write-Host "  Total Assignments: $($rbacData.Statistics.TotalAssignments)" -ForegroundColor Gray
+        Write-Host "  Critical Risk: $($rbacData.Statistics.ByRiskLevel.Critical)" -ForegroundColor $(if ($rbacData.Statistics.ByRiskLevel.Critical -gt 0) { 'Red' } else { 'Green' })
+        Write-Host "  High Risk: $($rbacData.Statistics.ByRiskLevel.High)" -ForegroundColor $(if ($rbacData.Statistics.ByRiskLevel.High -gt 0) { 'Yellow' } else { 'Green' })
+        Write-Host "  Orphaned: $($rbacData.Statistics.OrphanedCount)" -ForegroundColor $(if ($rbacData.Statistics.OrphanedCount -gt 0) { 'Red' } else { 'Green' })
+        Write-Host "  External/Guest: $($rbacData.Statistics.ExternalCount)" -ForegroundColor Gray
+        Write-Host "  Custom Roles: $($rbacData.Statistics.CustomRoleCount)" -ForegroundColor Gray
+
+        # Resolve full path
+        if (-not [System.IO.Path]::IsPathRooted($OutputPath)) {
+            $OutputPath = Join-Path (Get-Location).Path $OutputPath
+        }
+        Write-Host "`nGenerating RBAC HTML report at: $OutputPath" -ForegroundColor Gray
+
+        $null = Export-RBACReport -RBACData $rbacData -OutputPath $OutputPath -TenantId $tenantId
+
+        Write-Host "`n[SUCCESS] RBAC report generated: $OutputPath" -ForegroundColor Green
+
+        if (Test-Path $OutputPath) {
+            $fullPath = (Resolve-Path $OutputPath).Path
+            Write-Host "Opening RBAC report..." -ForegroundColor Cyan
+            Start-Process $fullPath -ErrorAction SilentlyContinue
+        } else {
+            Write-Warning "RBAC report file not found at: $OutputPath"
+        }
+    }
+    catch {
+        Write-Error "Failed to generate RBAC report: $_"
+        Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
+    }
+}
+
 # Summary of loaded functions (backend + interactive) – printed last so that all Test-* are defined
 Write-Host "`nBackend / core functions (auto-loaded):" -ForegroundColor Cyan
 $backendFunctions = @()
@@ -1171,7 +1256,8 @@ $userFunctions = @(
     'Test-VMBackup',
     'Test-Advisor',
     'Test-EOLTracking',
-    'Test-CostTracking'
+    'Test-CostTracking',
+    'Test-RBAC'
 )
 
 foreach ($funcName in $userFunctions) {
@@ -1189,5 +1275,6 @@ Write-Host "  - Test-ChangeTracking                 # Generate Change Tracking r
 Write-Host "  - Test-NetworkInventory               # Generate Network Inventory report" -ForegroundColor Gray
 Write-Host "  - Test-VMBackup                       # Generate VM Backup report" -ForegroundColor Gray
 Write-Host "  - Test-Advisor                        # Generate Advisor report" -ForegroundColor Gray
+Write-Host "  - Test-RBAC                           # Generate RBAC/IAM Inventory report" -ForegroundColor Gray
 Write-Host "  - Test-CostTracking                   # Generate Cost Tracking report" -ForegroundColor Gray
 

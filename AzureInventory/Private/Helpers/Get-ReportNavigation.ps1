@@ -15,7 +15,7 @@ function Get-ReportNavigation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [ValidateSet('Dashboard', 'Security', 'Network', 'VMBackup', 'Advisor', 'ChangeTracking', 'CostTracking', 'EOL')]
+        [ValidateSet('Dashboard', 'Security', 'Network', 'VMBackup', 'Advisor', 'ChangeTracking', 'CostTracking', 'EOL', 'RBAC')]
         [string]$ActivePage = 'Dashboard'
     )
     
@@ -28,6 +28,7 @@ function Get-ReportNavigation {
         @{ Name = 'Change Tracking';   Href = 'change-tracking.html'; Page = 'ChangeTracking' }
         @{ Name = 'Cost Tracking';     Href = 'cost-tracking.html';   Page = 'CostTracking' }
         @{ Name = 'EOL Tracking';      Href = 'eol.html';             Page = 'EOL' }
+        @{ Name = 'RBAC/IAM';          Href = 'rbac.html';            Page = 'RBAC' }
     )
     
     $navHtml = @"

@@ -50,6 +50,7 @@ function Get-ReportStylesheet {
             --accent-blue: #54a0ff;
             --accent-purple: #9b59b6;
             --accent-orange: #ff9f43;
+            --accent-cyan: #06b6d4;
             --border-color: #3d3d5c;
             --text-primary: #e8e8e8;
         }

@@ -56,6 +56,9 @@ function Export-DashboardReport {
         [Parameter(Mandatory = $false)]
         [hashtable]$CostTrackingReportData = $null,
 
+        [Parameter(Mandatory = $false)]
+        [hashtable]$RBACReportData = $null,
+
         [Parameter(Mandatory = $true)]
         [string]$OutputPath,
         
@@ -280,6 +283,21 @@ function Export-DashboardReport {
     # Format cost for display
     $costTotalLocalFormatted = [math]::Round($costTotalLocal, 0).ToString("N0") -replace ',', ' '
     $costTotalUSDFormatted = [math]::Round($costTotalUSD, 0).ToString("N0") -replace ',', ' '
+    
+    # RBAC/IAM metrics
+    $rbacTotalAssignments = 0
+    $rbacCriticalRisk = 0
+    $rbacHighRisk = 0
+    $rbacOrphaned = 0
+    $rbacExternal = 0
+    if ($AuditResult.RBACInventory) {
+        $rbacStats = $AuditResult.RBACInventory.Statistics
+        $rbacTotalAssignments = $rbacStats.TotalAssignments
+        $rbacCriticalRisk = $rbacStats.ByRiskLevel.Critical
+        $rbacHighRisk = $rbacStats.ByRiskLevel.High
+        $rbacOrphaned = $rbacStats.OrphanedCount
+        $rbacExternal = $rbacStats.ExternalCount
+    }
     
     # Subscription count
     $subscriptionCount = ($AuditResult.SubscriptionsScanned | Measure-Object).Count
@@ -578,6 +596,13 @@ $(if ($networkSubnetsMissingNSG -gt 0) {
                 <div class="report-info">
                     <h3>Cost Tracking</h3>
                     <p>$costCurrency $costTotalLocalFormatted ($costDays days) | $costSubscriptionCount subscriptions</p>
+                </div>
+            </a>
+            <a href="rbac.html" class="report-link">
+                <div class="report-icon" style="background: rgba(155, 89, 182, 0.15); color: var(--accent-purple);">🔐</div>
+                <div class="report-info">
+                    <h3>RBAC/IAM Inventory</h3>
+                    <p>$rbacTotalAssignments assignments | $rbacCriticalRisk critical | $rbacOrphaned orphaned</p>
                 </div>
             </a>
         </div>

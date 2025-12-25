@@ -380,7 +380,8 @@ function Invoke-AzureSecurityAudit {
         AdvisorRecommendations  = $advisorRecommendations
         ChangeTrackingData      = $changeTrackingData
         NetworkInventory        = $networkInventory
-        CostTrackingData        = $null
+        CostTrackingData        = $costTrackingData
+        RBACInventory           = $rbacInventory
         ComplianceScores        = $complianceScores
         EOLStatus               = @()
         Errors                  = $errors
@@ -420,12 +421,45 @@ function Invoke-AzureSecurityAudit {
     try {
         Write-Host "`n=== Collecting Cost Data ===" -ForegroundColor Cyan
         $costTrackingData = Collect-CostData -Subscriptions $subscriptions -DaysToInclude 30 -Errors $errors
-        $result.CostTrackingData = $costTrackingData
         Write-Verbose "Updated result.CostTrackingData with cost data for $($costTrackingData.SubscriptionCount) subscriptions"
     }
     catch {
         Write-Warning "Failed to collect cost tracking data: $_"
-        $result.CostTrackingData = @{}
+        $costTrackingData = @{}
+    }
+
+    # Collect RBAC Inventory
+    $rbacInventory = $null
+    try {
+        Write-Host "`n=== Collecting RBAC/IAM Inventory ===" -ForegroundColor Cyan
+        # Check if function exists, if not try to load it
+        if (-not (Get-Command -Name Get-AzureRBACInventory -ErrorAction SilentlyContinue)) {
+            $moduleRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+            $collectorPath = Join-Path $moduleRoot "Private\Collectors\Get-AzureRBACInventory.ps1"
+            if (Test-Path $collectorPath) {
+                try {
+                    . $collectorPath
+                }
+                catch {
+                    Write-Warning "Failed to load Get-AzureRBACInventory: $_"
+                }
+            }
+        }
+        
+        if (Get-Command -Name Get-AzureRBACInventory -ErrorAction SilentlyContinue) {
+            $subIdsForRBAC = @($subscriptions.Id)
+            $rbacInventory = Get-AzureRBACInventory -SubscriptionIds $subIdsForRBAC -TenantId $tenantId
+            Write-Host "  Found $($rbacInventory.Statistics.TotalAssignments) role assignments" -ForegroundColor Green
+            # Update result with RBAC inventory
+            $result.RBACInventory = $rbacInventory
+            Write-Verbose "Updated result.RBACInventory with $($rbacInventory.Statistics.TotalAssignments) assignments"
+        } else {
+            Write-Warning "Get-AzureRBACInventory function not available"
+        }
+    }
+    catch {
+        Write-Warning "RBAC inventory collection failed: $_"
+        Write-Verbose "RBAC collection error details: $($_.Exception.Message)"
     }
 
     # Collect EOL Status (using Microsoft's official EOL lists)

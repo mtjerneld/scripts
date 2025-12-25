@@ -72,6 +72,7 @@ function Generate-AuditReports {
     $advisorReportData = $null
     $changeTrackingReportData = $null
     $networkInventoryReportData = $null
+    $rbacReportData = $null
     
     try {
         Write-Host "  - Security Audit..." -NoNewline
@@ -154,6 +155,24 @@ function Generate-AuditReports {
         Write-Host " ERROR: $_" -ForegroundColor Red
     }
 
+    # RBAC/IAM Inventory report
+    try {
+        Write-Host "  - RBAC/IAM Inventory..." -NoNewline
+        $rbacReportPath = Join-Path $outputFolder "rbac.html"
+        if ($AuditResult.RBACInventory) {
+            $rbacResult = Export-RBACReport -RBACData $AuditResult.RBACInventory -OutputPath $rbacReportPath -TenantId $tenantId
+            if ($rbacResult -is [hashtable]) {
+                $rbacReportData = $rbacResult
+            }
+        } else {
+            Write-Host " SKIPPED (no data)" -ForegroundColor Yellow
+        }
+        Write-Host " OK" -ForegroundColor Green
+    }
+    catch {
+        Write-Host " ERROR: $_" -ForegroundColor Red
+    }
+
     # EOL / Deprecated Components report
     try {
         Write-Host "  - EOL Tracking..." -NoNewline
@@ -207,7 +226,7 @@ function Generate-AuditReports {
     try {
         Write-Host "  - Dashboard..." -NoNewline
         $dashboardPath = Join-Path $outputFolder "index.html"
-        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -SecurityReportData $securityReportData -VMBackupReportData $vmBackupReportData -AdvisorReportData $advisorReportData -ChangeTrackingReportData $changeTrackingReportData -NetworkInventoryReportData $networkInventoryReportData -CostTrackingReportData $costTrackingReportData -OutputPath $dashboardPath -TenantId $tenantId
+        $null = Export-DashboardReport -AuditResult $AuditResult -VMInventory $AuditResult.VMInventory -AdvisorRecommendations $AuditResult.AdvisorRecommendations -SecurityReportData $securityReportData -VMBackupReportData $vmBackupReportData -AdvisorReportData $advisorReportData -ChangeTrackingReportData $changeTrackingReportData -NetworkInventoryReportData $networkInventoryReportData -CostTrackingReportData $costTrackingReportData -RBACReportData $rbacReportData -OutputPath $dashboardPath -TenantId $tenantId
         Write-Host " OK" -ForegroundColor Green
     }
     catch {
