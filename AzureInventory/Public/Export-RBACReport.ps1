@@ -78,68 +78,23 @@ function Export-RBACReport {
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $stats = $RBACData.Statistics
     $metadata = $RBACData.Metadata
+    $principals = $RBACData.Principals
+    $orphanedAssignments = $RBACData.OrphanedAssignments
+    $customRoles = $RBACData.CustomRoles
     $displayTenantId = if ($TenantId -ne "Unknown") { $TenantId } else { $metadata.TenantId }
 
     # Pre-calculate subscription options for filter
-    $subscriptionOptions = $RBACData.RoleAssignments | 
-        Select-Object -ExpandProperty SubscriptionName -Unique | 
+    $allSubscriptions = @()
+    foreach ($principal in $principals) {
+        $allSubscriptions += $principal.AffectedSubscriptions
+    }
+    $subscriptionOptions = $allSubscriptions | 
+        Select-Object -Unique | 
         Sort-Object |
         ForEach-Object { 
             $encoded = Encode-Html $_
             "<option value=`"$encoded`">$encoded</option>" 
         }
-
-    # Group assignments by principal for Principal View
-    $riskOrder = @{ "Critical" = 4; "High" = 3; "Medium" = 2; "Low" = 1 }
-    $principalGroups = @{}
-    foreach ($assignment in $RBACData.RoleAssignments) {
-        # Use PrincipalId (not PrincipalObjectId) and include UPN in key for uniqueness
-        # This ensures users with same display name but different UPNs are separated
-        $principalId = $assignment.PrincipalId
-        $principalUpn = if ($assignment.PrincipalUPN) { $assignment.PrincipalUPN } else { "" }
-        $key = "$principalId|$($assignment.PrincipalType)|$principalUpn"
-        
-        if (-not $principalGroups.ContainsKey($key)) {
-            # Initialize principal group
-            $principalGroups[$key] = @{
-                PrincipalId = $principalId
-                PrincipalType = $assignment.PrincipalType
-                PrincipalDisplayName = $assignment.PrincipalDisplayName
-                PrincipalUPN = $assignment.PrincipalUPN
-                Assignments = [System.Collections.Generic.List[object]]::new()
-                Subscriptions = @()
-                Roles = @()
-                HighestRiskLevel = "Low"
-                IsOrphaned = $false
-                IsExternal = $false
-            }
-        }
-        
-        $group = $principalGroups[$key]
-        $group.Assignments.Add($assignment) | Out-Null
-        
-        # Add unique subscription
-        if ($group.Subscriptions -notcontains $assignment.SubscriptionName) {
-            $group.Subscriptions += $assignment.SubscriptionName
-        }
-        
-        # Add unique role
-        if ($group.Roles -notcontains $assignment.RoleDefinitionName) {
-            $group.Roles += $assignment.RoleDefinitionName
-        }
-        
-        # Update highest risk level
-        if ($riskOrder[$assignment.RiskLevel] -gt $riskOrder[$group.HighestRiskLevel]) {
-            $group.HighestRiskLevel = $assignment.RiskLevel
-        }
-        
-        if ($assignment.IsOrphaned) { $group.IsOrphaned = $true }
-        if ($assignment.IsExternal) { $group.IsExternal = $true }
-    }
-    
-    # Convert to sorted array for display
-    $principalViewList = $principalGroups.Values | 
-        Sort-Object -Property @{ Expression = { $riskOrder[$_.HighestRiskLevel] }; Descending = $true }, PrincipalDisplayName
 
     # Get base stylesheet and add RBAC-specific styles
     $rbacSpecificStyles = @"
@@ -536,7 +491,238 @@ function Export-RBACReport {
             margin: 2px;
         }
         
-        /* Principal View */
+        /* Principal Card (new unified view) */
+        .principal-card {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+        
+        .principal-card[data-risk="Critical"] {
+            border-left: 4px solid var(--accent-red);
+        }
+        
+        .principal-card[data-risk="High"] {
+            border-left: 4px solid var(--accent-yellow);
+        }
+        
+        .principal-card[data-risk="Medium"] {
+            border-left: 4px solid var(--accent-blue);
+        }
+        
+        .principal-card[data-risk="Low"] {
+            border-left: 4px solid var(--accent-green);
+        }
+        
+        .principal-header {
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .principal-header:hover {
+            background: var(--bg-hover);
+        }
+        
+        .principal-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 350px;
+        }
+        
+        .principal-icon {
+            font-size: 1.2rem;
+        }
+        
+        .principal-name-block {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        
+        .principal-name {
+            font-weight: 600;
+            font-size: 1rem;
+        }
+        
+        .principal-upn {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+        
+        .principal-summary {
+            display: flex;
+            gap: 20px;
+            flex: 1;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+        
+        .summary-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .toggle-icon {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            transition: transform 0.2s;
+        }
+        
+        .principal-card.expanded .toggle-icon {
+            transform: rotate(180deg);
+        }
+        
+        .principal-details {
+            padding: 0 20px 20px 20px;
+            background: var(--bg-secondary);
+        }
+        
+        .scope-table {
+            width: 100%;
+            font-size: 0.85rem;
+        }
+        
+        .scope-table th {
+            text-align: left;
+            padding: 10px 12px;
+            background: var(--bg-surface);
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-size: 0.75rem;
+        }
+        
+        .scope-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .scope-type {
+            display: inline-block;
+            min-width: 60px;
+        }
+        
+        .scope-name {
+            margin-left: 5px;
+        }
+        
+        .inheritance-badge {
+            background: var(--bg-hover);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        
+        /* Custom Role Card */
+        .custom-role-card {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+        
+        .custom-role-header {
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .custom-role-header:hover {
+            background: var(--bg-hover);
+        }
+        
+        .custom-role-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex: 1;
+        }
+        
+        .custom-role-name-block {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+        }
+        
+        .custom-role-name {
+            font-weight: 600;
+            font-size: 1rem;
+        }
+        
+        .custom-role-desc {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        
+        .custom-role-summary {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .custom-role-details {
+            padding: 0 20px 20px 20px;
+            background: var(--bg-secondary);
+        }
+        
+        .custom-role-permissions,
+        .custom-role-usage {
+            margin-bottom: 20px;
+        }
+        
+        .custom-role-permissions h4,
+        .custom-role-usage h4 {
+            margin: 0 0 10px 0;
+            font-size: 0.95rem;
+            color: var(--text-primary);
+        }
+        
+        .permission-section {
+            margin-bottom: 15px;
+            padding: 10px;
+            background: var(--bg-surface);
+            border-radius: var(--radius-sm);
+        }
+        
+        .permission-section strong {
+            display: block;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+        
+        .permission-section ul {
+            margin: 8px 0 0 20px;
+            padding: 0;
+        }
+        
+        .permission-section li {
+            margin: 4px 0;
+            font-size: 0.85rem;
+        }
+        
+        .permission-section code {
+            background: var(--bg-secondary);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.85rem;
+            color: var(--accent-blue);
+        }
+        
+        /* Principal View (for orphaned section) */
         .principal-view-row {
             background: var(--bg-secondary);
             border-radius: var(--radius-sm);
@@ -659,44 +845,29 @@ $(Get-ReportNavigation -ActivePage "RBAC")
         <!-- Summary Cards -->
         <div class="summary-grid">
             <div class="summary-card">
-                <div class="label">Total Assignments</div>
-                <div class="value value-neutral">$($stats.TotalAssignments)</div>
-                <div class="subtext">Across all subscriptions</div>
+                <div class="label">Principals</div>
+                <div class="value value-neutral">$($stats.TotalPrincipals)</div>
+                <div class="subtext">Unique principals</div>
             </div>
             <div class="summary-card">
                 <div class="label">Critical Risk</div>
-                <div class="value value-critical">$($stats.ByRiskLevel.Critical)</div>
-                <div class="subtext">High privilege at broad scope</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">High Risk</div>
-                <div class="value value-high">$($stats.ByRiskLevel.High)</div>
-                <div class="subtext">Needs review</div>
+                <div class="value value-critical">$($stats.PrincipalsByRisk.Critical)</div>
+                <div class="subtext">Principals with critical access</div>
             </div>
             <div class="summary-card">
                 <div class="label">Orphaned</div>
                 <div class="value value-critical">$($stats.OrphanedCount)</div>
-                <div class="subtext">Deleted principals</div>
+                <div class="subtext">To clean up</div>
             </div>
             <div class="summary-card">
                 <div class="label">External/Guest</div>
                 <div class="value value-medium">$($stats.ExternalCount)</div>
-                <div class="subtext">B2B guest access</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Non-Human</div>
-                <div class="value value-neutral">$($stats.ByPrincipalType.ServicePrincipal + $stats.ByPrincipalType.ManagedIdentity)</div>
-                <div class="subtext">SPs and Managed Identities</div>
+                <div class="subtext">External identities</div>
             </div>
             <div class="summary-card">
                 <div class="label">Custom Roles</div>
                 <div class="value value-neutral">$($stats.CustomRoleCount)</div>
-                <div class="subtext">Tenant-specific definitions</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Users</div>
-                <div class="value value-neutral">$($stats.ByPrincipalType.User)</div>
-                <div class="subtext">Direct user assignments</div>
+                <div class="subtext">Definitions</div>
             </div>
         </div>
         
@@ -706,24 +877,24 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             <div class="distribution-bar">
 "@
 
-    # Calculate percentages for distribution bar
-    $total = [Math]::Max(1, $stats.TotalAssignments)
-    $criticalPct = [Math]::Round(($stats.ByRiskLevel.Critical / $total) * 100, 1)
-    $highPct = [Math]::Round(($stats.ByRiskLevel.High / $total) * 100, 1)
-    $mediumPct = [Math]::Round(($stats.ByRiskLevel.Medium / $total) * 100, 1)
-    $lowPct = [Math]::Round(($stats.ByRiskLevel.Low / $total) * 100, 1)
+    # Calculate percentages for distribution bar based on principals
+    $total = [Math]::Max(1, $stats.TotalPrincipals)
+    $criticalPct = [Math]::Round(($stats.PrincipalsByRisk.Critical / $total) * 100, 1)
+    $highPct = [Math]::Round(($stats.PrincipalsByRisk.High / $total) * 100, 1)
+    $mediumPct = [Math]::Round(($stats.PrincipalsByRisk.Medium / $total) * 100, 1)
+    $lowPct = [Math]::Round(($stats.PrincipalsByRisk.Low / $total) * 100, 1)
 
     $html += @"
-                <div class="distribution-segment segment-critical" style="width: $criticalPct%;" title="Critical: $($stats.ByRiskLevel.Critical)"></div>
-                <div class="distribution-segment segment-high" style="width: $highPct%;" title="High: $($stats.ByRiskLevel.High)"></div>
-                <div class="distribution-segment segment-medium" style="width: $mediumPct%;" title="Medium: $($stats.ByRiskLevel.Medium)"></div>
-                <div class="distribution-segment segment-low" style="width: $lowPct%;" title="Low: $($stats.ByRiskLevel.Low)"></div>
+                <div class="distribution-segment segment-critical" style="width: $criticalPct%;" title="Critical: $($stats.PrincipalsByRisk.Critical)"></div>
+                <div class="distribution-segment segment-high" style="width: $highPct%;" title="High: $($stats.PrincipalsByRisk.High)"></div>
+                <div class="distribution-segment segment-medium" style="width: $mediumPct%;" title="Medium: $($stats.PrincipalsByRisk.Medium)"></div>
+                <div class="distribution-segment segment-low" style="width: $lowPct%;" title="Low: $($stats.PrincipalsByRisk.Low)"></div>
             </div>
             <div class="subtext" style="margin-top: 8px;">
-                <span style="color: var(--accent-red);"><span class="risk-dot" style="background: var(--accent-red);"></span> Critical: $($stats.ByRiskLevel.Critical)</span> |
-                <span style="color: var(--accent-yellow);"><span class="risk-dot" style="background: var(--accent-yellow);"></span> High: $($stats.ByRiskLevel.High)</span> |
-                <span style="color: var(--accent-blue);"><span class="risk-dot" style="background: var(--accent-blue);"></span> Medium: $($stats.ByRiskLevel.Medium)</span> |
-                <span style="color: var(--accent-green);"><span class="risk-dot" style="background: var(--accent-green);"></span> Low: $($stats.ByRiskLevel.Low)</span>
+                <span style="color: var(--accent-red);"><span class="risk-dot" style="background: var(--accent-red);"></span> Critical: $($stats.PrincipalsByRisk.Critical)</span> |
+                <span style="color: var(--accent-yellow);"><span class="risk-dot" style="background: var(--accent-yellow);"></span> High: $($stats.PrincipalsByRisk.High)</span> |
+                <span style="color: var(--accent-blue);"><span class="risk-dot" style="background: var(--accent-blue);"></span> Medium: $($stats.PrincipalsByRisk.Medium)</span> |
+                <span style="color: var(--accent-green);"><span class="risk-dot" style="background: var(--accent-green);"></span> Low: $($stats.PrincipalsByRisk.Low)</span>
             </div>
         </div>
         
@@ -773,437 +944,165 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                     </select>
                 </div>
                 <div class="filter-stats">
-                    Showing <span id="visibleCount">$($stats.TotalAssignments)</span> of $($stats.TotalAssignments) assignments
+                    Showing <span id="visibleCount">$($stats.TotalPrincipals)</span> of $($stats.TotalPrincipals) principals
                 </div>
             </div>
         </div>
 "@
 
-    # Cross-Subscription Analysis Section
-    $crossSubCount = $RBACData.Analysis.CrossSubscriptionPrincipals.Count
-    if ($crossSubCount -gt 0) {
-        $html += @"
-        
-        <!-- Cross-Subscription Access -->
-        <div class="section">
-            <div class="section-header" onclick="toggleSection(this)">
-                <div class="section-title">
-                    &#127760; Cross-Subscription Access
-                    <span class="section-count warning">$crossSubCount principals</span>
-                </div>
-                <span class="section-toggle">&#9660;</span>
-            </div>
-            <div class="section-content">
-                <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                    Principals with access to multiple subscriptions. Review for least-privilege compliance.
-                </p>
-"@
-        
-        foreach ($principal in $RBACData.Analysis.CrossSubscriptionPrincipals | Select-Object -First 20) {
-            $icon = Get-PrincipalTypeIcon -Type $principal.PrincipalType
-            $riskBadge = Get-RiskBadgeClass -Risk $principal.HighestRiskLevel
-            $principalNameEncoded = Encode-Html $principal.PrincipalDisplayName
-            $principalUpnEncoded = if ($principal.PrincipalUPN) { Encode-Html $principal.PrincipalUPN } else { "" }
-            $safePrincipalId = "$($principal.PrincipalId)-$($principal.PrincipalType)" -replace '[^a-zA-Z0-9\-]', '-'
-            $crossSubPrincipalId = "crosssub-$safePrincipalId"
-            
-            # Group assignments by subscription for detailed view
-            $assignmentsBySub = $principal.Assignments | Group-Object SubscriptionName | Sort-Object Name
-            
-            $html += @"
-                <div class="principal-view-row" id="$crossSubPrincipalId" style="border-left-color: var(--accent-purple);">
-                    <div class="principal-view-header" data-principal-id="$crossSubPrincipalId" onclick="togglePrincipalDetails(this)">
-                        <div class="principal-view-info">
-                            <div class="principal-view-name">
-                                $icon $principalNameEncoded
-                                $(if ($principalUpnEncoded) { "<div style='font-size: 0.85rem; color: var(--text-secondary); font-weight: normal; margin-top: 2px;'>$principalUpnEncoded</div>" })
-                                <span class="badge badge-type">$($principal.PrincipalType)</span>
-                                <span class="badge $riskBadge risk-level-badge" data-original-risk="$($principal.HighestRiskLevel)">$($principal.HighestRiskLevel)</span>
-                            </div>
-                            <div class="principal-view-stats">
-                                <span>&#128193; $($principal.SubscriptionCount) subscriptions</span>
-                                <span>&#128273; $($principal.AssignmentCount) assignments</span>
-                                <span>&#128203; $($principal.Roles.Count) unique roles</span>
-                            </div>
-                        </div>
-                        <span class="principal-view-toggle">&#9660;</span>
-                    </div>
-                    <div class="principal-view-details">
-                        <p style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.9rem;">
-                            Detailed role assignments per subscription:
-                        </p>
-"@
-            
-            # Show breakdown by subscription
-            foreach ($subGroup in $assignmentsBySub) {
-                $subName = $subGroup.Name
-                $subAssignments = $subGroup.Group | Sort-Object -Property RiskLevel, RoleDefinitionName
-                $subRoles = ($subAssignments | Select-Object -ExpandProperty RoleDefinitionName -Unique) -join ", "
-                $subRolesEncoded = Encode-Html $subRoles
-                $subNameEncoded = Encode-Html $subName
-                $subHighestRisk = ($subAssignments | Sort-Object { 
-                    switch ($_.RiskLevel) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } 'Low' { 3 } }
-                } | Select-Object -First 1).RiskLevel
-                $subRiskBadge = Get-RiskBadgeClass -Risk $subHighestRisk
-                
-                $html += @"
-                        <div style="margin-bottom: 20px; padding: 12px; background: var(--bg-surface); border-radius: var(--radius-sm); border-left: 3px solid var(--accent-purple);">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                <div style="font-weight: 600; font-size: 1rem;">&#128193; $subNameEncoded</div>
-                                <span class="badge $subRiskBadge subscription-risk-badge" data-original-risk="$subHighestRisk">$subHighestRisk</span>
-                            </div>
-                            <div style="color: var(--text-secondary); margin-bottom: 10px; font-size: 0.85rem;">
-                                <strong>Roles ($($subAssignments.Count) assignments):</strong> $subRolesEncoded
-                            </div>
-                            <div class="table-container">
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>Risk</th>
-                                            <th>Role</th>
-                                            <th>Scope Type</th>
-                                            <th>Scope</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-"@
-                
-                foreach ($assignment in $subAssignments) {
-                    $assignmentRiskBadge = Get-RiskBadgeClass -Risk $assignment.RiskLevel
-                    $scopeIcon = Get-ScopeIcon -Type $assignment.ScopeType
-                    $roleNameEncoded = Encode-Html $assignment.RoleDefinitionName
-                    $scopeEncoded = Encode-Html $assignment.Scope
-                    $searchData = "$principalNameEncoded $roleNameEncoded $scopeEncoded $subName".ToLower()
-                    $searchDataEncoded = Encode-Html $searchData
-                    
-                    $html += @"
-                                        <tr class="assignment-row"
-                                            data-search="$searchDataEncoded"
-                                            data-risk="$($assignment.RiskLevel)"
-                                            data-type="$($principal.PrincipalType)"
-                                            data-sub="$subNameEncoded">
-                                            <td><span class="badge $assignmentRiskBadge">$($assignment.RiskLevel)</span></td>
-                                            <td>$roleNameEncoded</td>
-                                            <td>$scopeIcon $($assignment.ScopeType)</td>
-                                            <td class="scope-cell">
-                                                <div class="scope-path">$scopeEncoded</div>
-                                            </td>
-                                        </tr>
-"@
-                }
-                
-                $html += @"
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-"@
-            }
-            
-            $html += @"
-                    </div>
-                </div>
-"@
-        }
-        
-        $html += @"
-            </div>
-        </div>
-"@
-    }
-
-    # Principal View Section (grouped by user/principal)
-    $principalViewCount = $principalViewList.Count
+    # Principal Access List Section (unified view)
     $html += @"
-    
-        <!-- Principal View -->
+        
+        <!-- Principal Access List -->
         <div class="section">
             <div class="section-header" onclick="toggleSection(this)">
                 <div class="section-title">
-                    &#128100; Principal View
-                    <span class="section-count">$principalViewCount principals</span>
+                    &#128100; Principal Access List
+                    <span class="section-count">$($principals.Count) principals</span>
                 </div>
                 <span class="section-toggle">&#9660;</span>
             </div>
             <div class="section-content">
                 <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                    View all access grouped by principal. Click on any principal to expand and see their detailed role assignments.
+                    View all principals and their effective access. Click on any principal to expand and see detailed role assignments.
                 </p>
 "@
 
-    foreach ($principal in $principalViewList) {
+    foreach ($principal in $principals) {
         $icon = Get-PrincipalTypeIcon -Type $principal.PrincipalType
         $riskBadge = Get-RiskBadgeClass -Risk $principal.HighestRiskLevel
+        $principalNameEncoded = Encode-Html $principal.PrincipalDisplayName
+        $principalUpnEncoded = if ($principal.PrincipalUPN) { Encode-Html $principal.PrincipalUPN } else { "" }
         $safePrincipalId = "$($principal.PrincipalId)-$($principal.PrincipalType)" -replace '[^a-zA-Z0-9\-]', '-'
-        $principalId = "principal-$safePrincipalId"
+        $principalCardId = "principal-$safePrincipalId"
         
-        $extraBadges = ""
-        if ($principal.IsOrphaned) { $extraBadges += '<span class="badge badge-orphaned">Orphaned</span> ' }
-        if ($principal.IsExternal) { $extraBadges += '<span class="badge badge-external">External</span> ' }
+        # Build search data
+        $rolesList = ($principal.Roles -join " ") -replace '<[^>]+>', ''
+        $searchData = "$principalNameEncoded $principalUpnEncoded $rolesList".ToLower()
+        $searchDataEncoded = Encode-Html $searchData
         
-        $assignmentText = if ($principal.Assignments.Count -eq 1) { "assignment" } else { "assignments" }
-        $subscriptionText = if ($principal.Subscriptions.Count -eq 1) { "subscription" } else { "subscriptions" }
-        $roleText = if ($principal.Roles.Count -eq 1) { "role" } else { "roles" }
-        
-        # Build UPN div if exists
-        $upnDiv = ""
-        if ($principal.PrincipalUPN) {
-            $upnEncoded = Encode-Html $principal.PrincipalUPN
-            $upnDiv = "<div style='color: var(--text-secondary); margin-bottom: 10px; font-size: 0.85rem;'>UPN: $upnEncoded</div>"
+        # Build external badge if applicable
+        $externalBadge = ""
+        if ($principal.IsExternal) {
+            $externalBadge = '<span class="badge badge-external">External</span>'
         }
         
-        $subscriptionsList = ($principal.Subscriptions | Sort-Object) -join ", "
-        $subscriptionsListEncoded = Encode-Html $subscriptionsList
-        
-        $rolesList = ($principal.Roles | Sort-Object) -join ", "
-        $rolesListEncoded = Encode-Html $rolesList
-        
-        $principalNameEncoded = Encode-Html $principal.PrincipalDisplayName
-        
         $html += @"
-                <div class="principal-view-row" id="$principalId">
-                    <div class="principal-view-header" data-principal-id="$principalId" onclick="togglePrincipalDetails(this)">
-                        <div class="principal-view-info">
-                            <div class="principal-view-name">
-                                $icon $principalNameEncoded
-                                <span class="badge badge-type">$($principal.PrincipalType)</span>
-                                $extraBadges
-                                <span class="badge $riskBadge risk-level-badge" data-original-risk="$($principal.HighestRiskLevel)">$($principal.HighestRiskLevel)</span>
+                <div class="principal-card" 
+                     id="$principalCardId" 
+                     data-risk="$($principal.HighestRiskLevel)" 
+                     data-type="$($principal.PrincipalType)"
+                     data-search="$searchDataEncoded">
+                    <div class="principal-header" onclick="togglePrincipal(this)">
+                        <div class="principal-info">
+                            <span class="principal-icon">$icon</span>
+                            <div class="principal-name-block">
+                                <span class="principal-name">$principalNameEncoded</span>
+                                $(if ($principalUpnEncoded) { "<span class='principal-upn'>$principalUpnEncoded</span>" })
                             </div>
-                            <div class="principal-view-stats">
-                                <span>&#128273; $($principal.Assignments.Count) $assignmentText</span>
-                                <span>&#128193; $($principal.Subscriptions.Count) $subscriptionText</span>
-                                <span>&#128203; $($principal.Roles.Count) $roleText</span>
-                            </div>
+                            <span class="badge badge-type">$($principal.PrincipalType)</span>
+                            $externalBadge
+                            <span class="badge $riskBadge risk-level-badge" data-original-risk="$($principal.HighestRiskLevel)">$($principal.HighestRiskLevel)</span>
                         </div>
-                        <span class="principal-view-toggle">&#9660;</span>
+                        <div class="principal-summary">
+                            <span class="summary-item">&#128273; $($principal.Roles -join ', ')</span>
+                            <span class="summary-item">&#128193; $($principal.ScopeCount) scopes</span>
+                            <span class="summary-item">&#127760; $($principal.SubscriptionCount) subscriptions</span>
+                        </div>
+                        <span class="toggle-icon">&#9660;</span>
                     </div>
-                    <div class="principal-view-details">
-                        $upnDiv
-                        <div style="color: var(--text-secondary); margin-bottom: 10px; font-size: 0.85rem;">
-                            <strong>Subscriptions:</strong> $subscriptionsListEncoded
-                        </div>
-                        <div style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.85rem;">
-                            <strong>Roles:</strong> $rolesListEncoded
-                        </div>
-                        <div class="table-container">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Risk</th>
-                                        <th>Role</th>
-                                        <th>Type</th>
-                                        <th>Scope Type</th>
-                                        <th>Scope</th>
-                                        <th>Subscription<sup style="font-size: 0.7em; color: var(--text-muted);" title="Not applicable for Management Group or Root scope assignments">*</sup></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
+                    
+                    <div class="principal-details" style="display: none;">
+                        <table class="scope-table">
+                            <thead>
+                                <tr>
+                                    <th>Risk</th>
+                                    <th>Role</th>
+                                    <th>Scope</th>
+                                    <th>Applies To</th>
+                                </tr>
+                            </thead>
+                            <tbody>
 "@
+
+        # Group scopes by type for better organization
+        $scopesByType = $principal.Scopes | Group-Object ScopeType | Sort-Object @{ Expression = {
+            switch ($_.Name) {
+                'Root' { 0 }
+                'ManagementGroup' { 1 }
+                'Subscription' { 2 }
+                'ResourceGroup' { 3 }
+                'Resource' { 4 }
+                default { 5 }
+            }
+        }}
         
-        # Group assignments for Root/MG to show once with all affected subscriptions
-        # Track which subscriptions are covered by MG/Root assignments to avoid duplicates
-        $mgRootAssignments = @{}
-        $subscriptionAssignments = @()
-        $coveredByMgRoot = @{}  # Track (SubscriptionName, Role) combinations covered by MG/Root
-        
-        foreach ($assignment in $principal.Assignments) {
-            if ($assignment.ScopeType -in @('ManagementGroup', 'Root')) {
-                # Group by Scope + Role for MG/Root assignments
-                $key = "$($assignment.Scope)|$($assignment.RoleDefinitionName)"
-                if (-not $mgRootAssignments.ContainsKey($key)) {
-                    $mgRootAssignments[$key] = @{
-                        Assignment = $assignment
-                        AffectedSubscriptions = [System.Collections.Generic.List[string]]::new()
+        foreach ($scopeGroup in $scopesByType) {
+            foreach ($scope in $scopeGroup.Group) {
+                $scopeRiskBadge = Get-RiskBadgeClass -Risk $scope.RiskLevel
+                $scopeIcon = Get-ScopeIcon -Type $scope.ScopeType
+                $scopeDisplayEncoded = Encode-Html $scope.ScopeDisplayName
+                $scopeEncoded = Encode-Html $scope.Scope
+                $roleEncoded = Encode-Html $scope.Role
+                
+                # Build "Applies To" column
+                $appliesTo = ""
+                if ($scope.ScopeType -in @('Root', 'ManagementGroup')) {
+                    if ($scope.InheritedBy -and $scope.InheritedBy.Count -gt 0) {
+                        $inheritedList = ($scope.InheritedBy | Sort-Object) -join ", "
+                        $inheritedListEncoded = Encode-Html $inheritedList
+                        $count = $scope.InheritedBy.Count
+                        $appliesTo = "<span class='inheritance-badge'>&rarr; $count subscription$(if($count -ne 1){'s'}): $inheritedListEncoded</span>"
+                    } else {
+                        $appliesTo = "<span class='inheritance-badge'>&rarr; All subscriptions</span>"
                     }
+                } else {
+                    # For subscription/RG/Resource scopes, show specific subscription
+                    $appliesTo = Encode-Html ($scope.InheritedBy[0])
                 }
-                # Add subscription name - for MG/Root assignments, each subscription context gives us one subscription
-                # We collect all unique subscription names where this assignment is effective
-                if ($mgRootAssignments[$key].AffectedSubscriptions -notcontains $assignment.SubscriptionName) {
-                    $mgRootAssignments[$key].AffectedSubscriptions.Add($assignment.SubscriptionName) | Out-Null
-                }
-                # Mark this subscription+role as covered by MG/Root assignment
-                $coveredKey = "$($assignment.SubscriptionName)|$($assignment.RoleDefinitionName)"
-                $coveredByMgRoot[$coveredKey] = $true
-            } else {
-                # Subscription-level assignments - show all of them
-                # The IsInherited flag tells us if it was assigned at subscription level (false) or inherited from parent (true)
-                # We show all subscription-level assignments, whether direct or inherited
-                $subscriptionAssignments += $assignment
+                
+                $html += @"
+                                <tr class="assignment-row"
+                                    data-search="$searchDataEncoded"
+                                    data-risk="$($scope.RiskLevel)"
+                                    data-type="$($principal.PrincipalType)"
+                                    data-sub="">
+                                    <td><span class="badge $scopeRiskBadge">$($scope.RiskLevel)</span></td>
+                                    <td>$roleEncoded</td>
+                                    <td>
+                                        <span class="scope-type">$scopeIcon $($scope.ScopeType)</span>
+                                        <span class="scope-name">$scopeDisplayEncoded</span>
+                                        <div class="scope-path" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">$scopeEncoded</div>
+                                    </td>
+                                    <td>$appliesTo</td>
+                                </tr>
+"@
             }
         }
         
-        # Sort subscriptions alphabetically for display
-        foreach ($key in $mgRootAssignments.Keys) {
-            $mgRootAssignments[$key].AffectedSubscriptions = $mgRootAssignments[$key].AffectedSubscriptions | Sort-Object
-        }
-        
-        # Display MG/Root assignments first (one row per unique scope+role with all subscriptions)
-        foreach ($key in ($mgRootAssignments.Keys | Sort-Object)) {
-            $mgAssignment = $mgRootAssignments[$key]
-            $assignment = $mgAssignment.Assignment
-            $assignmentRiskBadge = Get-RiskBadgeClass -Risk $assignment.RiskLevel
-            $scopeIcon = Get-ScopeIcon -Type $assignment.ScopeType
-            $roleNameEncoded = Encode-Html $assignment.RoleDefinitionName
-            $scopeEncoded = Encode-Html $assignment.Scope
-            $principalNameForSearch = ($principal.PrincipalDisplayName -replace '<[^>]+>', '').ToLower()
-            
-            # For Root/MG assignments, mark as "Assigned" at that level (not inherited)
-            $assignmentType = "Assigned"
-            $assignmentTypeBadge = "badge-low"
-            
-            # Build list of affected subscriptions
-            $subscriptionsList = ($mgAssignment.AffectedSubscriptions | Sort-Object) -join ", "
-            $subscriptionsListEncoded = Encode-Html $subscriptionsList
-            $searchData = "$principalNameForSearch $($assignment.RoleDefinitionName) $($assignment.Scope) $subscriptionsList".ToLower()
-            $searchDataEncoded = Encode-Html $searchData
-            
-            # Get highest risk for this assignment
-            $highestRisk = $assignment.RiskLevel
-            
-            $html += @"
-                                    <tr class="assignment-row"
-                                        data-search="$searchDataEncoded"
-                                        data-risk="$highestRisk"
-                                        data-type="$($principal.PrincipalType)"
-                                        data-sub="$subscriptionsListEncoded">
-                                        <td><span class="badge $assignmentRiskBadge">$highestRisk</span></td>
-                                        <td>$roleNameEncoded</td>
-                                        <td><span class="badge $assignmentTypeBadge" title="$assignmentType">$assignmentType</span></td>
-                                        <td>$scopeIcon $($assignment.ScopeType)</td>
-                                        <td class="scope-cell">
-                                            <div class="scope-path">$scopeEncoded</div>
-                                        </td>
-                                        <td>
-                                            <div style="color: var(--text-primary);">$subscriptionsListEncoded</div>
-                                            <div style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 2px;">
-                                                ($($mgAssignment.AffectedSubscriptions.Count) subscription$(if ($mgAssignment.AffectedSubscriptions.Count -ne 1) { 's' }))
-                                            </div>
-                                        </td>
-                                    </tr>
-"@
-        }
-        
-        # Display subscription-level assignments (individual rows)
-        foreach ($assignment in ($subscriptionAssignments | Sort-Object -Property RiskLevel, RoleDefinitionName)) {
-            $assignmentRiskBadge = Get-RiskBadgeClass -Risk $assignment.RiskLevel
-            $scopeIcon = Get-ScopeIcon -Type $assignment.ScopeType
-            $roleNameEncoded = Encode-Html $assignment.RoleDefinitionName
-            $scopeEncoded = Encode-Html $assignment.Scope
-            $subNameEncoded = Encode-Html $assignment.SubscriptionName
-            $principalNameForSearch = ($principal.PrincipalDisplayName -replace '<[^>]+>', '').ToLower()
-            $searchData = "$principalNameForSearch $($assignment.RoleDefinitionName) $($assignment.Scope) $($assignment.SubscriptionName)".ToLower()
-            $searchDataEncoded = Encode-Html $searchData
-            
-            # Subscription-level assignments are "Assigned" (direct assignment)
-            $assignmentType = "Assigned"
-            $assignmentTypeBadge = "badge-low"
-            
-            $html += @"
-                                    <tr class="assignment-row"
-                                        data-search="$searchDataEncoded"
-                                        data-risk="$($assignment.RiskLevel)"
-                                        data-type="$($principal.PrincipalType)"
-                                        data-sub="$(Encode-Html $assignment.SubscriptionName)">
-                                        <td><span class="badge $assignmentRiskBadge">$($assignment.RiskLevel)</span></td>
-                                        <td>$roleNameEncoded</td>
-                                        <td><span class="badge $assignmentTypeBadge" title="$assignmentType">$assignmentType</span></td>
-                                        <td>$scopeIcon $($assignment.ScopeType)</td>
-                                        <td class="scope-cell">
-                                            <div class="scope-path">$scopeEncoded</div>
-                                        </td>
-                                        <td>$subNameEncoded</td>
-                                    </tr>
-"@
-        }
-        
         $html += @"
-                                </tbody>
-                            </table>
-                        </div>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 "@
     }
-    
-    $html += @"
-            </div>
-        </div>
-"@
-
-    # Privileged Assignments Section
-    $privilegedCount = $RBACData.Analysis.PrivilegedAssignments.Count
-    $html += @"
-
-        <!-- Privileged Assignments -->
-        <div class="section">
-            <div class="section-header" onclick="toggleSection(this)">
-                <div class="section-title">
-                    &#9888;&#65039; Privileged Assignments
-                    <span class="section-count critical">$privilegedCount</span>
-                </div>
-                <span class="section-toggle">&#9660;</span>
-            </div>
-            <div class="section-content">
-                <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                    Critical and High risk assignments requiring periodic review.
-                </p>
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Risk</th>
-                                <th>Principal</th>
-                                <th>Role</th>
-                                <th>Scope</th>
-                                <th>Subscription</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-"@
-
-    foreach ($assignment in $RBACData.Analysis.PrivilegedAssignments | Select-Object -First 100) {
-        $icon = Get-PrincipalTypeIcon -Type $assignment.PrincipalType
-        $riskBadge = Get-RiskBadgeClass -Risk $assignment.RiskLevel
-        $scopeIcon = Get-ScopeIcon -Type $assignment.ScopeType
         
-        $html += @"
-                            <tr class="assignment-row" 
-                                data-search="$(Encode-Html "$($assignment.PrincipalDisplayName) $($assignment.RoleDefinitionName) $($assignment.Scope)".ToLower())"
-                                data-risk="$($assignment.RiskLevel)"
-                                data-type="$($assignment.PrincipalType)"
-                                data-sub="$(Encode-Html $assignment.SubscriptionName)">
-                                <td><span class="badge $riskBadge">$($assignment.RiskLevel)</span></td>
-                                <td>
-                                    <div class="principal-cell">
-                                        <div class="principal-name">$icon $(Encode-Html $assignment.PrincipalDisplayName)</div>
-                                        $(if ($assignment.PrincipalUPN) { "<div class='principal-upn'>$(Encode-Html $assignment.PrincipalUPN)</div>" })
-                                    </div>
-                                </td>
-                                <td>$(Encode-Html $assignment.RoleDefinitionName)</td>
-                                <td class="scope-cell">
-                                    $scopeIcon $($assignment.ScopeType)
-                                    <div class="scope-path">$(Encode-Html $assignment.Scope)</div>
-                                </td>
-                                <td>$(Encode-Html $assignment.SubscriptionName)</td>
-                            </tr>
-"@
-    }
-
     $html += @"
-                        </tbody>
-                    </table>
-                </div>
             </div>
         </div>
 "@
+
+    # Old Principal View section removed - now using unified Principal Access List above
+
+    # Privileged Assignments section removed - now in unified Principal Access List above
 
     # Orphaned Assignments Section - Group by Principal ID
-    $orphanedCount = $RBACData.Analysis.OrphanedAssignments.Count
+    $orphanedCount = $orphanedAssignments.Count
     if ($orphanedCount -gt 0) {
         # Group orphaned assignments by Principal ID
         $orphanedGroups = @{}
-        foreach ($assignment in $RBACData.Analysis.OrphanedAssignments) {
+        foreach ($assignment in $orphanedAssignments) {
             $key = "$($assignment.PrincipalId)|$($assignment.PrincipalType)"
             if (-not $orphanedGroups.ContainsKey($key)) {
                 $orphanedGroups[$key] = @{
@@ -1355,113 +1254,11 @@ $(Get-ReportNavigation -ActivePage "RBAC")
 "@
     }
 
-    # Non-Human Identities Section
-    $nonHumanCount = $RBACData.Analysis.NonHumanIdentities.Count
-    $html += @"
+    # Non-Human Identities section removed - use Principal Access List filter by type instead
+    # Role Usage Analysis section removed - not needed in new design
 
-        <!-- Non-Human Identities -->
-        <div class="section collapsed">
-            <div class="section-header" onclick="toggleSection(this)">
-                <div class="section-title">
-                    &#129302; Service Principals & Managed Identities
-                    <span class="section-count">$nonHumanCount</span>
-                </div>
-                <span class="section-toggle">&#9660;</span>
-            </div>
-            <div class="section-content">
-                <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                    Non-human identities with Azure RBAC permissions.
-                </p>
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Risk</th>
-                                <th>Identity</th>
-                                <th>Type</th>
-                                <th>Role</th>
-                                <th>Scope</th>
-                                <th>Subscription</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-"@
-
-    foreach ($assignment in $RBACData.Analysis.NonHumanIdentities | Select-Object -First 100) {
-        $icon = Get-PrincipalTypeIcon -Type $assignment.PrincipalType
-        $riskBadge = Get-RiskBadgeClass -Risk $assignment.RiskLevel
-        $typeBadge = if ($assignment.PrincipalType -eq 'ManagedIdentity') { 'badge-low' } else { 'badge-type' }
-        
-        $html += @"
-                            <tr class="assignment-row"
-                                data-search="$(Encode-Html "$($assignment.PrincipalDisplayName) $($assignment.RoleDefinitionName)".ToLower())"
-                                data-risk="$($assignment.RiskLevel)"
-                                data-type="$($assignment.PrincipalType)"
-                                data-sub="$(Encode-Html $assignment.SubscriptionName)">
-                                <td><span class="badge $riskBadge">$($assignment.RiskLevel)</span></td>
-                                <td>
-                                    <div class="principal-cell">
-                                        <div class="principal-name">$icon $(Encode-Html $assignment.PrincipalDisplayName)</div>
-                                        $(if ($assignment.AppId) { "<div class='principal-upn'>AppId: $($assignment.AppId)</div>" })
-                                    </div>
-                                </td>
-                                <td><span class="badge $typeBadge">$($assignment.PrincipalType)</span></td>
-                                <td>$(Encode-Html $assignment.RoleDefinitionName)</td>
-                                <td class="scope-cell">
-                                    <div class="scope-path">$(Encode-Html $assignment.Scope)</div>
-                                </td>
-                                <td>$(Encode-Html $assignment.SubscriptionName)</td>
-                            </tr>
-"@
-    }
-
-    $html += @"
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-"@
-
-    # Role Usage Section
-    $html += @"
-
-        <!-- Role Usage Analysis -->
-        <div class="section collapsed">
-            <div class="section-header" onclick="toggleSection(this)">
-                <div class="section-title">
-                    &#128202; Role Usage Analysis
-                    <span class="section-count">$($RBACData.Analysis.RoleUsage.Count) roles</span>
-                </div>
-                <span class="section-toggle">&#9660;</span>
-            </div>
-            <div class="section-content">
-                <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                    Most frequently assigned roles across all subscriptions.
-                </p>
-"@
-
-    $maxCount = ($RBACData.Analysis.RoleUsage | Measure-Object -Property AssignmentCount -Maximum).Maximum
-    if (-not $maxCount) { $maxCount = 1 }
-
-    foreach ($role in $RBACData.Analysis.RoleUsage | Select-Object -First 20) {
-        $barWidth = [Math]::Round(($role.AssignmentCount / $maxCount) * 300)
-        $html += @"
-                <div class="role-bar">
-                    <div class="role-name" title="$(Encode-Html $role.RoleName)">$(Encode-Html $role.RoleName)</div>
-                    <div class="role-bar-fill" style="width: ${barWidth}px;"></div>
-                    <div class="role-count">$($role.AssignmentCount)</div>
-                </div>
-"@
-    }
-
-    $html += @"
-            </div>
-        </div>
-"@
-
-    # Custom Roles Section
-    if ($RBACData.CustomRoles.Count -gt 0) {
+    # Custom Roles Section (Enhanced with expandable details)
+    if ($customRoles.Count -gt 0) {
         $html += @"
 
         <!-- Custom Role Definitions -->
@@ -1469,114 +1266,105 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             <div class="section-header" onclick="toggleSection(this)">
                 <div class="section-title">
                     &#127912; Custom Role Definitions
-                    <span class="section-count">$($RBACData.CustomRoles.Count)</span>
+                    <span class="section-count">$($customRoles.Count)</span>
                 </div>
                 <span class="section-toggle">&#9660;</span>
             </div>
             <div class="section-content">
                 <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                    Tenant-specific custom roles. Review periodically for least-privilege compliance.
+                    Tenant-specific custom roles. Click on any role to expand and see detailed permissions and usage.
                 </p>
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Role Name</th>
-                                <th>Description</th>
-                                <th>Actions</th>
-                                <th>Data Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
 "@
 
-        foreach ($role in $RBACData.CustomRoles) {
+        foreach ($role in $customRoles) {
             $actionsCount = if ($role.Actions) { $role.Actions.Count } else { 0 }
             $dataActionsCount = if ($role.DataActions) { $role.DataActions.Count } else { 0 }
+            $notActionsCount = if ($role.NotActions) { $role.NotActions.Count } else { 0 }
+            $notDataActionsCount = if ($role.NotDataActions) { $role.NotDataActions.Count } else { 0 }
+            $assignmentCount = if ($role.AssignmentCount) { $role.AssignmentCount } else { 0 }
+            $safeRoleId = ($role.Id -replace '[^a-zA-Z0-9\-]', '-')
+            $roleCardId = "role-$safeRoleId"
+            
+            $roleNameEncoded = Encode-Html $role.Name
+            $roleDescEncoded = Encode-Html $role.Description
             
             $html += @"
-                            <tr>
-                                <td><strong>$(Encode-Html $role.Name)</strong></td>
-                                <td>$(Encode-Html $role.Description)</td>
-                                <td>$actionsCount actions</td>
-                                <td>$dataActionsCount data actions</td>
-                            </tr>
+                <div class="custom-role-card" id="$roleCardId">
+                    <div class="custom-role-header" onclick="toggleCustomRole(this)">
+                        <div class="custom-role-info">
+                            <div class="custom-role-name-block">
+                                <span class="custom-role-name">$roleNameEncoded</span>
+                                $(if ($roleDescEncoded) { "<span class='custom-role-desc'>$roleDescEncoded</span>" })
+                            </div>
+                            <div class="custom-role-summary">
+                                <span class="badge badge-type">$actionsCount Actions</span>
+                                <span class="badge badge-type">$dataActionsCount Data Actions</span>
+                                <span class="badge badge-$(if ($assignmentCount -gt 0) { 'critical' } else { 'low' })">$assignmentCount Assignments</span>
+                            </div>
+                        </div>
+                        <span class="toggle-icon">&#9660;</span>
+                    </div>
+                    <div class="custom-role-details" style="display: none;">
+                        <div class="custom-role-permissions">
+                            <h4>Permissions</h4>
+                            $(if ($role.Actions -and $role.Actions.Count -gt 0) {
+                                "<div class='permission-section'><strong>Actions ($($role.Actions.Count)):</strong><ul>" + 
+                                (($role.Actions | ForEach-Object { "<li><code>$(Encode-Html $_)</code></li>" }) -join '') + 
+                                "</ul></div>"
+                            } else {
+                                "<div class='permission-section'><em>No Actions defined</em></div>"
+                            })
+                            $(if ($role.DataActions -and $role.DataActions.Count -gt 0) {
+                                "<div class='permission-section'><strong>Data Actions ($($role.DataActions.Count)):</strong><ul>" + 
+                                (($role.DataActions | ForEach-Object { "<li><code>$(Encode-Html $_)</code></li>" }) -join '') + 
+                                "</ul></div>"
+                            } else {
+                                "<div class='permission-section'><em>No Data Actions defined</em></div>"
+                            })
+                            $(if ($role.NotActions -and $role.NotActions.Count -gt 0) {
+                                "<div class='permission-section'><strong>Not Actions ($($role.NotActions.Count)):</strong><ul>" + 
+                                (($role.NotActions | ForEach-Object { "<li><code>$(Encode-Html $_)</code></li>" }) -join '') + 
+                                "</ul></div>"
+                            })
+                            $(if ($role.NotDataActions -and $role.NotDataActions.Count -gt 0) {
+                                "<div class='permission-section'><strong>Not Data Actions ($($role.NotDataActions.Count)):</strong><ul>" + 
+                                (($role.NotDataActions | ForEach-Object { "<li><code>$(Encode-Html $_)</code></li>" }) -join '') + 
+                                "</ul></div>"
+                            })
+                            $(if ($role.AssignableScopes -and $role.AssignableScopes.Count -gt 0) {
+                                "<div class='permission-section'><strong>Assignable Scopes ($($role.AssignableScopes.Count)):</strong><ul>" + 
+                                (($role.AssignableScopes | ForEach-Object { "<li><code>$(Encode-Html $_)</code></li>" }) -join '') + 
+                                "</ul></div>"
+                            })
+                        </div>
+                        $(if ($assignmentCount -gt 0) {
+                            $usedByList = if ($role.UsedByPrincipals) { 
+                                ($role.UsedByPrincipals | ForEach-Object { "<li>$(Encode-Html $_)</li>" }) -join '' 
+                            } else { "" }
+                            $assignedScopesList = if ($role.AssignedScopes) { 
+                                ($role.AssignedScopes | ForEach-Object { "<li>$(Encode-Html $_)</li>" }) -join '' 
+                            } else { "" }
+                            "<div class='custom-role-usage'><h4>Usage</h4><div class='permission-section'><strong>Assignment Count:</strong> $assignmentCount</div>" +
+                            $(if ($usedByList) { "<div class='permission-section'><strong>Used By Principals:</strong><ul>$usedByList</ul></div>" }) +
+                            $(if ($assignedScopesList) { "<div class='permission-section'><strong>Assigned At Scope Types:</strong><ul>$assignedScopesList</ul></div>" }) +
+                            "</div>"
+                        } else {
+                            "<div class='custom-role-usage'><em>This role is not currently assigned to any principals.</em></div>"
+                        })
+                    </div>
+                </div>
 "@
         }
 
         $html += @"
-                        </tbody>
-                    </table>
-                </div>
             </div>
         </div>
 "@
     }
 
-    # All Assignments Section (collapsed by default)
+    # All Role Assignments section removed - replaced by unified Principal Access List
+    
     $html += @"
-
-        <!-- All Role Assignments -->
-        <div class="section collapsed">
-            <div class="section-header" onclick="toggleSection(this)">
-                <div class="section-title">
-                    &#128203; All Role Assignments
-                    <span class="section-count">$($stats.TotalAssignments)</span>
-                </div>
-                <span class="section-toggle">&#9660;</span>
-            </div>
-            <div class="section-content">
-                <div class="table-container">
-                    <table id="allAssignmentsTable">
-                        <thead>
-                            <tr>
-                                <th>Risk</th>
-                                <th>Principal</th>
-                                <th>Type</th>
-                                <th>Role</th>
-                                <th>Scope Type</th>
-                                <th>Subscription</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-"@
-
-    foreach ($assignment in $RBACData.RoleAssignments) {
-        $icon = Get-PrincipalTypeIcon -Type $assignment.PrincipalType
-        $riskBadge = Get-RiskBadgeClass -Risk $assignment.RiskLevel
-        $scopeIcon = Get-ScopeIcon -Type $assignment.ScopeType
-        
-        $extraBadges = ""
-        if ($assignment.IsOrphaned) { $extraBadges += '<span class="badge badge-orphaned">Orphaned</span> ' }
-        if ($assignment.IsExternal) { $extraBadges += '<span class="badge badge-external">External</span> ' }
-        
-        $html += @"
-                            <tr class="assignment-row"
-                                data-search="$(Encode-Html "$($assignment.PrincipalDisplayName) $($assignment.RoleDefinitionName) $($assignment.Scope) $($assignment.SubscriptionName)".ToLower())"
-                                data-risk="$($assignment.RiskLevel)"
-                                data-type="$($assignment.PrincipalType)"
-                                data-sub="$(Encode-Html $assignment.SubscriptionName)">
-                                <td><span class="badge $riskBadge">$($assignment.RiskLevel)</span></td>
-                                <td>
-                                    <div class="principal-cell">
-                                        <div class="principal-name">$icon $(Encode-Html $assignment.PrincipalDisplayName) $extraBadges</div>
-                                        $(if ($assignment.PrincipalUPN) { "<div class='principal-upn'>$(Encode-Html $assignment.PrincipalUPN)</div>" })
-                                    </div>
-                                </td>
-                                <td><span class="badge badge-type">$($assignment.PrincipalType)</span></td>
-                                <td>$(Encode-Html $assignment.RoleDefinitionName)</td>
-                                <td>$scopeIcon $($assignment.ScopeType)</td>
-                                <td>$(Encode-Html $assignment.SubscriptionName)</td>
-                            </tr>
-"@
-    }
-
-    $html += @"
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
     </div>
     
     <script>
@@ -1586,7 +1374,41 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             section.classList.toggle('collapsed');
         }
         
-        // Toggle principal details expand/collapse
+        // Toggle principal card (new unified view)
+        function togglePrincipal(header) {
+            const card = header.parentElement;
+            const details = card.querySelector('.principal-details');
+            const icon = header.querySelector('.toggle-icon');
+            
+            if (details.style.display === 'none' || !details.style.display) {
+                details.style.display = 'block';
+                card.classList.add('expanded');
+                icon.textContent = '▲';
+            } else {
+                details.style.display = 'none';
+                card.classList.remove('expanded');
+                icon.textContent = '▼';
+            }
+        }
+        
+        // Toggle custom role card
+        function toggleCustomRole(header) {
+            const card = header.parentElement;
+            const details = card.querySelector('.custom-role-details');
+            const icon = header.querySelector('.toggle-icon');
+            
+            if (details.style.display === 'none' || !details.style.display) {
+                details.style.display = 'block';
+                card.classList.add('expanded');
+                icon.textContent = '▲';
+            } else {
+                details.style.display = 'none';
+                card.classList.remove('expanded');
+                icon.textContent = '▼';
+            }
+        }
+        
+        // Toggle principal details (for orphaned section)
         function togglePrincipalDetails(principalIdOrElement) {
             let principalId;
             if (typeof principalIdOrElement === 'string') {
@@ -1625,10 +1447,39 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             const typeValue = typeFilter.value;
             const subValue = subFilter.value;
             
-            const rows = document.querySelectorAll('.assignment-row');
+            // Filter principal cards
+            const cards = document.querySelectorAll('.principal-card');
             let visible = 0;
             
-            // Filter all assignment rows
+            cards.forEach(card => {
+                const matchesSearch = !searchTerm || card.dataset.search.includes(searchTerm);
+                const matchesType = !typeValue || card.dataset.type === typeValue;
+                const matchesRisk = selectedRisks.length === 0 || selectedRisks.includes(card.dataset.risk);
+                
+                if (matchesSearch && matchesType && matchesRisk) {
+                    card.style.display = 'block';
+                    visible++;
+                    
+                    // Update risk badge based on visible assignments within this card
+                    const visibleRows = card.querySelectorAll('.assignment-row:not([style*="display: none"])');
+                    if (visibleRows.length > 0) {
+                        const risks = Array.from(visibleRows).map(row => row.dataset.risk);
+                        const riskOrder = { 'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3 };
+                        const highestRisk = risks.sort((a, b) => riskOrder[a] - riskOrder[b])[0];
+                        const badge = card.querySelector('.risk-level-badge');
+                        if (badge && badge.dataset.originalRisk !== highestRisk) {
+                            badge.className = 'badge badge-' + highestRisk.toLowerCase() + ' risk-level-badge';
+                            badge.textContent = highestRisk;
+                        }
+                    }
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+            
+            // Also filter assignment rows (for nested tables in orphaned section, etc.)
+            const rows = document.querySelectorAll('.assignment-row');
+            
             rows.forEach(row => {
                 const matchesSearch = !searchTerm || row.dataset.search.includes(searchTerm);
                 const matchesRisk = selectedRisks.length === 0 || selectedRisks.includes(row.dataset.risk);
@@ -1723,9 +1574,7 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                 }
             });
             
-            // Cross-subscription principals now use the same principal-view-row structure
-            // So they're already handled by the principal-view-row hiding logic above
-            
+            // Update visible count for principal cards
             visibleCount.textContent = visible;
         }
         

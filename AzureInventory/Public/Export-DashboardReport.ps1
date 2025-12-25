@@ -285,16 +285,14 @@ function Export-DashboardReport {
     $costTotalUSDFormatted = [math]::Round($costTotalUSD, 0).ToString("N0") -replace ',', ' '
     
     # RBAC/IAM metrics
-    $rbacTotalAssignments = 0
+    $rbacTotalPrincipals = 0
     $rbacCriticalRisk = 0
-    $rbacHighRisk = 0
     $rbacOrphaned = 0
     $rbacExternal = 0
     if ($AuditResult.RBACInventory) {
         $rbacStats = $AuditResult.RBACInventory.Statistics
-        $rbacTotalAssignments = $rbacStats.TotalAssignments
-        $rbacCriticalRisk = $rbacStats.ByRiskLevel.Critical
-        $rbacHighRisk = $rbacStats.ByRiskLevel.High
+        $rbacTotalPrincipals = $rbacStats.TotalPrincipals
+        $rbacCriticalRisk = $rbacStats.PrincipalsByRisk.Critical
         $rbacOrphaned = $rbacStats.OrphanedCount
         $rbacExternal = $rbacStats.ExternalCount
     }
@@ -602,7 +600,7 @@ $(if ($networkSubnetsMissingNSG -gt 0) {
                 <div class="report-icon" style="background: rgba(155, 89, 182, 0.15); color: var(--accent-purple);">🔐</div>
                 <div class="report-info">
                     <h3>RBAC/IAM Inventory</h3>
-                    <p>$rbacTotalAssignments assignments | $rbacCriticalRisk critical | $rbacOrphaned orphaned</p>
+                    <p>$rbacTotalPrincipals principals | $rbacCriticalRisk critical | $rbacOrphaned orphaned</p>
                 </div>
             </a>
         </div>

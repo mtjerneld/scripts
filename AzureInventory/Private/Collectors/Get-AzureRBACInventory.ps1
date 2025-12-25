@@ -184,6 +184,32 @@ function Get-AzureRBACInventory {
         return $info
     }
 
+    function Get-FriendlyScopeName {
+        <#
+        .SYNOPSIS
+            Converts Azure scope paths to friendly display names.
+        #>
+        param([string]$Scope)
+        
+        if ($Scope -eq '/') {
+            return "Tenant Root"
+        }
+        elseif ($Scope -match '^/providers/Microsoft\.Management/managementGroups/(.+)$') {
+            return "MG: $($Matches[1])"
+        }
+        elseif ($Scope -match '^/subscriptions/([^/]+)$') {
+            # For subscription scopes, we might have the name in context, but for now use ID
+            return "Subscription"
+        }
+        elseif ($Scope -match '/resourceGroups/([^/]+)') {
+            return "RG: $($Matches[1])"
+        }
+        elseif ($Scope -match '/providers/.+/([^/]+)$') {
+            return "Resource: $($Matches[1])"
+        }
+        return $Scope
+    }
+
     function Get-RiskLevel {
         <#
         .SYNOPSIS
@@ -439,67 +465,162 @@ function Get-AzureRBACInventory {
         }
     }
 
-    # Build cross-subscription analysis
-    Write-Host "`nBuilding cross-subscription analysis..." -ForegroundColor Cyan
-
-    # Find principals with access to multiple subscriptions
-    $crossSubPrincipals = $allAssignments | 
-        Where-Object { -not $_.IsOrphaned } |
-        Group-Object PrincipalId |
-        Where-Object { ($_.Group | Select-Object -ExpandProperty SubscriptionId -Unique).Count -gt 1 } |
+    # Deduplicate assignments by (PrincipalId, RoleDefinitionId, Scope)
+    Write-Host "`nDeduplicating assignments..." -ForegroundColor Cyan
+    $uniqueAssignments = $allAssignments | 
+        Group-Object -Property PrincipalId, RoleDefinitionId, Scope |
         ForEach-Object {
-            $subscriptionAccess = $_.Group | Select-Object -ExpandProperty SubscriptionName -Unique
-            $highestRisk = ($_.Group | Sort-Object { 
-                switch ($_.RiskLevel) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } 'Low' { 3 } }
-            } | Select-Object -First 1).RiskLevel
+            $first = $_.Group[0]
+            $inheritedBy = $_.Group | 
+                Where-Object { $_.SubscriptionName -ne "Multiple subscriptions" } |
+                Select-Object -ExpandProperty SubscriptionName -Unique
+            
+            # Add inheritance tracking
+            $first | Add-Member -NotePropertyName 'InheritedBySubscriptions' -NotePropertyValue $inheritedBy -Force
+            $first | Add-Member -NotePropertyName 'InheritanceCount' -NotePropertyValue $inheritedBy.Count -Force
+            $first
+        }
+
+    Write-Host "  Unique assignments: $($uniqueAssignments.Count) (from $($allAssignments.Count) total)" -ForegroundColor Gray
+
+    # Build principal-centric view
+    Write-Host "`nBuilding principal-centric view..." -ForegroundColor Cyan
+    $riskOrder = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3 }
+    
+    $principalView = $uniqueAssignments |
+        Group-Object PrincipalId |
+        ForEach-Object {
+            $assignments = $_.Group
+            $first = $assignments[0]
+            
+            # Calculate highest risk
+            $highestRisk = ($assignments | Sort-Object { $riskOrder[$_.RiskLevel] } | Select-Object -First 1).RiskLevel
+            
+            # Get unique roles
+            $roles = $assignments | Select-Object -ExpandProperty RoleDefinitionName -Unique | Sort-Object
+            
+            # Build scopes array with inheritance info
+            $scopes = $assignments | ForEach-Object {
+                $scopeName = Get-FriendlyScopeName -Scope $_.Scope
+                [PSCustomObject]@{
+                    Scope = $_.Scope
+                    ScopeType = $_.ScopeType
+                    ScopeDisplayName = $scopeName
+                    ScopeLevel = $_.ScopeLevel
+                    Role = $_.RoleDefinitionName
+                    RiskLevel = $_.RiskLevel
+                    IsInherited = $_.IsInherited
+                    InheritedBy = if ($_.InheritedBySubscriptions) { $_.InheritedBySubscriptions } else { @() }
+                    AssignmentId = $_.RoleAssignmentId
+                }
+            } | Sort-Object @{ Expression = { $riskOrder[$_.RiskLevel] } }, ScopeLevel
+            
+            # Get all affected subscriptions (from InheritedBy arrays and direct assignments)
+            $allSubscriptions = [System.Collections.Generic.HashSet[string]]::new()
+            foreach ($assignment in $assignments) {
+                if ($assignment.InheritedBySubscriptions) {
+                    foreach ($sub in $assignment.InheritedBySubscriptions) {
+                        if ($sub -ne "Multiple subscriptions") {
+                            $null = $allSubscriptions.Add($sub)
+                        }
+                    }
+                }
+                elseif ($assignment.ScopeType -eq 'Subscription' -and $assignment.SubscriptionName -ne "Multiple subscriptions") {
+                    $null = $allSubscriptions.Add($assignment.SubscriptionName)
+                }
+                elseif ($assignment.ScopeType -in @('ResourceGroup', 'Resource') -and $assignment.SubscriptionName) {
+                    $null = $allSubscriptions.Add($assignment.SubscriptionName)
+                }
+            }
             
             [PSCustomObject]@{
-                PrincipalId = $_.Name
-                PrincipalDisplayName = $_.Group[0].PrincipalDisplayName
-                PrincipalUPN = $_.Group[0].PrincipalUPN
-                PrincipalType = $_.Group[0].PrincipalType
-                SubscriptionCount = $subscriptionAccess.Count
-                Subscriptions = $subscriptionAccess
-                AssignmentCount = $_.Count
+                PrincipalId = $first.PrincipalId
+                PrincipalDisplayName = $first.PrincipalDisplayName
+                PrincipalType = $first.PrincipalType
+                PrincipalUPN = $first.PrincipalUPN
+                AppId = $first.AppId
+                IsOrphaned = $first.IsOrphaned
+                IsExternal = $first.IsExternal
+                
                 HighestRiskLevel = $highestRisk
-                Roles = ($_.Group | Select-Object -ExpandProperty RoleDefinitionName -Unique)
-                Assignments = $_.Group  # Include all assignments for detailed breakdown
+                Roles = $roles
+                RoleCount = $roles.Count
+                
+                Scopes = $scopes
+                ScopeCount = $scopes.Count
+                
+                AffectedSubscriptions = [array]($allSubscriptions | Sort-Object)
+                SubscriptionCount = $allSubscriptions.Count
+                
+                TotalAssignments = $assignments.Count
+                
+                # Keep raw assignments for reference if needed
+                Assignments = $assignments
             }
-        } | Sort-Object SubscriptionCount -Descending
+        } | Sort-Object @{ Expression = { $riskOrder[$_.HighestRiskLevel] } }, PrincipalDisplayName
 
-    # Identify privileged assignments (Owner, Contributor, UAA at broad scope)
-    $privilegedAssignments = $allAssignments | 
-        Where-Object { $_.RiskLevel -in @('Critical', 'High') } |
-        Sort-Object { 
-            switch ($_.RiskLevel) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } 'Low' { 3 } }
-        }, ScopeLevel
+    Write-Host "  Unique principals: $($principalView.Count)" -ForegroundColor Gray
 
-    # Get orphaned assignments
-    $orphanedAssignments = $allAssignments | Where-Object { $_.IsOrphaned }
+    # Enhance custom roles with usage tracking
+    Write-Host "`nTracking custom role usage..." -ForegroundColor Cyan
+    $customRoleUsage = $uniqueAssignments |
+        Where-Object { $_.RoleDefinitionId } |
+        Group-Object RoleDefinitionId
+    
+    $customRoleIdMap = @{}
+    foreach ($role in $allCustomRoles) {
+        $customRoleIdMap[$role.Id] = $role
+    }
+    
+    foreach ($customRole in $allCustomRoles) {
+        $usage = $customRoleUsage | Where-Object { $_.Name -eq $customRole.Id }
+        if ($usage) {
+            $assignments = $usage.Group
+            $usedByPrincipals = $assignments | Select-Object -ExpandProperty PrincipalDisplayName -Unique | Sort-Object
+            $assignedScopes = $assignments | Select-Object -ExpandProperty ScopeType -Unique
+            
+            $customRole | Add-Member -NotePropertyName 'AssignmentCount' -NotePropertyValue $assignments.Count -Force
+            $customRole | Add-Member -NotePropertyName 'UsedByPrincipals' -NotePropertyValue [array]$usedByPrincipals -Force
+            $customRole | Add-Member -NotePropertyName 'AssignedScopes' -NotePropertyValue [array]$assignedScopes -Force
+        } else {
+            $customRole | Add-Member -NotePropertyName 'AssignmentCount' -NotePropertyValue 0 -Force
+            $customRole | Add-Member -NotePropertyName 'UsedByPrincipals' -NotePropertyValue @() -Force
+            $customRole | Add-Member -NotePropertyName 'AssignedScopes' -NotePropertyValue @() -Force
+        }
+    }
 
-    # Get external/guest assignments
-    $externalAssignments = $allAssignments | Where-Object { $_.IsExternal }
-
-    # Get non-human identities (SP and MI)
-    $nonHumanAssignments = $allAssignments | 
-        Where-Object { $_.PrincipalType -in @('ServicePrincipal', 'ManagedIdentity') } |
-        Sort-Object PrincipalDisplayName
-
-    # Role usage analysis
-    $roleUsage = $allAssignments |
-        Group-Object RoleDefinitionName |
-        Select-Object @{N='RoleName';E={$_.Name}}, 
-            @{N='AssignmentCount';E={$_.Count}},
-            @{N='UniqueSubscriptions';E={($_.Group | Select-Object SubscriptionId -Unique).Count}},
-            @{N='PrincipalTypes';E={($_.Group | Select-Object PrincipalType -Unique | ForEach-Object { $_.PrincipalType }) -join ', '}} |
-        Sort-Object AssignmentCount -Descending
+    # Get orphaned assignments (from unique assignments)
+    $orphanedAssignments = $uniqueAssignments | Where-Object { $_.IsOrphaned }
 
     $endTime = Get-Date
     $duration = $endTime - $startTime
 
+    # Recalculate statistics based on unique assignments and principals
+    $newStats = @{
+        TotalUniqueAssignments = $uniqueAssignments.Count
+        TotalPrincipals = $principalView.Count
+        PrincipalsByType = @{
+            User = ($principalView | Where-Object { $_.PrincipalType -eq 'User' }).Count
+            Group = ($principalView | Where-Object { $_.PrincipalType -eq 'Group' }).Count
+            ServicePrincipal = ($principalView | Where-Object { $_.PrincipalType -eq 'ServicePrincipal' }).Count
+            ManagedIdentity = ($principalView | Where-Object { $_.PrincipalType -eq 'ManagedIdentity' }).Count
+            Unknown = ($principalView | Where-Object { $_.PrincipalType -notin @('User', 'Group', 'ServicePrincipal', 'ManagedIdentity') }).Count
+        }
+        PrincipalsByRisk = @{
+            Critical = ($principalView | Where-Object { $_.HighestRiskLevel -eq 'Critical' }).Count
+            High = ($principalView | Where-Object { $_.HighestRiskLevel -eq 'High' }).Count
+            Medium = ($principalView | Where-Object { $_.HighestRiskLevel -eq 'Medium' }).Count
+            Low = ($principalView | Where-Object { $_.HighestRiskLevel -eq 'Low' }).Count
+        }
+        OrphanedCount = ($principalView | Where-Object { $_.IsOrphaned }).Count
+        ExternalCount = ($principalView | Where-Object { $_.IsExternal }).Count
+        CustomRoleCount = $allCustomRoles.Count
+    }
+
     Write-Host "`nCollection complete!" -ForegroundColor Green
     Write-Host "Duration: $($duration.TotalSeconds.ToString('F1')) seconds" -ForegroundColor Gray
-    Write-Host "Total Assignments: $($stats.TotalAssignments)" -ForegroundColor Gray
+    Write-Host "Unique Assignments: $($uniqueAssignments.Count) (from $($allAssignments.Count) collected)" -ForegroundColor Gray
+    Write-Host "Unique Principals: $($principalView.Count)" -ForegroundColor Gray
 
     #endregion
 
@@ -512,16 +633,15 @@ function Get-AzureRBACInventory {
             Duration = $duration.TotalSeconds
             SubscriptionsScanned = $subscriptions.Count
         }
-        Statistics = $stats
-        RoleAssignments = $allAssignments.ToArray()
+        Statistics = $newStats
+        Principals = $principalView
         CustomRoles = $allCustomRoles.ToArray()
+        OrphanedAssignments = @($orphanedAssignments)
+        # Keep old structure for backward compatibility during transition
+        RoleAssignments = $allAssignments.ToArray()
         Analysis = @{
-            CrossSubscriptionPrincipals = @($crossSubPrincipals)
-            PrivilegedAssignments = @($privilegedAssignments)
+            # Keep minimal analysis for backward compatibility
             OrphanedAssignments = @($orphanedAssignments)
-            ExternalAssignments = @($externalAssignments)
-            NonHumanIdentities = @($nonHumanAssignments)
-            RoleUsage = @($roleUsage)
         }
     }
 

@@ -1186,9 +1186,11 @@ function Test-RBAC {
         $rbacData = Get-AzureRBACInventory -SubscriptionIds $subIdsForRBAC -TenantId $tenantId
 
         Write-Host "`nRBAC Inventory Collection Summary:" -ForegroundColor Green
-        Write-Host "  Total Assignments: $($rbacData.Statistics.TotalAssignments)" -ForegroundColor Gray
-        Write-Host "  Critical Risk: $($rbacData.Statistics.ByRiskLevel.Critical)" -ForegroundColor $(if ($rbacData.Statistics.ByRiskLevel.Critical -gt 0) { 'Red' } else { 'Green' })
-        Write-Host "  High Risk: $($rbacData.Statistics.ByRiskLevel.High)" -ForegroundColor $(if ($rbacData.Statistics.ByRiskLevel.High -gt 0) { 'Yellow' } else { 'Green' })
+        Write-Host "  Total Principals: $($rbacData.Statistics.TotalPrincipals)" -ForegroundColor Gray
+        Write-Host "  Critical Risk: $($rbacData.Statistics.PrincipalsByRisk.Critical)" -ForegroundColor $(if ($rbacData.Statistics.PrincipalsByRisk.Critical -gt 0) { 'Red' } else { 'Green' })
+        Write-Host "  High Risk: $($rbacData.Statistics.PrincipalsByRisk.High)" -ForegroundColor $(if ($rbacData.Statistics.PrincipalsByRisk.High -gt 0) { 'Yellow' } else { 'Green' })
+        Write-Host "  Medium Risk: $($rbacData.Statistics.PrincipalsByRisk.Medium)" -ForegroundColor Gray
+        Write-Host "  Low Risk: $($rbacData.Statistics.PrincipalsByRisk.Low)" -ForegroundColor Gray
         Write-Host "  Orphaned: $($rbacData.Statistics.OrphanedCount)" -ForegroundColor $(if ($rbacData.Statistics.OrphanedCount -gt 0) { 'Red' } else { 'Green' })
         Write-Host "  External/Guest: $($rbacData.Statistics.ExternalCount)" -ForegroundColor Gray
         Write-Host "  Custom Roles: $($rbacData.Statistics.CustomRoleCount)" -ForegroundColor Gray
