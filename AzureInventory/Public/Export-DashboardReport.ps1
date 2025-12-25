@@ -286,15 +286,13 @@ function Export-DashboardReport {
     
     # RBAC/IAM metrics
     $rbacTotalPrincipals = 0
-    $rbacCriticalRisk = 0
-    $rbacOrphaned = 0
-    $rbacExternal = 0
+    $rbacFullControl = 0
+    $rbacAccessManagers = 0
     if ($AuditResult.RBACInventory) {
         $rbacStats = $AuditResult.RBACInventory.Statistics
         $rbacTotalPrincipals = $rbacStats.TotalPrincipals
-        $rbacCriticalRisk = $rbacStats.PrincipalsByRisk.Critical
-        $rbacOrphaned = $rbacStats.OrphanedCount
-        $rbacExternal = $rbacStats.ExternalCount
+        $rbacFullControl = $rbacStats.ByAccessTier.FullControl
+        $rbacAccessManagers = $rbacStats.ByAccessTier.AccessManager
     }
     
     # Subscription count
@@ -600,7 +598,7 @@ $(if ($networkSubnetsMissingNSG -gt 0) {
                 <div class="report-icon" style="background: rgba(155, 89, 182, 0.15); color: var(--accent-purple);">🔐</div>
                 <div class="report-info">
                     <h3>RBAC/IAM Inventory</h3>
-                    <p>$rbacTotalPrincipals principals | $rbacCriticalRisk critical | $rbacOrphaned orphaned</p>
+                    <p>$rbacTotalPrincipals principals | $rbacFullControl full control | $rbacAccessManagers access managers</p>
                 </div>
             </a>
         </div>

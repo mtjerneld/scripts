@@ -184,25 +184,133 @@ function Get-AzureRBACInventory {
         return $info
     }
 
+    function Test-ScopeContains {
+        <#
+        .SYNOPSIS
+            Tests if a parent scope contains a child scope.
+            For example, a subscription scope contains all resource groups and resources within that subscription.
+        #>
+        param(
+            [string]$ParentScope,
+            [string]$ChildScope
+        )
+        
+        # Root contains everything
+        if ($ParentScope -eq '/') {
+            return $true
+        }
+        
+        # Exact match is not containment (they're the same)
+        if ($ParentScope -eq $ChildScope) {
+            return $false
+        }
+        
+        # Child scope must start with parent scope path
+        # Add trailing slash to parent if it doesn't have one to ensure proper prefix matching
+        $parentPrefix = if ($ParentScope.EndsWith('/')) { $ParentScope } else { "$ParentScope/" }
+        
+        # Check if child starts with parent prefix
+        if ($ChildScope.StartsWith($parentPrefix)) {
+            return $true
+        }
+        
+        # For Management Group containment, we'd need to check MG hierarchy
+        # But for now, just check if both are MGs and the parent MG path matches
+        if ($ParentScope -match '^/providers/Microsoft\.Management/managementGroups/(.+)$' -and
+            $ChildScope -match '^/providers/Microsoft\.Management/managementGroups/(.+)$') {
+            # Without MG hierarchy info, we can't determine if one MG contains another
+            # So we'll return false here - MG containment requires hierarchy knowledge
+            return $false
+        }
+        
+        # For subscription/child cases, check if parent scope path is a prefix of child
+        # This handles: /subscriptions/xxx contains /subscriptions/xxx/resourceGroups/yyy
+        if ($ChildScope.StartsWith($ParentScope)) {
+            return $true
+        }
+        
+        return $false
+    }
+
+    function Get-AccessTier {
+        <#
+        .SYNOPSIS
+            Maps Azure role names to access tiers for governance clarity.
+        #>
+        param([string]$RoleName)
+        
+        # Exact matches first
+        $exactMap = @{
+            'Owner' = @{ Tier = 'FullControl'; Display = 'Full Control'; Order = 0; Color = 'red' }
+            'User Access Administrator' = @{ Tier = 'AccessManager'; Display = 'Access Manager'; Order = 1; Color = 'orange' }
+            'Role Based Access Control Administrator' = @{ Tier = 'AccessManager'; Display = 'Access Manager'; Order = 1; Color = 'orange' }
+            'Contributor' = @{ Tier = 'Administrative'; Display = 'Administrative'; Order = 2; Color = 'yellow' }
+            'Security Admin' = @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' }
+            'Security Administrator' = @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' }
+            'Key Vault Administrator' = @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' }
+            'Storage Blob Data Owner' = @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' }
+            'Reader' = @{ Tier = 'ReadOnly'; Display = 'Read Only'; Order = 5; Color = 'green' }
+            'Cost Management Reader' = @{ Tier = 'ReadOnly'; Display = 'Read Only'; Order = 5; Color = 'green' }
+        }
+        
+        if ($exactMap.ContainsKey($RoleName)) {
+            return $exactMap[$RoleName]
+        }
+        
+        # Pattern matching fallback
+        if ($RoleName -match '^Owner$|Owner \(') { 
+            return @{ Tier = 'FullControl'; Display = 'Full Control'; Order = 0; Color = 'red' } 
+        }
+        if ($RoleName -match 'Access.*Administrator|Administrator.*Access|RBAC.*Administrator') { 
+            return @{ Tier = 'AccessManager'; Display = 'Access Manager'; Order = 1; Color = 'orange' } 
+        }
+        if ($RoleName -match '^Contributor$') { 
+            return @{ Tier = 'Administrative'; Display = 'Administrative'; Order = 2; Color = 'yellow' } 
+        }
+        if ($RoleName -match 'Security|Key Vault|Privileged|Data Owner|Storage.*Owner') { 
+            return @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' } 
+        }
+        if ($RoleName -match 'Contributor') { 
+            return @{ Tier = 'Write'; Display = 'Write'; Order = 4; Color = 'blue' } 
+        }
+        if ($RoleName -match 'Reader|Viewer|Monitor') { 
+            return @{ Tier = 'ReadOnly'; Display = 'Read Only'; Order = 5; Color = 'green' } 
+        }
+        
+        # Default unknown roles to Write (conservative)
+        return @{ Tier = 'Write'; Display = 'Write'; Order = 4; Color = 'blue' }
+    }
+
     function Get-FriendlyScopeName {
         <#
         .SYNOPSIS
             Converts Azure scope paths to friendly display names.
         #>
-        param([string]$Scope)
+        param(
+            [string]$Scope,
+            [hashtable]$SubscriptionNameMap = @{},
+            [hashtable]$ManagementGroupNameMap = @{}
+        )
         
         if ($Scope -eq '/') {
             return "Tenant Root"
         }
         elseif ($Scope -match '^/providers/Microsoft\.Management/managementGroups/(.+)$') {
-            return "MG: $($Matches[1])"
+            $mgId = $Matches[1]
+            if ($ManagementGroupNameMap.ContainsKey($mgId)) {
+                return "MG: $($ManagementGroupNameMap[$mgId])"
+            }
+            return "MG: $mgId"
         }
         elseif ($Scope -match '^/subscriptions/([^/]+)$') {
-            # For subscription scopes, we might have the name in context, but for now use ID
-            return "Subscription"
+            $subId = $Matches[1]
+            if ($SubscriptionNameMap.ContainsKey($subId)) {
+                return "Sub: $($SubscriptionNameMap[$subId])"
+            }
+            return "Sub: $($subId.Substring(0,8))..."
         }
-        elseif ($Scope -match '/resourceGroups/([^/]+)') {
-            return "RG: $($Matches[1])"
+        elseif ($Scope -match '/subscriptions/([^/]+)/resourceGroups/([^/]+)$') {
+            return "RG: $($Matches[2])"
         }
         elseif ($Scope -match '/providers/.+/([^/]+)$') {
             return "Resource: $($Matches[1])"
@@ -210,10 +318,85 @@ function Get-AzureRBACInventory {
         return $Scope
     }
 
+    function Get-PrincipalInsights {
+        <#
+        .SYNOPSIS
+            Generates actionable insights for a principal based on their access patterns.
+        #>
+        param(
+            [object]$Principal,
+            [array]$AccessEntries
+        )
+        
+        $insights = [System.Collections.Generic.List[object]]::new()
+        
+        # Tenant root privileged access
+        $rootPrivileged = $AccessEntries | Where-Object { 
+            $_.ScopeType -eq 'Root' -and $_.AccessTier -in @('FullControl', 'AccessManager') 
+        }
+        if ($rootPrivileged) {
+            $insights.Add([PSCustomObject]@{
+                Severity = 'Critical'
+                Message = 'Tenant-wide privileged access'
+                Icon = '[!!]'
+            })
+        }
+        
+        # Both Full Control and Access Manager
+        $hasFullControl = $AccessEntries | Where-Object { $_.AccessTier -eq 'FullControl' }
+        $hasAccessMgr = $AccessEntries | Where-Object { $_.AccessTier -eq 'AccessManager' }
+        if ($hasFullControl -and $hasAccessMgr) {
+            $insights.Add([PSCustomObject]@{
+                Severity = 'High'
+                Message = 'Full Control + Access Manager combined'
+                Icon = '[!]'
+            })
+        }
+        
+        # External with elevated access
+        if ($Principal.IsExternal -and $Principal.HighestAccessTier -in @('FullControl', 'AccessManager', 'Administrative')) {
+            $insights.Add([PSCustomObject]@{
+                Severity = 'High'
+                Message = 'External account with elevated privileges'
+                Icon = '[EXT]'
+            })
+        }
+        
+        # Privileged Service Principal
+        if ($Principal.PrincipalType -eq 'ServicePrincipal' -and $Principal.HighestAccessTier -in @('FullControl', 'AccessManager')) {
+            $insights.Add([PSCustomObject]@{
+                Severity = 'High'
+                Message = 'Service Principal with privileged access'
+                Icon = '[SP]'
+            })
+        }
+        
+        # Group with privileged access
+        if ($Principal.PrincipalType -eq 'Group' -and $Principal.HighestAccessTier -in @('FullControl', 'AccessManager', 'Administrative')) {
+            $insights.Add([PSCustomObject]@{
+                Severity = 'Medium'
+                Message = 'Review group membership in Entra ID'
+                Icon = '[i]'
+            })
+        }
+        
+        # Redundant assignments
+        $redundant = $AccessEntries | Where-Object { $_.IsRedundant }
+        if ($redundant.Count -gt 0) {
+            $insights.Add([PSCustomObject]@{
+                Severity = 'Info'
+                Message = "$($redundant.Count) redundant assignment(s)"
+                Icon = '[~]'
+            })
+        }
+        
+        return $insights.ToArray()
+    }
+
     function Get-RiskLevel {
         <#
         .SYNOPSIS
-            Calculates risk level based on role and scope.
+            Calculates risk level based on role and scope (kept for backward compatibility).
         #>
         param(
             [string]$RoleName,
@@ -293,6 +476,59 @@ function Get-AzureRBACInventory {
     }
 
     Write-Host "Found $($subscriptions.Count) subscription(s) to scan" -ForegroundColor Gray
+
+    # Build subscription name map for friendly scope names
+    $subscriptionNameMap = @{}
+    foreach ($sub in $subscriptions) {
+        $subscriptionNameMap[$sub.Id] = $sub.Name
+    }
+
+    # Build Management Group name map for friendly scope names
+    Write-Host "Collecting Management Groups..." -ForegroundColor Gray
+    $managementGroupNameMap = @{}
+    try {
+        # Get all management groups
+        $managementGroups = Get-AzManagementGroup -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+        foreach ($mg in $managementGroups) {
+            $mgId = $mg.Id -replace '.*/managementGroups/', ''
+            $mgName = $mg.DisplayName
+            if (-not $mgName) { $mgName = $mg.Name }
+            if ($mgName) {
+                $managementGroupNameMap[$mgId] = $mgName
+            }
+        }
+        
+        # Also try to explicitly get the Tenant Root Group (ID = Tenant ID)
+        # The Tenant Root Group ID is the same as the Tenant ID
+        try {
+            $rootMg = Get-AzManagementGroup -GroupId $currentTenantId -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+            if ($rootMg) {
+                $rootMgId = $rootMg.Id -replace '.*/managementGroups/', ''
+                $rootMgName = $rootMg.DisplayName
+                if (-not $rootMgName) { $rootMgName = $rootMg.Name }
+                if (-not $rootMgName) { $rootMgName = "Tenant Root Group" }  # Default name
+                if ($rootMgName) {
+                    $managementGroupNameMap[$rootMgId] = $rootMgName
+                }
+            }
+        }
+        catch {
+            # If we can't get it, add a default entry for Tenant Root Group
+            if (-not $managementGroupNameMap.ContainsKey($currentTenantId)) {
+                $managementGroupNameMap[$currentTenantId] = "Tenant Root Group"
+            }
+            Write-Verbose "Could not retrieve Tenant Root Group explicitly: $_"
+        }
+        
+        Write-Host "  Found $($managementGroupNameMap.Count) Management Group(s)" -ForegroundColor Gray
+    }
+    catch {
+        Write-Verbose "Could not retrieve Management Groups: $_"
+        # Even if we fail, add default Tenant Root Group entry
+        if (-not $managementGroupNameMap.ContainsKey($currentTenantId)) {
+            $managementGroupNameMap[$currentTenantId] = "Tenant Root Group"
+        }
+    }
 
     # Initialize collections
     $allAssignments = [System.Collections.Generic.List[object]]::new()
@@ -428,9 +664,13 @@ function Get-AzureRBACInventory {
                 
                 $allAssignments.Add($record)
                 
-                # Update stats
+                # Update stats - handle unknown types
                 $stats.TotalAssignments++
-                $stats.ByPrincipalType[$principalInfo.ObjectType]++
+                $principalTypeKey = $principalInfo.ObjectType
+                if (-not $stats.ByPrincipalType.ContainsKey($principalTypeKey)) {
+                    $principalTypeKey = 'Unknown'
+                }
+                $stats.ByPrincipalType[$principalTypeKey]++
                 $stats.ByRiskLevel[$riskLevel]++
                 if ($scopeInfo.Type -ne 'Unknown') {
                     $stats.ByScopeType[$scopeInfo.Type]++
@@ -483,9 +723,8 @@ function Get-AzureRBACInventory {
 
     Write-Host "  Unique assignments: $($uniqueAssignments.Count) (from $($allAssignments.Count) total)" -ForegroundColor Gray
 
-    # Build principal-centric view
-    Write-Host "`nBuilding principal-centric view..." -ForegroundColor Cyan
-    $riskOrder = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3 }
+    # Build principal-centric view with access tiers
+    Write-Host "`nBuilding principal-centric view with access tiers..." -ForegroundColor Cyan
     
     $principalView = $uniqueAssignments |
         Group-Object PrincipalId |
@@ -493,47 +732,133 @@ function Get-AzureRBACInventory {
             $assignments = $_.Group
             $first = $assignments[0]
             
-            # Calculate highest risk
-            $highestRisk = ($assignments | Sort-Object { $riskOrder[$_.RiskLevel] } | Select-Object -First 1).RiskLevel
-            
-            # Get unique roles
-            $roles = $assignments | Select-Object -ExpandProperty RoleDefinitionName -Unique | Sort-Object
-            
-            # Build scopes array with inheritance info
-            $scopes = $assignments | ForEach-Object {
-                $scopeName = Get-FriendlyScopeName -Scope $_.Scope
-                [PSCustomObject]@{
-                    Scope = $_.Scope
-                    ScopeType = $_.ScopeType
-                    ScopeDisplayName = $scopeName
-                    ScopeLevel = $_.ScopeLevel
-                    Role = $_.RoleDefinitionName
-                    RiskLevel = $_.RiskLevel
-                    IsInherited = $_.IsInherited
-                    InheritedBy = if ($_.InheritedBySubscriptions) { $_.InheritedBySubscriptions } else { @() }
-                    AssignmentId = $_.RoleAssignmentId
-                }
-            } | Sort-Object @{ Expression = { $riskOrder[$_.RiskLevel] } }, ScopeLevel
-            
-            # Get all affected subscriptions (from InheritedBy arrays and direct assignments)
-            $allSubscriptions = [System.Collections.Generic.HashSet[string]]::new()
-            foreach ($assignment in $assignments) {
-                if ($assignment.InheritedBySubscriptions) {
-                    foreach ($sub in $assignment.InheritedBySubscriptions) {
-                        if ($sub -ne "Multiple subscriptions") {
-                            $null = $allSubscriptions.Add($sub)
-                        }
+            # Map each assignment to access tier and build access entries
+            $accessEntries = $assignments | ForEach-Object {
+                $tierInfo = Get-AccessTier -RoleName $_.RoleDefinitionName
+                $tierName = $tierInfo['Tier']
+                $tierOrder = $tierInfo['Order']
+                $scopeInfo = Get-ScopeInfo -Scope $_.Scope
+                $scopeFriendlyName = Get-FriendlyScopeName -Scope $_.Scope -SubscriptionNameMap $subscriptionNameMap -ManagementGroupNameMap $managementGroupNameMap
+                
+                # Determine grant type
+                # Every role assignment is "Direct" at its scope
+                # "Inherited" only makes sense for group membership (which we can't see without Directory Reader)
+                # The IsInherited flag from collection is about scope hierarchy, not assignment type
+                $grantType = "Direct"
+                $inheritedFrom = $null
+                
+                # Build affected subscriptions list
+                $affectsSubs = @()
+                if ($_.InheritedBySubscriptions -and $_.InheritedBySubscriptions.Count -gt 0) {
+                    if ($scopeInfo.Type -eq 'Root') {
+                        $affectsSubs = @("All $($_.InheritedBySubscriptions.Count) subscriptions")
+                    } else {
+                        $affectsSubs = $_.InheritedBySubscriptions
                     }
+                } elseif ($scopeInfo.Type -eq 'Subscription' -and $_.SubscriptionName) {
+                    $affectsSubs = @($_.SubscriptionName)
+                } elseif ($scopeInfo.Type -in @('ResourceGroup', 'Resource') -and $_.SubscriptionName) {
+                    $affectsSubs = @($_.SubscriptionName)
                 }
-                elseif ($assignment.ScopeType -eq 'Subscription' -and $assignment.SubscriptionName -ne "Multiple subscriptions") {
-                    $null = $allSubscriptions.Add($assignment.SubscriptionName)
-                }
-                elseif ($assignment.ScopeType -in @('ResourceGroup', 'Resource') -and $assignment.SubscriptionName) {
-                    $null = $allSubscriptions.Add($assignment.SubscriptionName)
+                
+                [PSCustomObject]@{
+                    Role = $_.RoleDefinitionName
+                    Scope = $_.Scope
+                    ScopeType = $scopeInfo.Type
+                    ScopeLevel = $scopeInfo.Level
+                    ScopeFriendlyName = $scopeFriendlyName
+                    AccessTier = $tierName
+                    AccessTierOrder = $tierOrder
+                    GrantType = $grantType
+                    InheritedFrom = $inheritedFrom
+                    AffectedSubscriptions = $affectsSubs
+                    IsRedundant = $false  # Will be calculated below
+                    RedundantReason = $null  # Will be populated below
+                    AssignmentId = $_.RoleAssignmentId
                 }
             }
             
-            [PSCustomObject]@{
+            # Mark redundant assignments (same or higher tier at broader scope)
+            # An assignment is redundant if the same role is assigned at a broader scope that contains this scope
+            foreach ($entry in $accessEntries) {
+                $dominated = $accessEntries | Where-Object {
+                    $broaderEntry = $_
+                    # Skip self
+                    if ($broaderEntry.Scope -eq $entry.Scope -and $broaderEntry.Role -eq $entry.Role) { return $false }
+                    
+                    # Check tier, scope level, and role match
+                    if ($broaderEntry.AccessTierOrder -gt $entry.AccessTierOrder) { return $false }
+                    if ($broaderEntry.ScopeLevel -ge $entry.ScopeLevel) { return $false }
+                    if ($broaderEntry.Role -ne $entry.Role) { return $false }
+                    
+                    # Check scope containment
+                    # For MG/Root scopes containing Subscription/RG/Resource scopes, use AffectedSubscriptions
+                    if ($broaderEntry.ScopeType -in @('ManagementGroup', 'Root')) {
+                        # Root scope affects all subscriptions
+                        if ($broaderEntry.ScopeType -eq 'Root') {
+                            return $true
+                        }
+                        
+                        # For MG scopes, check if the entry's subscription is in the MG's affected subscriptions
+                        if ($entry.ScopeType -in @('Subscription', 'ResourceGroup', 'Resource') -and $entry.AffectedSubscriptions.Count -gt 0 -and $broaderEntry.AffectedSubscriptions.Count -gt 0) {
+                            # Check each subscription in the entry against the broader entry's affected subscriptions
+                            foreach ($entrySubName in $entry.AffectedSubscriptions) {
+                                if ($broaderEntry.AffectedSubscriptions -contains $entrySubName) {
+                                    return $true
+                                }
+                            }
+                        }
+                        return $false
+                    }
+                    
+                    # For Subscription containing ResourceGroup/Resource, use path-based check
+                    if ($broaderEntry.ScopeType -eq 'Subscription' -and $entry.ScopeType -in @('ResourceGroup', 'Resource')) {
+                        return (Test-ScopeContains -ParentScope $broaderEntry.Scope -ChildScope $entry.Scope)
+                    }
+                    
+                    # For ResourceGroup containing Resource, use path-based check
+                    if ($broaderEntry.ScopeType -eq 'ResourceGroup' -and $entry.ScopeType -eq 'Resource') {
+                        return (Test-ScopeContains -ParentScope $broaderEntry.Scope -ChildScope $entry.Scope)
+                    }
+                    
+                    return $false
+                }
+                if ($dominated) {
+                    $entry.IsRedundant = $true
+                    # Find the dominating assignment and explain why
+                    $dominatingEntry = $dominated | Sort-Object ScopeLevel | Select-Object -First 1
+                    $entry.RedundantReason = "Redundant: Same role ($($entry.Role)) already assigned at $($dominatingEntry.ScopeFriendlyName) (broader scope)"
+                }
+            }
+            
+            # Group by access tier
+            $accessByTier = @{}
+            foreach ($tierName in @('FullControl', 'AccessManager', 'Administrative', 'PrivilegedOps', 'Write', 'ReadOnly')) {
+                $tierEntries = $accessEntries | Where-Object { $_.AccessTier -eq $tierName }
+                if ($tierEntries) {
+                    $accessByTier[$tierName] = @($tierEntries)
+                }
+            }
+            
+            # Calculate highest tier
+            $highestEntry = $accessEntries | Sort-Object AccessTierOrder | Select-Object -First 1
+            
+            # Get all affected subscriptions
+            $allAffectedSubs = [System.Collections.Generic.HashSet[string]]::new()
+            foreach ($entry in $accessEntries) {
+                foreach ($sub in $entry.AffectedSubscriptions) {
+                    if ($sub -notmatch '^All \d+ subscriptions$') {
+                        $null = $allAffectedSubs.Add($sub)
+                    }
+                }
+            }
+            $allAffectedSubsArray = [array]($allAffectedSubs | Sort-Object)
+            
+            # Get unique roles summary
+            $rolesSummary = $accessEntries | Select-Object -ExpandProperty Role -Unique | Sort-Object
+            
+            # Build principal object
+            $principal = [PSCustomObject]@{
                 PrincipalId = $first.PrincipalId
                 PrincipalDisplayName = $first.PrincipalDisplayName
                 PrincipalType = $first.PrincipalType
@@ -542,22 +867,23 @@ function Get-AzureRBACInventory {
                 IsOrphaned = $first.IsOrphaned
                 IsExternal = $first.IsExternal
                 
-                HighestRiskLevel = $highestRisk
-                Roles = $roles
-                RoleCount = $roles.Count
+                HighestAccessTier = $highestEntry.AccessTier
+                HighestAccessTierOrder = $highestEntry.AccessTierOrder
+                RolesSummary = $rolesSummary
+                ScopeCount = $accessEntries.Count
+                AffectedSubscriptions = $allAffectedSubsArray
+                AffectedSubscriptionCount = $allAffectedSubsArray.Count
                 
-                Scopes = $scopes
-                ScopeCount = $scopes.Count
+                AccessByTier = $accessByTier
                 
-                AffectedSubscriptions = [array]($allSubscriptions | Sort-Object)
-                SubscriptionCount = $allSubscriptions.Count
-                
-                TotalAssignments = $assignments.Count
-                
-                # Keep raw assignments for reference if needed
-                Assignments = $assignments
+                Insights = @()  # Will be populated below
             }
-        } | Sort-Object @{ Expression = { $riskOrder[$_.HighestRiskLevel] } }, PrincipalDisplayName
+            
+            # Generate insights
+            $principal.Insights = Get-PrincipalInsights -Principal $principal -AccessEntries $accessEntries
+            
+            $principal
+        } | Sort-Object HighestAccessTierOrder, PrincipalDisplayName
 
     Write-Host "  Unique principals: $($principalView.Count)" -ForegroundColor Gray
 
@@ -595,25 +921,62 @@ function Get-AzureRBACInventory {
     $endTime = Get-Date
     $duration = $endTime - $startTime
 
+    # Build access matrix data
+    Write-Host "`nBuilding access matrix..." -ForegroundColor Cyan
+    $accessMatrix = @{}
+    $scopeLevels = @('Root', 'ManagementGroup', 'Subscription', 'ResourceGroup', 'Resource')
+    $tierNames = @('FullControl', 'AccessManager', 'Administrative', 'PrivilegedOps', 'Write', 'ReadOnly')
+    
+    foreach ($tierName in $tierNames) {
+        $accessMatrix[$tierName] = @{}
+        foreach ($scopeLevel in $scopeLevels) {
+            $count = 0
+            foreach ($principal in $principalView) {
+                if ($principal.AccessByTier -and $principal.AccessByTier.ContainsKey($tierName)) {
+                    $tierEntries = $principal.AccessByTier[$tierName]
+                    $matchingEntries = $tierEntries | Where-Object { $_.ScopeType -eq $scopeLevel }
+                    if ($matchingEntries) {
+                        $count++  # Count this principal once per tier/scope combination
+                    }
+                }
+            }
+            $accessMatrix[$tierName][$scopeLevel] = $count
+        }
+    }
+    
     # Recalculate statistics based on unique assignments and principals
     $newStats = @{
         TotalUniqueAssignments = $uniqueAssignments.Count
         TotalPrincipals = $principalView.Count
         PrincipalsByType = @{
-            User = ($principalView | Where-Object { $_.PrincipalType -eq 'User' }).Count
-            Group = ($principalView | Where-Object { $_.PrincipalType -eq 'Group' }).Count
-            ServicePrincipal = ($principalView | Where-Object { $_.PrincipalType -eq 'ServicePrincipal' }).Count
-            ManagedIdentity = ($principalView | Where-Object { $_.PrincipalType -eq 'ManagedIdentity' }).Count
-            Unknown = ($principalView | Where-Object { $_.PrincipalType -notin @('User', 'Group', 'ServicePrincipal', 'ManagedIdentity') }).Count
+            User = @($principalView | Where-Object { $_.PrincipalType -eq 'User' }).Count
+            Group = @($principalView | Where-Object { $_.PrincipalType -eq 'Group' }).Count
+            ServicePrincipal = @($principalView | Where-Object { $_.PrincipalType -eq 'ServicePrincipal' }).Count
+            ManagedIdentity = @($principalView | Where-Object { $_.PrincipalType -eq 'ManagedIdentity' }).Count
+            Unknown = @($principalView | Where-Object { $_.PrincipalType -notin @('User', 'Group', 'ServicePrincipal', 'ManagedIdentity') }).Count
         }
-        PrincipalsByRisk = @{
-            Critical = ($principalView | Where-Object { $_.HighestRiskLevel -eq 'Critical' }).Count
-            High = ($principalView | Where-Object { $_.HighestRiskLevel -eq 'High' }).Count
-            Medium = ($principalView | Where-Object { $_.HighestRiskLevel -eq 'Medium' }).Count
-            Low = ($principalView | Where-Object { $_.HighestRiskLevel -eq 'Low' }).Count
+        ByAccessTier = @{
+            FullControl = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('FullControl') }).Count
+            AccessManager = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('AccessManager') }).Count
+            Administrative = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('Administrative') }).Count
+            PrivilegedOps = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('PrivilegedOps') }).Count
+            Write = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('Write') }).Count
+            ReadOnly = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('ReadOnly') }).Count
         }
         OrphanedCount = ($principalView | Where-Object { $_.IsOrphaned }).Count
         ExternalCount = ($principalView | Where-Object { $_.IsExternal }).Count
+        RedundantCount = ($principalView | ForEach-Object {
+            $redundantCount = 0
+            foreach ($tierName in @('FullControl', 'AccessManager', 'Administrative', 'PrivilegedOps', 'Write', 'ReadOnly')) {
+                if ($_.AccessByTier -and $_.AccessByTier.ContainsKey($tierName)) {
+                    $redundantEntries = $_.AccessByTier[$tierName] | Where-Object { $_.IsRedundant }
+                    if ($redundantEntries) {
+                        $redundantCount += $redundantEntries.Count
+                    }
+                }
+            }
+            $redundantCount
+        } | Measure-Object -Sum).Sum
         CustomRoleCount = $allCustomRoles.Count
     }
 
@@ -626,15 +989,20 @@ function Get-AzureRBACInventory {
 
     #region Output
 
+    # Build subscription names array for metadata
+    $subscriptionNames = @($subscriptions | Select-Object -ExpandProperty Name | Sort-Object)
+    
     return [PSCustomObject]@{
         Metadata = @{
             TenantId = $currentTenantId
             CollectionTime = $startTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
             Duration = $duration.TotalSeconds
             SubscriptionsScanned = $subscriptions.Count
+            SubscriptionNames = $subscriptionNames
         }
         Statistics = $newStats
         Principals = $principalView
+        AccessMatrix = $accessMatrix
         CustomRoles = $allCustomRoles.ToArray()
         OrphanedAssignments = @($orphanedAssignments)
         # Keep old structure for backward compatibility during transition

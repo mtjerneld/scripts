@@ -110,57 +110,62 @@ Write-Host "  Loading functions..." -ForegroundColor Gray
 # 1. Config först (konstanter och definitioner som används av andra)
 Write-Host "  Loading Private Config..." -ForegroundColor Gray
 Get-ChildItem -Path "$ModuleRoot\Private\Config\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    $file = $_  # Capture file reference BEFORE try/catch
     try {
-        . $_.FullName
-        Write-Verbose "Loaded: $($_.Name)"
+        . $file.FullName
+        Write-Verbose "Loaded: $($file.Name)"
     }
     catch {
-        Write-Warning "Failed to load $($_.Name): $_"
+        Write-Warning "Failed to load $($file.Name): $_"
     }
 }
 
 # 2. Helpers (grundläggande helper-funktioner)
 Write-Host "  Loading Private Helpers..." -ForegroundColor Gray
 Get-ChildItem -Path "$ModuleRoot\Private\Helpers\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    $file = $_  # Capture file reference BEFORE try/catch
     try {
-        . $_.FullName
-        Write-Verbose "Loaded: $($_.Name)"
+        . $file.FullName
+        Write-Verbose "Loaded: $($file.Name)"
     }
     catch {
-        Write-Warning "Failed to load $($_.Name): $_"
+        Write-Warning "Failed to load $($file.Name): $_"
     }
 }
 
 # 3. Scanners (använder helpers)
 Write-Host "  Loading Private Scanners..." -ForegroundColor Gray
 Get-ChildItem -Path "$ModuleRoot\Private\Scanners\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    $file = $_  # Capture file reference BEFORE try/catch
     try {
-        . $_.FullName
-        Write-Verbose "Loaded: $($_.Name)"
+        . $file.FullName
+        Write-Verbose "Loaded: $($file.Name)"
     }
     catch {
-        Write-Warning "Failed to load $($_.Name): $_"
+        Write-Warning "Failed to load $($file.Name): $_"
     }
 }
 
 # 4. Collectors (använder helpers)
 Write-Host "  Loading Private Collectors..." -ForegroundColor Gray
 Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    $file = $_  # Capture file reference BEFORE try/catch
+    Write-Verbose "    Attempting: $($file.Name)"
     try {
         # Load by reading content and creating scriptblock (bypasses execution policy issues)
-        $content = Get-Content $_.FullName -Raw -ErrorAction Stop
+        $content = Get-Content $file.FullName -Raw -ErrorAction Stop
         $scriptBlock = [scriptblock]::Create($content)
         . $scriptBlock
-        Write-Verbose "Loaded: $($_.Name)"
+        Write-Verbose "Loaded: $($file.Name)"
     }
     catch {
         # Fallback to direct dot-sourcing
         try {
-            . $_.FullName -ErrorAction Stop
-            Write-Verbose "Loaded: $($_.Name)"
+            . $file.FullName -ErrorAction Stop
+            Write-Verbose "Loaded: $($file.Name)"
         }
         catch {
-            Write-Warning "Failed to load $($_.Name): $_"
+            Write-Warning "Failed to load $($file.Name): $_"
         }
     }
 }
@@ -168,12 +173,13 @@ Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction Silently
 # 5. Public Functions (använder allt ovanstående)
 Write-Host "  Loading Public Functions..." -ForegroundColor Gray
 Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
+    $file = $_  # Capture file reference BEFORE try/catch
     try {
-        . $_.FullName
-        Write-Verbose "Loaded: $($_.Name)"
+        . $file.FullName
+        Write-Verbose "Loaded: $($file.Name)"
     }
     catch {
-        Write-Warning "Failed to load $($_.Name): $_"
+        Write-Warning "Failed to load $($file.Name): $_"
     }
 }
 
@@ -1187,10 +1193,12 @@ function Test-RBAC {
 
         Write-Host "`nRBAC Inventory Collection Summary:" -ForegroundColor Green
         Write-Host "  Total Principals: $($rbacData.Statistics.TotalPrincipals)" -ForegroundColor Gray
-        Write-Host "  Critical Risk: $($rbacData.Statistics.PrincipalsByRisk.Critical)" -ForegroundColor $(if ($rbacData.Statistics.PrincipalsByRisk.Critical -gt 0) { 'Red' } else { 'Green' })
-        Write-Host "  High Risk: $($rbacData.Statistics.PrincipalsByRisk.High)" -ForegroundColor $(if ($rbacData.Statistics.PrincipalsByRisk.High -gt 0) { 'Yellow' } else { 'Green' })
-        Write-Host "  Medium Risk: $($rbacData.Statistics.PrincipalsByRisk.Medium)" -ForegroundColor Gray
-        Write-Host "  Low Risk: $($rbacData.Statistics.PrincipalsByRisk.Low)" -ForegroundColor Gray
+        Write-Host "  Full Control: $($rbacData.Statistics.ByAccessTier.FullControl)" -ForegroundColor $(if ($rbacData.Statistics.ByAccessTier.FullControl -gt 0) { 'Red' } else { 'Green' })
+        Write-Host "  Access Managers: $($rbacData.Statistics.ByAccessTier.AccessManager)" -ForegroundColor $(if ($rbacData.Statistics.ByAccessTier.AccessManager -gt 0) { 'Yellow' } else { 'Green' })
+        Write-Host "  Administrative: $($rbacData.Statistics.ByAccessTier.Administrative)" -ForegroundColor Gray
+        Write-Host "  Privileged Ops: $($rbacData.Statistics.ByAccessTier.PrivilegedOps)" -ForegroundColor Gray
+        Write-Host "  Write: $($rbacData.Statistics.ByAccessTier.Write)" -ForegroundColor Gray
+        Write-Host "  Read Only: $($rbacData.Statistics.ByAccessTier.ReadOnly)" -ForegroundColor Gray
         Write-Host "  Orphaned: $($rbacData.Statistics.OrphanedCount)" -ForegroundColor $(if ($rbacData.Statistics.OrphanedCount -gt 0) { 'Red' } else { 'Green' })
         Write-Host "  External/Guest: $($rbacData.Statistics.ExternalCount)" -ForegroundColor Gray
         Write-Host "  Custom Roles: $($rbacData.Statistics.CustomRoleCount)" -ForegroundColor Gray
