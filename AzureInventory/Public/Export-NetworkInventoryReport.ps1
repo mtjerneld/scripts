@@ -2079,8 +2079,8 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $fwTooltip = "$($fw.Name)`nType: Azure Firewall`nSKU: $($fw.SkuTier)`nThreat Intel: $($fw.ThreatIntelMode)"
                             $fwTooltipEscaped = Format-JsString $fwTooltip
                             $fwNameEscaped = Format-JsString $fw.Name
-                            # Firewalls stay at level 2 (same as gateway level)
-                            $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
+                            # Firewalls are at level 1 (same as gateway level)
+                            $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 1 }")
                         }
                         
                         # Always create edge from VNet to Firewall (if both nodes exist)
@@ -2121,7 +2121,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $fwTooltip = "$($fw.Name)`nType: Azure Firewall (Virtual WAN)`nSKU: $($fw.SkuTier)`nThreat Intel: $($fw.ThreatIntelMode)`nHub: $($hub.Name)"
                             $fwTooltipEscaped = Format-JsString $fwTooltip
                             $fwNameEscaped = Format-JsString $fw.Name
-                            $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 2 }")
+                            $nodesJson.Add("{ id: $fwNodeId, label: `"$fwNameEscaped`", title: `"$fwTooltipEscaped`", color: `"#e74c3c`", shape: `"box`", size: 15, font: { color: `"#e8e8e8`", size: 16 }, level: 1 }")
                             # Create edge from Hub to Firewall
                             $edgesJson.Add("{ from: $hubNodeId, to: $fwNodeId, color: { color: `"#e74c3c`" }, width: 2, length: 50, title: `"Azure Firewall in Virtual WAN Hub`" }")
                         }
@@ -2514,7 +2514,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         # Escape the tooltip and name for JavaScript
                         $onPremTooltipEscaped = Format-JsString $onPremTooltip
                         $circuitNameEscaped = Format-JsString $circuitName
-                        # ExpressRoute circuits are at level 0 (on-premises level)
+                        # ExpressRoute circuits are at level 0 (on-premises level, same as VPNs)
                         $nodesJson.Add("{ id: $onPremNodeId, label: `"$circuitNameEscaped`", title: `"$onPremTooltipEscaped`", color: `"#34495e`", shape: `"box`", size: 20, font: { color: `"#e8e8e8`", size: 14 }, level: 0 }")
                     }
                     

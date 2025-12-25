@@ -5,7 +5,7 @@
 .DESCRIPTION
     Uses Azure Resource Graph resourcechanges table to get actual configuration changes
     on resources. This provides property-level change details (before/after values) and
-    filters out audit log noise. Optionally includes curated Activity Log security events.
+    filters out audit log noise. Optionally includes RBAC role assignment events from Activity Log.
 
 .PARAMETER SubscriptionIds
     Array of Azure subscription IDs to query.
@@ -14,7 +14,10 @@
     Number of days to look back (default: 14, max: 14 due to Azure limitation).
 
 .PARAMETER IncludeSecurityEvents
-    If true, also queries Activity Log for security-critical events (RBAC, NSG, Key Vault, etc.).
+    If true, also queries Activity Log for RBAC role assignment events (write/delete).
+    Note: RBAC role assignments are NOT tracked in Resource Graph Change Analysis, so Activity Log
+    is needed for these. Other security operations (NSG rules, Key Vault policies, Public IPs, etc.)
+    are already tracked in Resource Graph Change Analysis via the resourcechanges table.
 
 .OUTPUTS
     Array of change tracking objects with ChangeTime, ChangeType, ResourceType, etc.
@@ -298,8 +301,9 @@ resourcechanges
         }
         
         # Add security events from Activity Log if requested
+        # Note: Only RBAC role assignments are queried from Activity Log, as they are not tracked in Resource Graph Change Analysis
         if ($IncludeSecurityEvents) {
-            Write-Host "  Retrieving security events from Activity Log (filtered at API level)..." -ForegroundColor Cyan
+            Write-Host "  Retrieving RBAC role assignment events from Activity Log (filtered at API level)..." -ForegroundColor Cyan
             $securityChanges = Get-SecurityEventsFromActivityLog -SubscriptionIds $SubscriptionIds -Days $Days
             if ($securityChanges -and $securityChanges.Count -gt 0) {
                 Write-Host "    Found $($securityChanges.Count) security events" -ForegroundColor Green
@@ -399,11 +403,13 @@ function Get-ResourceCategory {
 
 <#
 .SYNOPSIS
-    Retrieves security-critical events from Activity Log.
+    Retrieves RBAC role assignment events from Activity Log.
 
 .DESCRIPTION
-    Queries Activity Log for curated security operations (RBAC, NSG, Key Vault, etc.)
-    and converts them to the same format as Change Analysis results.
+    Queries Activity Log for RBAC role assignment operations (write/delete) only.
+    These are NOT tracked in Resource Graph Change Analysis, so we need Activity Log.
+    Other security operations (NSG rules, Key Vault policies, etc.) are already tracked
+    in Resource Graph Change Analysis via the resourcechanges table.
 
 .PARAMETER SubscriptionIds
     Array of subscription IDs to query.
@@ -423,15 +429,13 @@ function Get-SecurityEventsFromActivityLog {
     
     $securityChanges = [System.Collections.Generic.List[PSObject]]::new()
     
-    # Security operations to track
+    # Security operations to track from Activity Log
+    # Note: Only RBAC role assignments are tracked here because they are NOT included in Resource Graph Change Analysis.
+    # Other security operations (NSG rules, Key Vault policies, Public IPs, Policy Exemptions) are already
+    # tracked in Resource Graph Change Analysis via the resourcechanges table, so we don't need Activity Log for those.
     $securityOperations = @{
         'Microsoft.Authorization/roleAssignments/write' = @{ Priority = 'high'; Reason = 'RBAC role assignment - verify permissions' }
         'Microsoft.Authorization/roleAssignments/delete' = @{ Priority = 'high'; Reason = 'RBAC role removal - verify access control' }
-        'Microsoft.Network/networkSecurityGroups/securityRules/write' = @{ Priority = 'high'; Reason = 'NSG rule change - verify inbound rules' }
-        'Microsoft.Network/networkSecurityGroups/securityRules/delete' = @{ Priority = 'high'; Reason = 'NSG rule deletion - verify security posture' }
-        'Microsoft.KeyVault/vaults/accessPolicies/write' = @{ Priority = 'high'; Reason = 'Key Vault access policy change' }
-        'Microsoft.Network/publicIPAddresses/write' = @{ Priority = 'medium'; Reason = 'Public IP address created - verify exposure' }
-        'Microsoft.Authorization/policyExemptions/write' = @{ Priority = 'medium'; Reason = 'Policy exemption created - verify compliance' }
     }
     
     # Check if Get-AzureActivityLogViaRestApi exists (from Get-AzureChangeTracking.ps1)
@@ -463,7 +467,7 @@ function Get-SecurityEventsFromActivityLog {
     # Query each subscription with API-level filtering
     foreach ($subId in $SubscriptionIds) {
         try {
-            Write-Verbose "Querying Activity Log for security events in subscription $subId (filtered at API level)..."
+            Write-Verbose "Querying Activity Log for RBAC role assignment events in subscription $subId (filtered at API level)..."
             
             # Build OData filter with time, status, and operation filters
             $apiVersion = '2015-04-01'
@@ -494,7 +498,7 @@ function Get-SecurityEventsFromActivityLog {
                             foreach ($item in $responseData.value) {
                                 $allLogs.Add($item)
                             }
-                            Write-Verbose "Retrieved $($responseData.value.Count) security events (page $($pageCount + 1), total: $($allLogs.Count))"
+                            Write-Verbose "Retrieved $($responseData.value.Count) RBAC events (page $($pageCount + 1), total: $($allLogs.Count))"
                         }
                         
                         $nextLink = $responseData.nextLink
@@ -525,13 +529,13 @@ function Get-SecurityEventsFromActivityLog {
                 }
             } while ($nextLink)
             
-            Write-Verbose "Retrieved $($allLogs.Count) total Activity Log entries for security filtering"
+            Write-Verbose "Retrieved $($allLogs.Count) total Activity Log entries for RBAC filtering"
             
             if ($allLogs.Count -eq 0) {
                 continue
             }
             
-            # Filter for security operations (double-check, but should already be filtered)
+            # Filter for RBAC role assignment operations (double-check, but should already be filtered at API level)
             $filteredLogs = $allLogs | Where-Object {
                 $opName = $null
                 if ($_.Properties -and $_.Properties.OperationName) {
@@ -559,7 +563,7 @@ function Get-SecurityEventsFromActivityLog {
                 return $false
             }
             
-            Write-Verbose "Filtered to $($filteredLogs.Count) security events"
+            Write-Verbose "Filtered to $($filteredLogs.Count) RBAC role assignment events"
             
             # Get subscription name (suppress warnings for other tenants)
             $sub = Invoke-WithSuppressedWarnings {
@@ -708,3 +712,4 @@ function Get-SecurityEventsFromActivityLog {
     
     return @($securityChanges)
 }
+

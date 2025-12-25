@@ -113,12 +113,17 @@ function Export-CostTrackingReport {
                 ItemCount = $resItems.Count
             }
         }
-        # Get top 20 by CostUSD
-        $topResources = @($allResources | Sort-Object CostUSD -Descending | Select-Object -First 20)
+        # Get all resources (not just top 20) so JavaScript can recalculate top 20 based on filters
+        # Sort by CostUSD descending for initial display order
+        $topResources = @($allResources | Sort-Object CostUSD -Descending)
     } else {
         # Fallback to pre-calculated if no raw data
+        # Use all resources (not just top 20) so JavaScript can recalculate top 20 based on filters
         $topResources = @($CostTrackingData.TopResources | Sort-Object { $_.CostUSD } -Descending)
     }
+    
+    # Initially hide resources beyond top 20 (JavaScript will show/hide based on filters)
+    # We generate HTML for all resources so JavaScript can recalculate top 20 based on subscription filter
     $dailyTrend = $CostTrackingData.DailyTrend
     
     # Calculate trend (compare first half vs second half of period)
@@ -1627,7 +1632,7 @@ $categorySectionsHtml
         </div>
         
         <div class="section">
-            <h2 onclick="toggleSection(this)"><span class="expand-arrow">&#9654;</span> Top $($topResources.Count) Resources by Cost</h2>
+            <h2 onclick="toggleSection(this)"><span class="expand-arrow">&#9654;</span> Top 20 Resources by Cost</h2>
             <div class="section-content">
                 <div class="filter-bar">
                     <label>Search:</label>
@@ -1738,6 +1743,14 @@ $datasetsByResourceJsonString
             populateCategoryFilter();
             // Update chart to show default view (Total Cost)
             updateChart();
+            
+            // Initially hide resources beyond top 20 (JavaScript will show correct top 20 based on filters)
+            const resourceCards = document.querySelectorAll('.resource-card');
+            resourceCards.forEach((card, index) => {
+                if (index >= 20) {
+                    card.classList.add('filtered-out');
+                }
+            });
         });
         
         function initChart() {
@@ -1745,8 +1758,8 @@ $datasetsByResourceJsonString
             
             // Sort initial datasets by total cost (largest at bottom for stacked chart)
             const sortedDatasetsByCategory = [...datasetsByCategory].sort((a, b) => {
-                const aTotal = a.data.reduce((sum, val) => sum + val, 0);
-                const bTotal = b.data.reduce((sum, val) => sum + val, 0);
+                const aTotal = (a.data || []).reduce((sum, val) => sum + val, 0);
+                const bTotal = (b.data || []).reduce((sum, val) => sum + val, 0);
                 return bTotal - aTotal;
             });
             
@@ -2031,11 +2044,6 @@ $datasetsByResourceJsonString
             
             const datasets = [];
             let colorIndex = 0;
-            let otherData = null;
-            
-            if (includeOther) {
-                otherData = rawDailyData.map(() => 0);
-            }
             
             topKeys.forEach(key => {
                 const data = rawDailyData.map((day, dayIndex) => {
@@ -2128,10 +2136,50 @@ $datasetsByResourceJsonString
                     // Use the filtered day total (already calculated based on filters)
                     const dayTotal = getFilteredDayTotal(day, categoryFilter, selectedSubscriptions);
                     
-                    // Subtract known items (sum of all dataset values for this day)
+                    // Calculate the sum of ALL resources/meters for this day that match the filter
+                    // (not just the top 15, to correctly calculate "Other")
+                    let allFilteredResourcesTotal = 0;
+                    if (dimension === 'resources' || dimension === 'meters') {
+                        Object.keys(day[dimension] || {}).forEach(key => {
+                            if (key === 'Other') return;
+                            const dimData = day[dimension][key];
+                            if (!dimData) return;
+                            
+                            let value = 0;
+                            if (categoryFilter === 'all') {
+                                if (selectedSubscriptions.size === 0) {
+                                    value = dimData.total || 0;
+                                } else {
+                                    selectedSubscriptions.forEach(sub => {
+                                        value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                    });
+                                }
+                            } else {
+                                const catValue = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
+                                if (catValue > 0) {
+                                    if (selectedSubscriptions.size === 0) {
+                                        value = catValue;
+                                    } else {
+                                        const totalValue = dimData.total || 0;
+                                        if (totalValue > 0) {
+                                            let subscriptionShare = 0;
+                                            selectedSubscriptions.forEach(sub => {
+                                                subscriptionShare += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                            });
+                                            value = catValue * (subscriptionShare / totalValue);
+                                        }
+                                    }
+                                }
+                            }
+                            allFilteredResourcesTotal += value;
+                        });
+                    }
+                    
+                    // Subtract the top 15 datasets (which are already filtered)
                     const knownTotal = datasets.reduce((sum, ds) => sum + (ds.data[dayIndex] || 0), 0);
                     
-                    return Math.max(0, dayTotal - knownTotal);
+                    // "Other" = all filtered resources - top 15 filtered resources
+                    return Math.max(0, allFilteredResourcesTotal - knownTotal);
                 });
                 
                 const otherTotal = otherDataCalc.reduce((sum, val) => sum + val, 0);
@@ -2171,8 +2219,11 @@ $datasetsByResourceJsonString
             // Filter category sections, subscription sections, and resource sections
             filterCategorySections();
             
-            // Also update resource search filter to respect subscription filter
-            filterResources();
+            // Recalculate and reorder Top 20 resources based on subscription filter
+            // Only if DOM is ready (resource cards exist)
+            if (document.getElementById('resourceSearch')) {
+                recalculateTopResources();
+            }
             
             // Update summary cards with filtered data
             updateSummaryCards();
@@ -2410,16 +2461,155 @@ $datasetsByResourceJsonString
                     cat.classList.remove('filtered-out');
                 }
             });
-            
-            // Filter resource cards by subscription
-            document.querySelectorAll('.resource-card').forEach(resCard => {
-                const subscription = resCard.getAttribute('data-subscription');
-                if (subscription && selectedSubscriptions.size > 0) {
-                    resCard.classList.toggle('filtered-out', !selectedSubscriptions.has(subscription));
-                } else {
-                    resCard.classList.remove('filtered-out');
+        }
+        
+        function recalculateTopResources() {
+            try {
+                // Safety check: ensure DOM is ready
+                const searchInput = document.getElementById('resourceSearch');
+                if (!searchInput) {
+                    console.warn('resourceSearch element not found, skipping recalculateTopResources');
+                    return;
                 }
-            });
+                
+                const resourcesContainer = searchInput.closest('.section-content');
+                if (!resourcesContainer) {
+                    console.warn('resourcesContainer not found, skipping recalculateTopResources');
+                    return;
+                }
+                
+                // Check if rawDailyData is available
+                if (typeof rawDailyData === 'undefined' || !rawDailyData || !Array.isArray(rawDailyData)) {
+                    console.warn('rawDailyData not available, skipping recalculateTopResources');
+                    return;
+                }
+                
+                // Check if resource cards exist
+                const resourceCards = document.querySelectorAll('.resource-card');
+                if (resourceCards.length === 0) {
+                    console.warn('No resource cards found, skipping recalculateTopResources');
+                    return;
+                }
+                
+                // Calculate filtered costs for each resource from rawDailyData
+                const resourceCosts = new Map();
+                
+                rawDailyData.forEach(day => {
+                    if (day && day.resources) {
+                        Object.entries(day.resources).forEach(([resName, resData]) => {
+                            if (resName === 'Other') return; // Skip "Other"
+                            
+                            if (!resourceCosts.has(resName)) {
+                                resourceCosts.set(resName, 0);
+                            }
+                            
+                            // Calculate cost based on subscription filter
+                            if (selectedSubscriptions.size === 0) {
+                                // No subscription filter - use total
+                                resourceCosts.set(resName, resourceCosts.get(resName) + (resData.total || 0));
+                            } else {
+                                // Sum costs for selected subscriptions only
+                                if (resData.bySubscription) {
+                                    let dayCost = 0;
+                                    selectedSubscriptions.forEach(sub => {
+                                        dayCost += (resData.bySubscription[sub] || 0);
+                                    });
+                                    resourceCosts.set(resName, resourceCosts.get(resName) + dayCost);
+                                }
+                            }
+                        });
+                    }
+                });
+                
+                // Get all resource cards and calculate their filtered costs
+                const resourceCardsArray = Array.from(resourceCards);
+                
+                const cardsWithCosts = resourceCardsArray.map(card => {
+                    const resName = card.querySelector('.category-title')?.textContent?.trim();
+                    const subscription = card.getAttribute('data-subscription');
+                    const filteredCost = resName ? (resourceCosts.get(resName) || 0) : 0;
+                    
+                    return {
+                        card: card,
+                        name: resName,
+                        subscription: subscription,
+                        filteredCost: filteredCost
+                    };
+                });
+                
+                // Sort by filtered cost (descending)
+                cardsWithCosts.sort((a, b) => b.filteredCost - a.filteredCost);
+                
+                const searchText = searchInput.value.toLowerCase();
+                
+                // Store the filter bar (search input and its container)
+                const filterBar = searchInput.closest('.filter-bar');
+                
+                // Remove all resource cards from DOM (temporarily)
+                const cardsToReorder = cardsWithCosts.map(item => item.card);
+                cardsToReorder.forEach(card => card.remove());
+                
+                // Re-add filter bar if it was removed
+                if (filterBar && !resourcesContainer.contains(filterBar)) {
+                    resourcesContainer.insertBefore(filterBar, resourcesContainer.firstChild);
+                }
+                
+                // Filter by subscription first to get resources matching the subscription filter
+                const subscriptionFiltered = cardsWithCosts.filter(item => {
+                    return selectedSubscriptions.size === 0 || 
+                        (item.subscription && selectedSubscriptions.has(item.subscription));
+                });
+                
+                // Get top 20 most costly resources that match subscription filter
+                const top20BySubscription = subscriptionFiltered.slice(0, 20);
+                
+                // Add all cards back in sorted order
+                // First, add the top 20 matching subscription filter (they may be filtered by search)
+                top20BySubscription.forEach((item) => {
+                    const card = item.card;
+                    const text = card.textContent.toLowerCase();
+                    const matchesSearch = searchText === '' || text.includes(searchText);
+                    
+                    if (matchesSearch) {
+                        card.classList.remove('filtered-out');
+                    } else {
+                        card.classList.add('filtered-out');
+                    }
+                    resourcesContainer.appendChild(card);
+                });
+                
+                // Add remaining resources that match subscription (beyond top 20) but keep them hidden
+                subscriptionFiltered.slice(20).forEach(item => {
+                    const card = item.card;
+                    card.classList.add('filtered-out');
+                    resourcesContainer.appendChild(card);
+                });
+                
+                // Add resources that don't match subscription filter (keep hidden)
+                cardsWithCosts.forEach(item => {
+                    const matchesSubscription = selectedSubscriptions.size === 0 || 
+                        (item.subscription && selectedSubscriptions.has(item.subscription));
+                    if (!matchesSubscription) {
+                        const card = item.card;
+                        card.classList.add('filtered-out');
+                        if (!resourcesContainer.contains(card)) {
+                            resourcesContainer.appendChild(card);
+                        }
+                    }
+                });
+                
+                // Update section title - always show "Top 20" (showing the 20 most costly based on current filter)
+                const topResourcesSection = resourcesContainer.closest('.section');
+                if (topResourcesSection) {
+                    const sectionHeader = topResourcesSection.querySelector('h2');
+                    if (sectionHeader && sectionHeader.textContent.includes('Top')) {
+                        const arrow = sectionHeader.querySelector('.expand-arrow')?.outerHTML || '<span class="expand-arrow">&#9654;</span>';
+                        sectionHeader.innerHTML = arrow + ' Top 20 Resources by Cost';
+                    }
+                }
+            } catch (error) {
+                console.error('Error in recalculateTopResources:', error);
+            }
         }
         
         function selectAllSubscriptions() {
@@ -2470,21 +2660,8 @@ $datasetsByResourceJsonString
         }
         
         function filterResources() {
-            const searchText = document.getElementById('resourceSearch').value.toLowerCase();
-            const resourceCards = document.querySelectorAll('.resource-card');
-            
-            resourceCards.forEach(card => {
-                const text = card.textContent.toLowerCase();
-                const matchesSearch = searchText === '' || text.includes(searchText);
-                const subscription = card.getAttribute('data-subscription');
-                const matchesSubscription = selectedSubscriptions.size === 0 || selectedSubscriptions.has(subscription);
-                
-                if (matchesSearch && matchesSubscription) {
-                    card.classList.remove('filtered-out');
-                } else {
-                    card.classList.add('filtered-out');
-                }
-            });
+            // Recalculate and reorder resources (this also applies search filter)
+            recalculateTopResources();
         }
     </script>
 </body>
