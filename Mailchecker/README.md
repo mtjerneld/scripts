@@ -46,7 +46,8 @@ This tool performs a complete email security audit by checking:
 # Show comprehensive help information
 .\mailchecker.ps1 -Help
 
-# Check a single domain
+# Check a single domain (both forms work)
+.\mailchecker.ps1 example.com
 .\mailchecker.ps1 -Domain example.com
 ```
 
@@ -54,13 +55,13 @@ This tool performs a complete email security audit by checking:
 
 ```powershell
 # Check with custom DKIM selectors
-.\mailchecker.ps1 -Domain example.com -Selectors "default,s1,google,mail"
+.\mailchecker.ps1 example.com -Selectors "default,s1,google,mail"
 
 # Use specific DNS servers
-.\mailchecker.ps1 -Domain example.com -DnsServer @("8.8.8.8", "1.1.1.1")
+.\mailchecker.ps1 example.com -DnsServer @("8.8.8.8", "1.1.1.1")
 
 # Generate HTML report (auto-generated filename with timestamp)
-.\mailchecker.ps1 -Domain example.com -Html
+.\mailchecker.ps1 example.com -Html
 ```
 
 ### Bulk Domain Checking
@@ -85,6 +86,9 @@ The `-FullHtmlExport` mode creates a complete, professional report structure wit
 
 # Complete export with JSON and AI analysis
 .\mailchecker.ps1 -BulkFile domains.txt -FullHtmlExport -Json -ChatGPT -OpenReport
+
+# All-in-one shortcut (enables FullHtmlExport, ChatGPT, ActivityPlan, UploadToAzure)
+.\mailchecker.ps1 -BulkFile domains.txt -All
 ```
 
 ### AI-Powered Analysis (Optional)
@@ -108,6 +112,10 @@ Generate strategic remediation plans and actionable recommendations using ChatGP
    OPENAI_TIMEOUT_SECONDS=60              # optional
    ```
 2. Run with `-ChatGPT` switch
+
+**Testing API Connection:**
+- Use `-ChatGPTHello` to test OpenAI API connectivity without running full analysis
+- Useful for debugging API key or network issues
 
 **AI Analysis includes:**
 - Strategic remediation plan prioritized by impact
@@ -259,20 +267,22 @@ Convert activity plan to Wrike import format:
 
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
-| `-Domain` | String | Domain to check (e.g., example.com) | Prompted if not provided |
+| `-Domain` | String | Domain to check (e.g., example.com). Can be used positionally: `.\mailchecker.ps1 example.com` | Prompted if not provided |
 | `-BulkFile` | String | File containing domains to check (one per line) | - |
-| `-Selectors` | String | Comma-separated DKIM selectors to test | `"default,s1,s2,selector1,selector2,google,mail,k1"` |
+| `-Selectors` | String | Comma-separated DKIM selectors to test | `"default,s1,s2,s3,k1,k2,k3,selector1,selector2,google,mail,dkim,smtp,email"` |
 | `-DnsServer` | String[] | DNS server(s) to query first | Falls back to 8.8.8.8 and 1.1.1.1 |
 | `-Html` | Switch | Generate HTML report for single domain | - |
 | `-OutputPath` | String | Directory where output files will be saved | `output/` (auto-generates timestamped subfolder) |
 | `-FullHtmlExport` | Switch | Create complete HTML export: index, domain reports, CSV, assets | - |
-| `-OpenReport` | Switch | Automatically open generated index.html in default browser (requires `-FullHtmlExport`) | - |
+| `-OpenReport` | Switch | Automatically open generated HTML report in default browser (works with `-Html` or `-FullHtmlExport`) | - |
 | `-Json` | Switch | Export results to JSON format (with `-FullHtmlExport`) | - |
 | `-ChatGPT` | Switch | Generate AI-powered analysis with remediation plan (requires OPENAI_API_KEY in .env) | - |
 | `-UploadToAzure` | Switch | Upload report to Azure Blob Storage (requires `-FullHtmlExport`) | - |
 | `-AzureRunId` | String | Custom Run ID for Azure upload | Auto-generated: `yyyyMMdd-HHmmss-random6` |
 | `-EnvFile` | String | Path to .env file for configuration | `.env` |
 | `-ActivityPlan` | Switch | Generate detailed activity plan CSV from scan results | - |
+| `-ChatGPTHello` | Switch | Test OpenAI API connection with a simple hello request (debugging) | - |
+| `-All` | Switch | [SHORTCUT] Enable all features: FullHtmlExport, ChatGPT, ActivityPlan, UploadToAzure | - |
 | `-Help` | Switch | Show concise help information and exit | - |
 
 ## Output
@@ -406,18 +416,31 @@ Example reasons:
 
 ### Check a domain with default settings
 ```powershell
+.\mailchecker.ps1 google.com
+# or explicitly:
 .\mailchecker.ps1 -Domain google.com
 ```
 
 ### Check with custom selectors for Office 365
 ```powershell
+.\mailchecker.ps1 contoso.com -Selectors "selector1,selector2-contoso-com"
+# or explicitly:
 .\mailchecker.ps1 -Domain contoso.com -Selectors "selector1,selector2-contoso-com"
+```
+
+### All-in-one shortcut (full report + AI + activity plan + Azure upload)
+```powershell
+.\mailchecker.ps1 -BulkFile domains.txt -All
+.\mailchecker.ps1 example.com -All
 ```
 
 ### Generate HTML report
 ```powershell
-.\mailchecker.ps1 -Domain example.com -Html
+.\mailchecker.ps1 example.com -Html
 # Creates: example.com-20231201-143022.html
+
+# Generate HTML report and open automatically
+.\mailchecker.ps1 example.com -Html -OpenReport
 ```
 
 ### Bulk checking examples
@@ -457,7 +480,7 @@ Example reasons:
 
 ### Use specific DNS servers
 ```powershell
-.\mailchecker.ps1 -Domain example.com -DnsServer @("208.67.222.222", "208.67.220.220")
+.\mailchecker.ps1 example.com -DnsServer @("208.67.222.222", "208.67.220.220")
 ```
 
 ## Troubleshooting
@@ -510,15 +533,18 @@ domain-with-whitespace.com
 ### Project Structure
 ```
 Mailchecker/
-├── mailchecker.ps1          # Main PowerShell script (3,235 lines)
+├── mailchecker.ps1          # Main PowerShell script (5,266 lines)
 ├── README.md                # This documentation
 ├── .gitignore               # Git ignore patterns
 ├── domains.txt              # Example input file
+├── Convert-ActivityPlanToWrike.ps1  # Wrike format converter
 ├── templates/               # Presentation templates (organized by type)
 │   ├── html/               # HTML templates (5 files)
 │   │   ├── analysis.html
+│   │   ├── analysis-invalid.html
+│   │   ├── analysis-unavailable.html
 │   │   ├── domain-report.html
-│   │   └── index.html (+ error pages)
+│   │   └── index.html
 │   ├── css/                # CSS stylesheets (2 files)
 │   │   ├── style.css       (main stylesheet)
 │   │   └── analysis.css    (AI analysis styles)
@@ -526,9 +552,11 @@ Mailchecker/
 │       ├── app.js          (table interactions)
 │       └── analysis.js     (AI analysis scripts)
 ├── prompts/                # AI prompts for ChatGPT
-│   └── agent.md
+│   ├── agent.md            (primary prompt)
+│   └── agent-balanced.md   (alternative prompt)
 ├── schema/                 # JSON schemas
-│   └── analysis.schema.json
+│   ├── analysis.schema.json
+│   └── remediation-rules.json
 ├── BulkFiles/              # Domain list files
 └── output/                 # Default output directory (gitignored)
 ```

@@ -118,7 +118,7 @@ OUTPUT OPTIONS
     -FullHtmlExport         [RECOMMENDED] Complete export with assets directory (single domain or bulk)
     -Json                    Add JSON export (bulk mode only, with -FullHtmlExport)
     -OutputPath <path>       Output directory (default: output/)
-    -OpenReport              Auto-open report in browser (requires -FullHtmlExport)
+    -OpenReport              Auto-open report in browser (works with -Html or -FullHtmlExport)
     -ChatGPT                 Generate AI analysis with remediation plan (requires -FullHtmlExport and OPENAI_API_KEY in .env)
     -ActivityPlan            Generate activity plan CSV for remediation
     -All                     [SHORTCUT] Enable all features: FullHtmlExport, ChatGPT, ActivityPlan, UploadToAzure
@@ -690,6 +690,44 @@ if ($UploadToAzure) {
         Write-Host "  winget install azcopy --source winget" -ForegroundColor Cyan
         Write-Host "  Close and reopen your terminal (refresh PATH), then run again." -ForegroundColor Gray
         exit 1
+    }
+}
+
+function Open-HtmlReport {
+    <#
+    .SYNOPSIS
+    Opens an HTML report file in the default browser.
+    
+    .DESCRIPTION
+    Cross-platform function to open HTML files in the default browser.
+    Works on Windows, macOS, and Linux.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Path
+    )
+    
+    if (-not (Test-Path $Path)) {
+        Write-Host "Report file not found: $Path" -ForegroundColor Yellow
+        return
+    }
+    
+    try {
+        if ($IsWindows -or $PSVersionTable.PSVersion.Major -le 5) {
+            Start-Process $Path
+            Write-Host "Opened report in default browser." -ForegroundColor Green
+        } elseif ($IsMacOS) {
+            & open $Path
+            Write-Host "Opened report in default browser." -ForegroundColor Green
+        } elseif ($IsLinux) {
+            & xdg-open $Path
+            Write-Host "Opened report in default browser." -ForegroundColor Green
+        } else {
+            Write-Host "Could not determine platform to open browser. Please open manually: $Path" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Could not automatically open report: $_" -ForegroundColor Yellow
+        Write-Host "Please open manually: $Path" -ForegroundColor Cyan
     }
 }
 
@@ -5392,21 +5430,7 @@ if ($Html -or $FullHtmlExport) {
         
         # Open report if requested
         if ($OpenReport) {
-            try {
-                if ($IsWindows -or $PSVersionTable.PSVersion.Major -le 5) {
-                    Start-Process $indexPath
-                    Write-Host "Opened report in default browser." -ForegroundColor Green
-                } elseif ($IsMacOS) {
-                    & open $indexPath
-                    Write-Host "Opened report in default browser." -ForegroundColor Green
-                } elseif ($IsLinux) {
-                    & xdg-open $indexPath
-                    Write-Host "Opened report in default browser." -ForegroundColor Green
-                }
-            } catch {
-                Write-Host "Could not automatically open report: $_" -ForegroundColor Yellow
-                Write-Host "Please open manually: $indexPath" -ForegroundColor Cyan
-            }
+            Open-HtmlReport -Path $indexPath
         }
         
         Write-Host "`n[OK] Full HTML export complete! Click link to open:" -ForegroundColor Green
@@ -5468,6 +5492,11 @@ if ($Html -or $FullHtmlExport) {
                        -mxResult $allResults[0].MXResult -spfResult $allResults[0].SPFResult `
                        -dkimResult $allResults[0].DKIMResult -mtaStsResult $allResults[0].MTAStsResult `
                        -dmarcResult $allResults[0].DMARCResult -tlsResult $allResults[0].TLSResult
+        
+        # Open report if requested
+        if ($OpenReport) {
+            Open-HtmlReport -Path $outPath
+        }
     }
 } else {
     # No HTML output requested - just console output
