@@ -404,7 +404,11 @@ function Export-RBACReport {
 
         .filter-group input[type="checkbox"] {
             margin: 0;
+            padding: 0;
+            width: 14px;
+            height: 14px;
             cursor: pointer;
+            flex-shrink: 0;
         }
 
         .filter-stats {
