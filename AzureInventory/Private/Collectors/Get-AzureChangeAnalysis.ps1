@@ -713,3 +713,4 @@ function Get-SecurityEventsFromActivityLog {
     return @($securityChanges)
 }
 
+

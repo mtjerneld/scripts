@@ -219,7 +219,7 @@ function Export-RBACReport {
         }
         
         # Get unique scope types for this principal
-        $uniqueScopeTypes = $Principal.Assignments | Select-Object -ExpandProperty ScopeType -Unique | Sort-Object
+        $uniqueScopeTypes = $Principal.Assignments | ForEach-Object { $_.ScopeType } | Select-Object -Unique | Sort-Object
         
         # Search data
         $searchData = @(
@@ -360,8 +360,8 @@ function Export-RBACReport {
         
         .filters-content {
             display: flex;
-            flex-wrap: nowrap;
-            gap: 12px;
+            flex-wrap: wrap;
+            gap: 10px;
             align-items: center;
             padding: 12px 16px;
         }
@@ -370,6 +370,7 @@ function Export-RBACReport {
             display: flex;
             align-items: center;
             gap: 8px;
+            flex-shrink: 0;
         }
 
         .filter-group input[type="text"] {
@@ -378,7 +379,7 @@ function Export-RBACReport {
             border-radius: 4px;
             background: var(--bg-primary);
             color: var(--text-primary);
-            min-width: 200px;
+            width: 180px;
             font-size: 0.9rem;
         }
 
@@ -389,6 +390,7 @@ function Export-RBACReport {
             background: var(--bg-primary);
             color: var(--text-primary);
             font-size: 0.9rem;
+            max-width: 180px;
         }
 
         .filter-group label {
@@ -396,13 +398,19 @@ function Export-RBACReport {
             align-items: center;
             gap: 4px;
             cursor: pointer;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
+            white-space: nowrap;
+        }
+
+        .filter-group input[type="checkbox"] {
+            margin: 0;
+            cursor: pointer;
         }
 
         .filter-stats {
             margin-left: auto;
             color: var(--text-muted);
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             white-space: nowrap;
         }
         

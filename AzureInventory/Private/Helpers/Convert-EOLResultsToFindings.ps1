@@ -119,3 +119,4 @@ function Convert-EOLResultsToFindings {
     Write-Verbose "Convert-EOLResultsToFindings: Total findings created: $($EOLFindings.Count)"
 }
 
+
