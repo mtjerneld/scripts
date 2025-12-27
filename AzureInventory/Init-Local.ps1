@@ -1193,14 +1193,12 @@ function Test-RBAC {
 
         Write-Host "`nRBAC Inventory Collection Summary:" -ForegroundColor Green
         Write-Host "  Total Principals: $($rbacData.Statistics.TotalPrincipals)" -ForegroundColor Gray
-        Write-Host "  Full Control: $($rbacData.Statistics.ByAccessTier.FullControl)" -ForegroundColor $(if ($rbacData.Statistics.ByAccessTier.FullControl -gt 0) { 'Red' } else { 'Green' })
-        Write-Host "  Access Managers: $($rbacData.Statistics.ByAccessTier.AccessManager)" -ForegroundColor $(if ($rbacData.Statistics.ByAccessTier.AccessManager -gt 0) { 'Yellow' } else { 'Green' })
-        Write-Host "  Administrative: $($rbacData.Statistics.ByAccessTier.Administrative)" -ForegroundColor Gray
-        Write-Host "  Privileged Ops: $($rbacData.Statistics.ByAccessTier.PrivilegedOps)" -ForegroundColor Gray
-        Write-Host "  Write: $($rbacData.Statistics.ByAccessTier.Write)" -ForegroundColor Gray
-        Write-Host "  Read Only: $($rbacData.Statistics.ByAccessTier.ReadOnly)" -ForegroundColor Gray
+        Write-Host "  Privileged: $($rbacData.Statistics.ByRiskTier.Privileged)" -ForegroundColor $(if ($rbacData.Statistics.ByRiskTier.Privileged -gt 0) { 'Red' } else { 'Green' })
+        Write-Host "  Write: $($rbacData.Statistics.ByRiskTier.Write)" -ForegroundColor Gray
+        Write-Host "  Read: $($rbacData.Statistics.ByRiskTier.Read)" -ForegroundColor Gray
         Write-Host "  Orphaned: $($rbacData.Statistics.OrphanedCount)" -ForegroundColor $(if ($rbacData.Statistics.OrphanedCount -gt 0) { 'Red' } else { 'Green' })
         Write-Host "  External/Guest: $($rbacData.Statistics.ExternalCount)" -ForegroundColor Gray
+        Write-Host "  Redundant: $($rbacData.Statistics.RedundantCount)" -ForegroundColor $(if ($rbacData.Statistics.RedundantCount -gt 0) { 'Yellow' } else { 'Green' })
         Write-Host "  Custom Roles: $($rbacData.Statistics.CustomRoleCount)" -ForegroundColor Gray
 
         # Resolve full path

@@ -63,7 +63,9 @@ function Get-AzureRBACInventory {
         param(
             [string]$ObjectId,
             [string]$ObjectType,
-            [hashtable]$Cache
+            [hashtable]$Cache,
+            [string]$KnownDisplayName = $null,
+            [string]$KnownUPN = $null
         )
         
         if ($Cache.ContainsKey($ObjectId)) {
@@ -71,8 +73,8 @@ function Get-AzureRBACInventory {
         }
         
         $info = @{
-            DisplayName = $null
-            UserPrincipalName = $null
+            DisplayName = $KnownDisplayName
+            UserPrincipalName = $KnownUPN
             ObjectType = $ObjectType
             IsOrphaned = $false
             IsExternal = $false
@@ -82,46 +84,117 @@ function Get-AzureRBACInventory {
         try {
             switch ($ObjectType) {
                 'User' {
-                    $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue
+                    $errorRecord = $null
+                    $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
                     if ($user) {
                         $info.DisplayName = $user.DisplayName
                         $info.UserPrincipalName = $user.UserPrincipalName
                         $info.IsExternal = $user.UserPrincipalName -match '#EXT#'
-                    } else {
+                    }
+                    elseif ($errorRecord) {
+                        # Check error message to determine if it's "not found" vs other error
+                        $errorMessage = $errorRecord[0].Exception.Message
+                        $isNotFound = $errorMessage -match 'not found|does not exist|NotFound|ResourceNotFound|404|does not match|cannot be found'
+                        
+                        if ($isNotFound) {
+                            $info.IsOrphaned = $true
+                            $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted User: $ObjectId]" }
+                        }
+                        else {
+                            # Permission or other error - use KnownDisplayName or ObjectId but don't mark as orphaned
+                            Write-Verbose "Could not resolve User $ObjectId (error: $errorMessage)"
+                            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
+                            $info.IsOrphaned = $false
+                        }
+                    }
+                    else {
+                        # No error recorded, but no user returned - treat as not found
                         $info.IsOrphaned = $true
-                        $info.DisplayName = "[Deleted User: $ObjectId]"
+                        $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted User: $ObjectId]" }
                     }
                 }
                 'Group' {
-                    $group = Get-AzADGroup -ObjectId $ObjectId -ErrorAction SilentlyContinue
+                    $errorRecord = $null
+                    $group = Get-AzADGroup -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
                     if ($group) {
                         $info.DisplayName = $group.DisplayName
-                    } else {
+                    }
+                    elseif ($errorRecord) {
+                        $errorMessage = $errorRecord[0].Exception.Message
+                        $isNotFound = $errorMessage -match 'not found|does not exist|NotFound|ResourceNotFound|404|does not match|cannot be found'
+                        
+                        if ($isNotFound) {
+                            $info.IsOrphaned = $true
+                            $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted Group: $ObjectId]" }
+                        }
+                        else {
+                            Write-Verbose "Could not resolve Group $ObjectId (error: $errorMessage)"
+                            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
+                            $info.IsOrphaned = $false
+                        }
+                    }
+                    else {
                         $info.IsOrphaned = $true
-                        $info.DisplayName = "[Deleted Group: $ObjectId]"
+                        $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted Group: $ObjectId]" }
                     }
                 }
                 'ServicePrincipal' {
-                    $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue
+                    $errorRecord = $null
+                    $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
                     if ($sp) {
                         $info.DisplayName = $sp.DisplayName
                         $info.AppId = $sp.AppId
                         $info.ObjectType = if ($sp.ServicePrincipalType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
-                    } else {
+                    }
+                    elseif ($errorRecord) {
+                        $errorMessage = $errorRecord[0].Exception.Message
+                        $isNotFound = $errorMessage -match 'not found|does not exist|NotFound|ResourceNotFound|404|does not match|cannot be found'
+                        
+                        if ($isNotFound) {
+                            $info.IsOrphaned = $true
+                            $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted SP: $ObjectId]" }
+                        }
+                        else {
+                            Write-Verbose "Could not resolve ServicePrincipal $ObjectId (error: $errorMessage)"
+                            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
+                            $info.IsOrphaned = $false
+                        }
+                    }
+                    else {
                         $info.IsOrphaned = $true
-                        $info.DisplayName = "[Deleted SP: $ObjectId]"
+                        $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted SP: $ObjectId]" }
                     }
                 }
                 default {
-                    # Unknown type - try to resolve
-                    $info.DisplayName = "[Unknown: $ObjectId]"
-                    $info.IsOrphaned = $true
+                    # Unknown type - try to resolve as ServicePrincipal first, then User
+                    $errorRecord = $null
+                    $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
+                    if ($sp) {
+                        $info.DisplayName = $sp.DisplayName
+                        $info.AppId = $sp.AppId
+                        $info.ObjectType = if ($sp.ServicePrincipalType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
+                    }
+                    else {
+                        $errorRecord = $null
+                        $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
+                        if ($user) {
+                            $info.DisplayName = $user.DisplayName
+                            $info.UserPrincipalName = $user.UserPrincipalName
+                            $info.ObjectType = 'User'
+                        }
+                        else {
+                            Write-Verbose "Could not resolve principal $ObjectId as any known type"
+                            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
+                            $info.IsOrphaned = $true
+                        }
+                    }
                 }
             }
         }
         catch {
-            $info.DisplayName = "[Resolution Failed: $ObjectId]"
-            $info.IsOrphaned = $true
+            Write-Verbose "Unexpected error resolving principal $ObjectId : $_"
+            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
+            $info.IsOrphaned = $false
         }
         
         $Cache[$ObjectId] = $info
@@ -235,50 +308,471 @@ function Get-AzureRBACInventory {
     function Get-AccessTier {
         <#
         .SYNOPSIS
-            Maps Azure role names to access tiers for governance clarity.
+            Classifies Azure roles using Microsoft's official privileged role classification.
+        .DESCRIPTION
+            - Privileged: Microsoft's official privileged administrator roles (Owner, Contributor, User Access Administrator, Role Based Access Control Administrator, Access Review Operator Service Role)
+            - Write: Roles that can modify resources  
+            - Read: View-only roles
         #>
         param([string]$RoleName)
         
-        # Exact matches first
-        $exactMap = @{
-            'Owner' = @{ Tier = 'FullControl'; Display = 'Full Control'; Order = 0; Color = 'red' }
-            'User Access Administrator' = @{ Tier = 'AccessManager'; Display = 'Access Manager'; Order = 1; Color = 'orange' }
-            'Role Based Access Control Administrator' = @{ Tier = 'AccessManager'; Display = 'Access Manager'; Order = 1; Color = 'orange' }
-            'Contributor' = @{ Tier = 'Administrative'; Display = 'Administrative'; Order = 2; Color = 'yellow' }
-            'Security Admin' = @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' }
-            'Security Administrator' = @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' }
-            'Key Vault Administrator' = @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' }
-            'Storage Blob Data Owner' = @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' }
-            'Reader' = @{ Tier = 'ReadOnly'; Display = 'Read Only'; Order = 5; Color = 'green' }
-            'Cost Management Reader' = @{ Tier = 'ReadOnly'; Display = 'Read Only'; Order = 5; Color = 'green' }
+        # Microsoft's official Privileged Administrator Roles
+        # https://learn.microsoft.com/en-us/azure/role-based-access-control/rbac-and-directory-admin-roles
+        $privilegedRoles = @(
+            'Owner',
+            'Contributor', 
+            'User Access Administrator',
+            'Role Based Access Control Administrator',
+            'Access Review Operator Service Role'
+        )
+        
+        # Explicit read-only patterns
+        $readOnlyPatterns = @(
+            'Reader$',
+            'Viewer$',
+            '^Billing Reader$',
+            '^Cost Management Reader$',
+            '^Security Reader$',
+            '^Log Analytics Reader$',
+            '^Monitoring Reader$',
+            '^Workbook Reader$',
+            '^Blueprint Operator$'
+        )
+        
+        # Check privileged first (exact match)
+        if ($privilegedRoles -contains $RoleName) {
+            return @{ 
+                Tier = 'Privileged'
+                Display = 'Privileged'
+                Order = 0
+                Color = 'red'
+            }
         }
         
-        if ($exactMap.ContainsKey($RoleName)) {
-            return $exactMap[$RoleName]
+        # Check read-only patterns
+        foreach ($pattern in $readOnlyPatterns) {
+            if ($RoleName -match $pattern) {
+                return @{
+                    Tier = 'Read'
+                    Display = 'Read'
+                    Order = 2
+                    Color = 'green'
+                }
+            }
         }
         
-        # Pattern matching fallback
-        if ($RoleName -match '^Owner$|Owner \(') { 
-            return @{ Tier = 'FullControl'; Display = 'Full Control'; Order = 0; Color = 'red' } 
+        # Everything else is Write (can modify something)
+        return @{
+            Tier = 'Write'
+            Display = 'Write'
+            Order = 1
+            Color = 'yellow'
         }
-        if ($RoleName -match 'Access.*Administrator|Administrator.*Access|RBAC.*Administrator') { 
-            return @{ Tier = 'AccessManager'; Display = 'Access Manager'; Order = 1; Color = 'orange' } 
-        }
-        if ($RoleName -match '^Contributor$') { 
-            return @{ Tier = 'Administrative'; Display = 'Administrative'; Order = 2; Color = 'yellow' } 
-        }
-        if ($RoleName -match 'Security|Key Vault|Privileged|Data Owner|Storage.*Owner') { 
-            return @{ Tier = 'PrivilegedOps'; Display = 'Privileged Ops'; Order = 3; Color = 'purple' } 
-        }
-        if ($RoleName -match 'Contributor') { 
-            return @{ Tier = 'Write'; Display = 'Write'; Order = 4; Color = 'blue' } 
-        }
-        if ($RoleName -match 'Reader|Viewer|Monitor') { 
-            return @{ Tier = 'ReadOnly'; Display = 'Read Only'; Order = 5; Color = 'green' } 
+    }
+
+    function Get-RolePrivilegeLevel {
+        <#
+        .SYNOPSIS
+            Returns privilege level for redundancy detection only.
+            Lower number = higher privilege.
+            Used to determine if one role assignment makes another redundant.
+        #>
+        param([string]$RoleName)
+        
+        # Owner trumps everything
+        if ($RoleName -eq 'Owner') { return 0 }
+        
+        # Contributor and UAA are high privilege
+        if ($RoleName -in @('Contributor', 'User Access Administrator', 'Role Based Access Control Administrator', 'Access Review Operator Service Role')) { 
+            return 1 
         }
         
-        # Default unknown roles to Write (conservative)
-        return @{ Tier = 'Write'; Display = 'Write'; Order = 4; Color = 'blue' }
+        # Reader is lowest useful privilege
+        if ($RoleName -match 'Reader$' -or $RoleName -match 'Viewer$') { return 3 }
+        
+        # Everything else (write roles) in the middle
+        return 2
+    }
+
+    function Get-ManagementGroupHierarchy {
+        <#
+        .SYNOPSIS
+            Fetches the complete Management Group hierarchy and builds ancestry maps.
+        .DESCRIPTION
+            Returns hashtables mapping:
+            - Subscriptions to their MG ancestors
+            - MGs to their MG ancestors
+            - All scopes to their parent chain
+            
+            Uses Azure Resource Graph to query subscriptions (which include their MG ancestor chain).
+            This approach only requires subscription read access, not MG-level Resource Graph access.
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [string]$TenantId
+        )
+        
+        Write-Host "Fetching Management Group hierarchy via subscriptions..." -ForegroundColor Cyan
+        
+        # Initialize result
+        $result = @{
+            SubscriptionToAncestors = @{}  # SubId → @(MG1, MG2, ..., TenantRoot)
+            MgToAncestors = @{}            # MGName → @(ParentMG, ..., TenantRoot)
+            MgToChildren = @{}             # MGName → @(ChildMG1, ChildMG2, ...)
+            MgToSubscriptions = @{}        # MGName → @(SubId1, SubId2, ...)
+            SubscriptionToDirectMg = @{}   # SubId → DirectParentMg
+            Success = $false
+            Error = $null
+        }
+        
+        # Check for Az.ResourceGraph module
+        if (-not (Get-Module -ListAvailable -Name Az.ResourceGraph)) {
+            $result.Error = "Az.ResourceGraph module is not available"
+            Write-Warning "Az.ResourceGraph module is not available. Management Group hierarchy cannot be fetched."
+            Write-Warning "Redundancy detection will be limited to Subscription/RG/Resource scope relationships."
+            return $result
+        }
+        
+        Import-Module Az.ResourceGraph -ErrorAction SilentlyContinue | Out-Null
+        
+        try {
+            # Query subscriptions - they include their MG ancestor chain
+            # This works with just subscription read access!
+            $subQuery = @"
+resourcecontainers
+| where type == 'microsoft.resources/subscriptions'
+| project subscriptionId, name, mgChain = properties.managementGroupAncestorsChain
+"@
+            
+            # Query without -ManagementGroup flag - uses subscription scope
+            Write-Verbose "Querying subscriptions from Resource Graph..."
+            $subs = Search-AzGraph -Query $subQuery -First 1000 -ErrorAction Stop
+            
+            if (-not $subs -or $subs.Count -eq 0) {
+                throw "No subscriptions found in Resource Graph"
+            }
+            
+            # Build maps from subscription data
+            $allMgs = @{}  # mgName → @(ancestor1, ancestor2, ...)
+            
+            foreach ($sub in $subs) {
+                $subId = $sub.subscriptionId
+                
+                if ($sub.mgChain -and $sub.mgChain.Count -gt 0) {
+                    # mgChain is array: [{name: "direct-parent-mg"}, {name: "grandparent-mg"}, ..., {name: "tenant-root-group"}]
+                    # First element is direct parent, last is root MG
+                    $mgNames = @($sub.mgChain | ForEach-Object { 
+                        if ($_.PSObject.Properties['name']) {
+                            $_.name
+                        }
+                        elseif ($_.PSObject.Properties['Name']) {
+                            $_.Name
+                        }
+                        else {
+                            # Try to extract from id or full object
+                            $mgId = if ($_.id) { 
+                                $idStr = $_.id.ToString()
+                                if ($idStr -match '/managementGroups/([^/]+)') { $Matches[1] } else { $idStr }
+                            } elseif ($_.PSObject.Properties['id']) {
+                                $idStr = $_.id.ToString()
+                                if ($idStr -match '/managementGroups/([^/]+)') { $Matches[1] } else { $idStr }
+                            } else {
+                                $_.ToString()
+                            }
+                            $mgId
+                        }
+                    })
+                    
+                    # Filter out null/empty values
+                    $mgNames = @($mgNames | Where-Object { $_ -and $_.ToString().Trim() -ne '' })
+                    
+                    if ($mgNames.Count -gt 0) {
+                        # Subscription's ancestors (all MGs above it)
+                        $result.SubscriptionToAncestors[$subId] = $mgNames
+                        
+                        # Direct parent (first in chain)
+                        $result.SubscriptionToDirectMg[$subId] = $mgNames[0]
+                        
+                        # Add to parent's subscription list
+                        $directParent = $mgNames[0]
+                        if (-not $result.MgToSubscriptions.ContainsKey($directParent)) {
+                            $result.MgToSubscriptions[$directParent] = @()
+                        }
+                        if ($result.MgToSubscriptions[$directParent] -notcontains $subId) {
+                            $result.MgToSubscriptions[$directParent] += $subId
+                        }
+                        
+                        # Build MG ancestor chains from this subscription's chain
+                        for ($i = 0; $i -lt $mgNames.Count; $i++) {
+                            $mgName = $mgNames[$i]
+                            
+                            # Ancestors of this MG = all MGs after it in the chain
+                            $ancestors = @()
+                            if ($i + 1 -lt $mgNames.Count) {
+                                $ancestors = @($mgNames[($i + 1)..($mgNames.Count - 1)])
+                            }
+                            
+                            # Only set if not already set or if this chain is longer (more complete)
+                            if (-not $allMgs.ContainsKey($mgName) -or $allMgs[$mgName].Count -lt $ancestors.Count) {
+                                $allMgs[$mgName] = $ancestors
+                            }
+                            
+                            # Build parent-child relationships
+                            if ($i + 1 -lt $mgNames.Count) {
+                                $parentMg = $mgNames[$i + 1]
+                                if (-not $result.MgToChildren.ContainsKey($parentMg)) {
+                                    $result.MgToChildren[$parentMg] = @()
+                                }
+                                if ($result.MgToChildren[$parentMg] -notcontains $mgName) {
+                                    $result.MgToChildren[$parentMg] += $mgName
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            $result.MgToAncestors = $allMgs
+            $result.Success = $true
+            
+            $mgCount = $allMgs.Count
+            $subCount = $result.SubscriptionToAncestors.Count
+            Write-Host "  Mapped $subCount subscriptions across $mgCount Management Groups" -ForegroundColor Gray
+        }
+        catch {
+            $result.Error = $_.Exception.Message
+            Write-Warning "Failed to fetch Management Group hierarchy: $($result.Error)"
+            Write-Warning "Redundancy detection will be limited to Subscription/RG/Resource scope relationships."
+        }
+        
+        return $result
+    }
+
+    function Test-IsAncestorScope {
+        <#
+        .SYNOPSIS
+            Determines if PotentialAncestor scope is an ancestor of Descendant scope.
+        .DESCRIPTION
+            Uses the MG hierarchy map for accurate MG/Subscription relationships.
+            Falls back to scope string parsing for RG/Resource relationships.
+        #>
+        param(
+            [Parameter(Mandatory)]
+            [string]$AncestorScope,
+            
+            [Parameter(Mandatory)]
+            [string]$DescendantScope,
+            
+            [Parameter(Mandatory)]
+            [hashtable]$HierarchyMap
+        )
+        
+        # Same scope - considered ancestor of itself (for role comparison at same scope)
+        if ($AncestorScope -eq $DescendantScope) {
+            return $true
+        }
+        
+        # Tenant Root (/) is ancestor of everything
+        if ($AncestorScope -eq '/') {
+            return $true
+        }
+        
+        # Parse both scopes
+        $ancestorInfo = Get-ScopeInfo -Scope $AncestorScope
+        $descendantInfo = Get-ScopeInfo -Scope $DescendantScope
+        
+        # Root ancestors everything (already handled above)
+        if ($ancestorInfo.Type -eq 'Root') {
+            return $true
+        }
+        
+        # Descendant is Root - nothing can be its ancestor except itself
+        if ($descendantInfo.Type -eq 'Root') {
+            return $false
+        }
+        
+        # === MG as potential ancestor ===
+        if ($ancestorInfo.Type -eq 'ManagementGroup') {
+            $ancestorMg = $ancestorInfo.ManagementGroup
+            
+            # Descendant is MG - check MG hierarchy
+            if ($descendantInfo.Type -eq 'ManagementGroup') {
+                $descendantMg = $descendantInfo.ManagementGroup
+                if ($HierarchyMap.MgToAncestors.ContainsKey($descendantMg)) {
+                    return $HierarchyMap.MgToAncestors[$descendantMg] -contains $ancestorMg
+                }
+                return $false
+            }
+            
+            # Descendant is Subscription - check if sub is under this MG
+            if ($descendantInfo.Type -eq 'Subscription') {
+                $subId = $descendantInfo.SubscriptionId
+                if ($HierarchyMap.SubscriptionToAncestors.ContainsKey($subId)) {
+                    return $HierarchyMap.SubscriptionToAncestors[$subId] -contains $ancestorMg
+                }
+                return $false
+            }
+            
+            # Descendant is RG or Resource - check if its subscription is under this MG
+            if ($descendantInfo.Type -in @('ResourceGroup', 'Resource')) {
+                $subId = $descendantInfo.SubscriptionId
+                if ($HierarchyMap.SubscriptionToAncestors.ContainsKey($subId)) {
+                    return $HierarchyMap.SubscriptionToAncestors[$subId] -contains $ancestorMg
+                }
+                return $false
+            }
+        }
+        
+        # === Subscription as potential ancestor ===
+        if ($ancestorInfo.Type -eq 'Subscription') {
+            $ancestorSubId = $ancestorInfo.SubscriptionId
+            
+            # Descendant must be RG or Resource in the SAME subscription
+            if ($descendantInfo.Type -in @('ResourceGroup', 'Resource')) {
+                return $descendantInfo.SubscriptionId -eq $ancestorSubId
+            }
+            
+            # Subscription cannot be ancestor of another Subscription or MG
+            return $false
+        }
+        
+        # === ResourceGroup as potential ancestor ===
+        if ($ancestorInfo.Type -eq 'ResourceGroup') {
+            # Descendant must be Resource in the SAME subscription AND SAME RG
+            if ($descendantInfo.Type -eq 'Resource') {
+                return ($descendantInfo.SubscriptionId -eq $ancestorInfo.SubscriptionId) -and
+                       ($descendantInfo.ResourceGroup -eq $ancestorInfo.ResourceGroup)
+            }
+            return $false
+        }
+        
+        # === Resource cannot be ancestor of anything ===
+        if ($ancestorInfo.Type -eq 'Resource') {
+            return $false
+        }
+        
+        # Unknown - assume not ancestor
+        return $false
+    }
+
+    function Test-RoleIncludesRole {
+        <#
+        .SYNOPSIS
+            Determines if RoleA's permissions are a superset of RoleB's permissions.
+        .DESCRIPTION
+            Only returns true for the well-known inclusion chain:
+            Owner ⊃ (Contributor, Reader, User Access Administrator, Role Based Access Control Administrator)
+            Contributor ⊃ Reader
+            
+            All other role pairs are considered incomparable (returns false).
+        #>
+        param(
+            [Parameter(Mandatory)]
+            [string]$RoleA,
+            
+            [Parameter(Mandatory)]
+            [string]$RoleB
+        )
+        
+        # Same role always includes itself
+        if ($RoleA -eq $RoleB) {
+            return $true
+        }
+        
+        # Owner includes everything in the chain (Owner has * which includes Microsoft.Authorization/*)
+        if ($RoleA -eq 'Owner') {
+            return $RoleB -in @('Contributor', 'Reader', 'User Access Administrator', 'Role Based Access Control Administrator')
+        }
+        
+        # Contributor includes Reader (but Contributor does NOT include UAA - it excludes authorization actions)
+        if ($RoleA -eq 'Contributor') {
+            return $RoleB -eq 'Reader'
+        }
+        
+        # User Access Administrator - only includes itself (handled above)
+        # It grants different permissions than Owner (can manage access but not resources)
+        
+        # All other role pairs are incomparable
+        # Examples:
+        # - VM Contributor does NOT include Network Contributor (different resources)
+        # - Storage Blob Data Owner does NOT include Contributor (data plane vs control plane)
+        # - Key Vault Administrator does NOT include Reader (different permission model)
+        
+        return $false
+    }
+
+    function Find-RedundantAssignments {
+        <#
+        .SYNOPSIS
+            Identifies redundant role assignments for a principal.
+        .DESCRIPTION
+            An assignment X is redundant if there exists another assignment Y where:
+            - Y.Scope is an ancestor of X.Scope (or same scope)
+            - Y.Role includes X.Role's permissions
+            
+            Returns the assignments array with IsRedundant and RedundantReason populated.
+        #>
+        param(
+            [Parameter(Mandatory)]
+            [array]$Assignments,
+            
+            [Parameter(Mandatory)]
+            [hashtable]$HierarchyMap
+        )
+        
+        foreach ($assignment in $Assignments) {
+            $assignment.IsRedundant = $false
+            $assignment.RedundantReason = $null
+            
+            foreach ($other in $Assignments) {
+                # Don't compare to self
+                if ($other.ScopeRaw -eq $assignment.ScopeRaw -and $other.Role -eq $assignment.Role) {
+                    continue
+                }
+                
+                # Check if other's scope is ancestor of (or same as) this assignment's scope
+                $isAncestorScope = Test-IsAncestorScope `
+                    -AncestorScope $other.ScopeRaw `
+                    -DescendantScope $assignment.ScopeRaw `
+                    -HierarchyMap $HierarchyMap
+                
+                if (-not $isAncestorScope) {
+                    continue
+                }
+                
+                # Check if other's role includes this assignment's role
+                $roleIncludes = Test-RoleIncludesRole -RoleA $other.Role -RoleB $assignment.Role
+                
+                if (-not $roleIncludes) {
+                    continue
+                }
+                
+                # This assignment is redundant!
+                $assignment.IsRedundant = $true
+                
+                # Build explanation
+                if ($other.ScopeRaw -eq $assignment.ScopeRaw) {
+                    # Same scope, higher privilege role
+                    $assignment.RedundantReason = "Covered by $($other.Role) at same scope"
+                }
+                else {
+                    # Ancestor scope
+                    $otherScopeName = Get-FriendlyScopeName -Scope $other.ScopeRaw -SubscriptionNameMap $script:subscriptionNameMap -ManagementGroupNameMap $script:managementGroupNameMap
+                    if ($other.Role -eq $assignment.Role) {
+                        $assignment.RedundantReason = "Same role at $otherScopeName"
+                    }
+                    else {
+                        $assignment.RedundantReason = "$($other.Role) at $otherScopeName"
+                    }
+                }
+                
+                # Found one dominating assignment, no need to check more
+                break
+            }
+        }
+        
+        return $Assignments
     }
 
     function Get-FriendlyScopeName {
@@ -409,6 +903,7 @@ function Get-AzureRBACInventory {
             'Contributor',
             'User Access Administrator',
             'Role Based Access Control Administrator',
+            'Access Review Operator Service Role',
             'Security Admin',
             'Key Vault Administrator',
             'Storage Blob Data Owner'
@@ -482,6 +977,26 @@ function Get-AzureRBACInventory {
     foreach ($sub in $subscriptions) {
         $subscriptionNameMap[$sub.Id] = $sub.Name
     }
+    
+    # Store at script scope for use in redundancy detection
+    $script:subscriptionNameMap = $subscriptionNameMap
+
+    # Fetch Management Group hierarchy for accurate redundancy detection
+    $hierarchyMap = Get-ManagementGroupHierarchy -TenantId $currentTenantId
+    
+    # Handle failure case - create empty hierarchy map structure
+    if (-not $hierarchyMap.Success) {
+        Write-Warning "Management Group hierarchy not available. Redundancy detection limited to Subscription/RG/Resource relationships."
+        Write-Warning "To enable full redundancy detection, ensure you have 'Management Group Reader' permission at tenant root."
+        
+        # Create empty hierarchy map - Test-IsAncestorScope will still work for Sub/RG/Resource
+        if (-not $hierarchyMap.SubscriptionToAncestors) { $hierarchyMap.SubscriptionToAncestors = @{} }
+        if (-not $hierarchyMap.MgToAncestors) { $hierarchyMap.MgToAncestors = @{} }
+    }
+    
+    # Store management group name map at script scope for use in redundancy reasons
+    # (Will be set below, but initialize here)
+    $script:managementGroupNameMap = @{}
 
     # Build Management Group name map for friendly scope names
     Write-Host "Collecting Management Groups..." -ForegroundColor Gray
@@ -529,6 +1044,9 @@ function Get-AzureRBACInventory {
             $managementGroupNameMap[$currentTenantId] = "Tenant Root Group"
         }
     }
+    
+    # Store at script scope for use in redundancy detection
+    $script:managementGroupNameMap = $managementGroupNameMap
 
     # Initialize collections
     $allAssignments = [System.Collections.Generic.List[object]]::new()
@@ -576,7 +1094,10 @@ function Get-AzureRBACInventory {
             foreach ($assignment in $assignments) {
                 # Resolve principal
                 $principalInfo = Get-PrincipalDisplayInfo -ObjectId $assignment.ObjectId `
-                    -ObjectType $assignment.ObjectType -Cache $principalCache
+                    -ObjectType $assignment.ObjectType `
+                    -Cache $principalCache `
+                    -KnownDisplayName $assignment.DisplayName `
+                    -KnownUPN $assignment.SignInName
                 
                 # Parse scope
                 $scopeInfo = Get-ScopeInfo -Scope $assignment.Scope
@@ -723,169 +1244,152 @@ function Get-AzureRBACInventory {
 
     Write-Host "  Unique assignments: $($uniqueAssignments.Count) (from $($allAssignments.Count) total)" -ForegroundColor Gray
 
-    # Build principal-centric view with access tiers
-    Write-Host "`nBuilding principal-centric view with access tiers..." -ForegroundColor Cyan
-    
-    $principalView = $uniqueAssignments |
-        Group-Object PrincipalId |
-        ForEach-Object {
-            $assignments = $_.Group
-            $first = $assignments[0]
-            
-            # Map each assignment to access tier and build access entries
-            $accessEntries = $assignments | ForEach-Object {
-                $tierInfo = Get-AccessTier -RoleName $_.RoleDefinitionName
-                $tierName = $tierInfo['Tier']
-                $tierOrder = $tierInfo['Order']
-                $scopeInfo = Get-ScopeInfo -Scope $_.Scope
-                $scopeFriendlyName = Get-FriendlyScopeName -Scope $_.Scope -SubscriptionNameMap $subscriptionNameMap -ManagementGroupNameMap $managementGroupNameMap
-                
-                # Determine grant type
-                # Every role assignment is "Direct" at its scope
-                # "Inherited" only makes sense for group membership (which we can't see without Directory Reader)
-                # The IsInherited flag from collection is about scope hierarchy, not assignment type
-                $grantType = "Direct"
-                $inheritedFrom = $null
-                
-                # Build affected subscriptions list
-                $affectsSubs = @()
-                if ($_.InheritedBySubscriptions -and $_.InheritedBySubscriptions.Count -gt 0) {
-                    if ($scopeInfo.Type -eq 'Root') {
-                        $affectsSubs = @("All $($_.InheritedBySubscriptions.Count) subscriptions")
-                    } else {
-                        $affectsSubs = $_.InheritedBySubscriptions
-                    }
-                } elseif ($scopeInfo.Type -eq 'Subscription' -and $_.SubscriptionName) {
-                    $affectsSubs = @($_.SubscriptionName)
-                } elseif ($scopeInfo.Type -in @('ResourceGroup', 'Resource') -and $_.SubscriptionName) {
-                    $affectsSubs = @($_.SubscriptionName)
-                }
-                
-                [PSCustomObject]@{
-                    Role = $_.RoleDefinitionName
-                    Scope = $_.Scope
-                    ScopeType = $scopeInfo.Type
-                    ScopeLevel = $scopeInfo.Level
-                    ScopeFriendlyName = $scopeFriendlyName
-                    AccessTier = $tierName
-                    AccessTierOrder = $tierOrder
-                    GrantType = $grantType
-                    InheritedFrom = $inheritedFrom
-                    AffectedSubscriptions = $affectsSubs
-                    IsRedundant = $false  # Will be calculated below
-                    RedundantReason = $null  # Will be populated below
-                    AssignmentId = $_.RoleAssignmentId
-                }
-            }
-            
-            # Mark redundant assignments (same or higher tier at broader scope)
-            # An assignment is redundant if the same role is assigned at a broader scope that contains this scope
-            foreach ($entry in $accessEntries) {
-                $dominated = $accessEntries | Where-Object {
-                    $broaderEntry = $_
-                    # Skip self
-                    if ($broaderEntry.Scope -eq $entry.Scope -and $broaderEntry.Role -eq $entry.Role) { return $false }
-                    
-                    # Check tier, scope level, and role match
-                    if ($broaderEntry.AccessTierOrder -gt $entry.AccessTierOrder) { return $false }
-                    if ($broaderEntry.ScopeLevel -ge $entry.ScopeLevel) { return $false }
-                    if ($broaderEntry.Role -ne $entry.Role) { return $false }
-                    
-                    # Check scope containment
-                    # For MG/Root scopes containing Subscription/RG/Resource scopes, use AffectedSubscriptions
-                    if ($broaderEntry.ScopeType -in @('ManagementGroup', 'Root')) {
-                        # Root scope affects all subscriptions
-                        if ($broaderEntry.ScopeType -eq 'Root') {
-                            return $true
-                        }
-                        
-                        # For MG scopes, check if the entry's subscription is in the MG's affected subscriptions
-                        if ($entry.ScopeType -in @('Subscription', 'ResourceGroup', 'Resource') -and $entry.AffectedSubscriptions.Count -gt 0 -and $broaderEntry.AffectedSubscriptions.Count -gt 0) {
-                            # Check each subscription in the entry against the broader entry's affected subscriptions
-                            foreach ($entrySubName in $entry.AffectedSubscriptions) {
-                                if ($broaderEntry.AffectedSubscriptions -contains $entrySubName) {
-                                    return $true
-                                }
-                            }
-                        }
-                        return $false
-                    }
-                    
-                    # For Subscription containing ResourceGroup/Resource, use path-based check
-                    if ($broaderEntry.ScopeType -eq 'Subscription' -and $entry.ScopeType -in @('ResourceGroup', 'Resource')) {
-                        return (Test-ScopeContains -ParentScope $broaderEntry.Scope -ChildScope $entry.Scope)
-                    }
-                    
-                    # For ResourceGroup containing Resource, use path-based check
-                    if ($broaderEntry.ScopeType -eq 'ResourceGroup' -and $entry.ScopeType -eq 'Resource') {
-                        return (Test-ScopeContains -ParentScope $broaderEntry.Scope -ChildScope $entry.Scope)
-                    }
-                    
-                    return $false
-                }
-                if ($dominated) {
-                    $entry.IsRedundant = $true
-                    # Find the dominating assignment and explain why
-                    $dominatingEntry = $dominated | Sort-Object ScopeLevel | Select-Object -First 1
-                    $entry.RedundantReason = "Redundant: Same role ($($entry.Role)) already assigned at $($dominatingEntry.ScopeFriendlyName) (broader scope)"
-                }
-            }
-            
-            # Group by access tier
-            $accessByTier = @{}
-            foreach ($tierName in @('FullControl', 'AccessManager', 'Administrative', 'PrivilegedOps', 'Write', 'ReadOnly')) {
-                $tierEntries = $accessEntries | Where-Object { $_.AccessTier -eq $tierName }
-                if ($tierEntries) {
-                    $accessByTier[$tierName] = @($tierEntries)
-                }
-            }
-            
-            # Calculate highest tier
-            $highestEntry = $accessEntries | Sort-Object AccessTierOrder | Select-Object -First 1
-            
-            # Get all affected subscriptions
-            $allAffectedSubs = [System.Collections.Generic.HashSet[string]]::new()
-            foreach ($entry in $accessEntries) {
-                foreach ($sub in $entry.AffectedSubscriptions) {
-                    if ($sub -notmatch '^All \d+ subscriptions$') {
-                        $null = $allAffectedSubs.Add($sub)
-                    }
-                }
-            }
-            $allAffectedSubsArray = [array]($allAffectedSubs | Sort-Object)
-            
-            # Get unique roles summary
-            $rolesSummary = $accessEntries | Select-Object -ExpandProperty Role -Unique | Sort-Object
-            
-            # Build principal object
-            $principal = [PSCustomObject]@{
-                PrincipalId = $first.PrincipalId
-                PrincipalDisplayName = $first.PrincipalDisplayName
-                PrincipalType = $first.PrincipalType
-                PrincipalUPN = $first.PrincipalUPN
-                AppId = $first.AppId
-                IsOrphaned = $first.IsOrphaned
-                IsExternal = $first.IsExternal
-                
-                HighestAccessTier = $highestEntry.AccessTier
-                HighestAccessTierOrder = $highestEntry.AccessTierOrder
-                RolesSummary = $rolesSummary
-                ScopeCount = $accessEntries.Count
-                AffectedSubscriptions = $allAffectedSubsArray
-                AffectedSubscriptionCount = $allAffectedSubsArray.Count
-                
-                AccessByTier = $accessByTier
-                
-                Insights = @()  # Will be populated below
-            }
-            
-            # Generate insights
-            $principal.Insights = Get-PrincipalInsights -Principal $principal -AccessEntries $accessEntries
-            
-            $principal
-        } | Sort-Object HighestAccessTierOrder, PrincipalDisplayName
+    # Build assignment rows for flat table display
+    Write-Host "`nBuilding assignment view..." -ForegroundColor Cyan
 
-    Write-Host "  Unique principals: $($principalView.Count)" -ForegroundColor Gray
+    $assignmentRows = $uniqueAssignments | ForEach-Object {
+        $tierInfo = Get-AccessTier -RoleName $_.RoleDefinitionName
+        $scopeInfo = Get-ScopeInfo -Scope $_.Scope
+        
+        # Determine scope type display name
+        $scopeTypeDisplay = switch ($scopeInfo.Type) {
+            'Root' { 'Tenant Root' }
+            'ManagementGroup' { 'Management Group' }
+            'Subscription' { 'Subscription' }
+            'ResourceGroup' { 'Resource Group' }
+            'Resource' { 'Resource' }
+            default { $scopeInfo.Type }
+        }
+        
+        # Get friendly scope name
+        $scopeFriendlyName = Get-FriendlyScopeName -Scope $_.Scope -SubscriptionNameMap $subscriptionNameMap -ManagementGroupNameMap $managementGroupNameMap
+        # Remove prefix since we have ScopeType column
+        $scopeName = $scopeFriendlyName -replace '^(MG|Sub|RG|Resource): ', ''
+        
+        # Build affected subscriptions list
+        $affectedSubs = @()
+        if ($_.InheritedBySubscriptions -and $_.InheritedBySubscriptions.Count -gt 0) {
+            if ($scopeInfo.Type -eq 'Root') {
+                # Root scope affects ALL subscriptions in the tenant
+                $affectedSubs = @("All $($_.InheritedBySubscriptions.Count) subscriptions")
+            } else {
+                # Management Groups and other scopes show the actual subscription names
+                $affectedSubs = $_.InheritedBySubscriptions
+            }
+        } elseif ($scopeInfo.Type -eq 'Subscription' -and $_.SubscriptionName) {
+            $affectedSubs = @($_.SubscriptionName)
+        } elseif ($scopeInfo.Type -in @('ResourceGroup', 'Resource') -and $_.SubscriptionName) {
+            $affectedSubs = @($_.SubscriptionName)
+        }
+        
+        [PSCustomObject]@{
+            # Principal
+            PrincipalId = $_.PrincipalId
+            PrincipalDisplayName = $_.PrincipalDisplayName
+            PrincipalType = $_.PrincipalType
+            PrincipalUPN = $_.PrincipalUPN
+            AppId = $_.AppId
+            IsOrphaned = $_.IsOrphaned
+            IsExternal = $_.IsExternal
+            
+            # Role
+            Role = if ($_.RoleDefinitionName) { $_.RoleDefinitionName } else { "[Unknown Role]" }
+            RiskTier = $tierInfo.Tier
+            RiskOrder = $tierInfo.Order
+            RiskColor = $tierInfo.Color
+            
+            # Scope
+            ScopeType = $scopeTypeDisplay
+            ScopeLevel = $scopeInfo.Level
+            ScopeName = $scopeName
+            ScopeRaw = $_.Scope
+            
+            # Subscription context
+            SubscriptionName = $_.SubscriptionName
+            AffectedSubscriptions = $affectedSubs
+            AffectedCount = $affectedSubs.Count
+            
+            # Flags
+            IsRedundant = $false  # Will be calculated below
+            RedundantReason = $null  # Will be populated by Find-RedundantAssignments
+            IsPrivileged = ($tierInfo.Tier -eq 'Privileged')  # Mark if role is privileged
+            AssignmentId = $_.RoleAssignmentId
+        }
+    } | Sort-Object PrincipalDisplayName, RiskOrder, ScopeLevel
+
+    # Mark redundant assignments using hierarchy-based detection
+    Write-Host "`nDetecting redundant assignments..." -ForegroundColor Cyan
+    $principalGroups = $assignmentRows | Group-Object PrincipalId
+    foreach ($group in $principalGroups) {
+        $assignments = $group.Group
+        # Use new hierarchy-based redundancy detection
+        $assignments = Find-RedundantAssignments -Assignments $assignments -HierarchyMap $hierarchyMap
+    }
+
+    Write-Host "  Assignment rows: $($assignmentRows.Count)" -ForegroundColor Gray
+
+    # Group assignments by principal for principal-centric view
+    Write-Host "`nGrouping assignments by principal..." -ForegroundColor Cyan
+    $principalGroups = $assignmentRows | Group-Object PrincipalId
+
+    $principalsList = [System.Collections.Generic.List[object]]::new()
+    foreach ($group in $principalGroups) {
+        $assignments = $group.Group
+        $firstAssignment = $assignments[0]
+        
+        # Get unique roles and subscriptions
+        $uniqueRoles = $assignments | Select-Object -ExpandProperty Role -Unique | Sort-Object
+        $allSubs = @()
+        foreach ($assignment in $assignments) {
+            if ($assignment.AffectedSubscriptions) {
+                $allSubs += $assignment.AffectedSubscriptions
+            }
+        }
+        $uniqueSubs = $allSubs | Select-Object -Unique | Sort-Object
+        
+        # Check if principal has any privileged roles
+        $hasPrivilegedRoles = ($assignments | Where-Object { $_.IsPrivileged }).Count -gt 0
+        
+        # Build assignments array for this principal
+        $principalAssignments = foreach ($a in $assignments) {
+            @{
+                Role = $a.Role
+                ScopeType = $a.ScopeType
+                ScopeName = $a.ScopeName
+                ScopeRaw = $a.ScopeRaw
+                Subscriptions = $a.AffectedSubscriptions
+                SubscriptionCount = $a.AffectedCount
+                IsRedundant = $a.IsRedundant
+                RedundantReason = $a.RedundantReason
+                IsPrivileged = $a.IsPrivileged
+            }
+        }
+        
+        $principalObj = [PSCustomObject]@{
+            PrincipalId = $firstAssignment.PrincipalId
+            PrincipalDisplayName = $firstAssignment.PrincipalDisplayName
+            PrincipalType = $firstAssignment.PrincipalType
+            PrincipalUPN = $firstAssignment.PrincipalUPN
+            AppId = $firstAssignment.AppId
+            IsOrphaned = $firstAssignment.IsOrphaned
+            IsExternal = $firstAssignment.IsExternal
+            HasPrivilegedRoles = $hasPrivilegedRoles
+            
+            # Summary stats
+            AssignmentCount = $assignments.Count
+            RoleCount = $uniqueRoles.Count
+            SubscriptionCount = $uniqueSubs.Count
+            UniqueRoles = $uniqueRoles
+            UniqueSubscriptions = $uniqueSubs
+            
+            # Assignments array
+            Assignments = $principalAssignments
+        }
+        $principalsList.Add($principalObj)
+    }
+    $principals = $principalsList | Sort-Object PrincipalDisplayName
+
+    Write-Host "  Grouped into $($principals.Count) principals" -ForegroundColor Gray
 
     # Enhance custom roles with usage tracking
     Write-Host "`nTracking custom role usage..." -ForegroundColor Cyan
@@ -915,75 +1419,57 @@ function Get-AzureRBACInventory {
         }
     }
 
-    # Get orphaned assignments (from unique assignments)
-    $orphanedAssignments = $uniqueAssignments | Where-Object { $_.IsOrphaned }
+    # Get orphaned assignments (from assignment rows)
+    $orphanedAssignments = @($assignmentRows | Where-Object { $_.IsOrphaned })
 
     $endTime = Get-Date
     $duration = $endTime - $startTime
 
-    # Build access matrix data
-    Write-Host "`nBuilding access matrix..." -ForegroundColor Cyan
+    # Build role-based access matrix (top roles by name)
+    Write-Host "`nBuilding role-based access matrix..." -ForegroundColor Cyan
+    $roleCounts = $assignmentRows | Group-Object Role | 
+        Sort-Object { $_.Count } -Descending | 
+        Select-Object -First 10
+
     $accessMatrix = @{}
-    $scopeLevels = @('Root', 'ManagementGroup', 'Subscription', 'ResourceGroup', 'Resource')
-    $tierNames = @('FullControl', 'AccessManager', 'Administrative', 'PrivilegedOps', 'Write', 'ReadOnly')
-    
-    foreach ($tierName in $tierNames) {
-        $accessMatrix[$tierName] = @{}
-        foreach ($scopeLevel in $scopeLevels) {
-            $count = 0
-            foreach ($principal in $principalView) {
-                if ($principal.AccessByTier -and $principal.AccessByTier.ContainsKey($tierName)) {
-                    $tierEntries = $principal.AccessByTier[$tierName]
-                    $matchingEntries = $tierEntries | Where-Object { $_.ScopeType -eq $scopeLevel }
-                    if ($matchingEntries) {
-                        $count++  # Count this principal once per tier/scope combination
-                    }
-                }
-            }
-            $accessMatrix[$tierName][$scopeLevel] = $count
+    $scopeTypes = @('Tenant Root', 'Management Group', 'Subscription', 'Resource Group', 'Resource')
+
+    foreach ($roleGroup in $roleCounts) {
+        $roleName = $roleGroup.Name
+        $accessMatrix[$roleName] = @{}
+        foreach ($scopeType in $scopeTypes) {
+            $count = @($roleGroup.Group | Where-Object { $_.ScopeType -eq $scopeType }).Count
+            $accessMatrix[$roleName][$scopeType] = $count
         }
+        $accessMatrix[$roleName]['Total'] = $roleGroup.Count
     }
     
-    # Recalculate statistics based on unique assignments and principals
+    # Calculate statistics
+    $uniquePrincipals = $assignmentRows | Select-Object -Property PrincipalId -Unique
     $newStats = @{
-        TotalUniqueAssignments = $uniqueAssignments.Count
-        TotalPrincipals = $principalView.Count
-        PrincipalsByType = @{
-            User = @($principalView | Where-Object { $_.PrincipalType -eq 'User' }).Count
-            Group = @($principalView | Where-Object { $_.PrincipalType -eq 'Group' }).Count
-            ServicePrincipal = @($principalView | Where-Object { $_.PrincipalType -eq 'ServicePrincipal' }).Count
-            ManagedIdentity = @($principalView | Where-Object { $_.PrincipalType -eq 'ManagedIdentity' }).Count
-            Unknown = @($principalView | Where-Object { $_.PrincipalType -notin @('User', 'Group', 'ServicePrincipal', 'ManagedIdentity') }).Count
+        TotalAssignments = $assignmentRows.Count
+        TotalPrincipals = $uniquePrincipals.Count
+        ByRiskTier = @{
+            Privileged = @($assignmentRows | Where-Object { $_.RiskTier -eq 'Privileged' }).Count
+            Write = @($assignmentRows | Where-Object { $_.RiskTier -eq 'Write' }).Count
+            Read = @($assignmentRows | Where-Object { $_.RiskTier -eq 'Read' }).Count
         }
-        ByAccessTier = @{
-            FullControl = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('FullControl') }).Count
-            AccessManager = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('AccessManager') }).Count
-            Administrative = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('Administrative') }).Count
-            PrivilegedOps = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('PrivilegedOps') }).Count
-            Write = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('Write') }).Count
-            ReadOnly = @($principalView | Where-Object { $_.AccessByTier -and $_.AccessByTier.ContainsKey('ReadOnly') }).Count
+        ByPrincipalType = @{
+            User = @($uniquePrincipals | ForEach-Object { $principalId = $_.PrincipalId; $assignmentRows | Where-Object { $_.PrincipalId -eq $principalId } | Select-Object -First 1 } | Where-Object { $_.PrincipalType -eq 'User' }).Count
+            Group = @($uniquePrincipals | ForEach-Object { $principalId = $_.PrincipalId; $assignmentRows | Where-Object { $_.PrincipalId -eq $principalId } | Select-Object -First 1 } | Where-Object { $_.PrincipalType -eq 'Group' }).Count
+            ServicePrincipal = @($uniquePrincipals | ForEach-Object { $principalId = $_.PrincipalId; $assignmentRows | Where-Object { $_.PrincipalId -eq $principalId } | Select-Object -First 1 } | Where-Object { $_.PrincipalType -eq 'ServicePrincipal' }).Count
+            ManagedIdentity = @($uniquePrincipals | ForEach-Object { $principalId = $_.PrincipalId; $assignmentRows | Where-Object { $_.PrincipalId -eq $principalId } | Select-Object -First 1 } | Where-Object { $_.PrincipalType -eq 'ManagedIdentity' }).Count
         }
-        OrphanedCount = ($principalView | Where-Object { $_.IsOrphaned }).Count
-        ExternalCount = ($principalView | Where-Object { $_.IsExternal }).Count
-        RedundantCount = ($principalView | ForEach-Object {
-            $redundantCount = 0
-            foreach ($tierName in @('FullControl', 'AccessManager', 'Administrative', 'PrivilegedOps', 'Write', 'ReadOnly')) {
-                if ($_.AccessByTier -and $_.AccessByTier.ContainsKey($tierName)) {
-                    $redundantEntries = $_.AccessByTier[$tierName] | Where-Object { $_.IsRedundant }
-                    if ($redundantEntries) {
-                        $redundantCount += $redundantEntries.Count
-                    }
-                }
-            }
-            $redundantCount
-        } | Measure-Object -Sum).Sum
+        OrphanedCount = @($assignmentRows | Where-Object { $_.IsOrphaned } | Select-Object -Property PrincipalId -Unique).Count
+        ExternalCount = @($assignmentRows | Where-Object { $_.IsExternal } | Select-Object -Property PrincipalId -Unique).Count
+        RedundantCount = @($assignmentRows | Where-Object { $_.IsRedundant }).Count
         CustomRoleCount = $allCustomRoles.Count
     }
 
     Write-Host "`nCollection complete!" -ForegroundColor Green
     Write-Host "Duration: $($duration.TotalSeconds.ToString('F1')) seconds" -ForegroundColor Gray
-    Write-Host "Unique Assignments: $($uniqueAssignments.Count) (from $($allAssignments.Count) collected)" -ForegroundColor Gray
-    Write-Host "Unique Principals: $($principalView.Count)" -ForegroundColor Gray
+    Write-Host "Total Assignments: $($assignmentRows.Count)" -ForegroundColor Gray
+    Write-Host "Unique Principals: $($newStats.TotalPrincipals)" -ForegroundColor Gray
 
     #endregion
 
@@ -1001,16 +1487,11 @@ function Get-AzureRBACInventory {
             SubscriptionNames = $subscriptionNames
         }
         Statistics = $newStats
-        Principals = $principalView
+        Principals = $principals              # NEW: Principal-grouped structure
+        Assignments = $assignmentRows        # Keep for backward compatibility/statistics
         AccessMatrix = $accessMatrix
         CustomRoles = $allCustomRoles.ToArray()
-        OrphanedAssignments = @($orphanedAssignments)
-        # Keep old structure for backward compatibility during transition
-        RoleAssignments = $allAssignments.ToArray()
-        Analysis = @{
-            # Keep minimal analysis for backward compatibility
-            OrphanedAssignments = @($orphanedAssignments)
-        }
+        OrphanedAssignments = @($assignmentRows | Where-Object { $_.IsOrphaned })
     }
 
     #endregion

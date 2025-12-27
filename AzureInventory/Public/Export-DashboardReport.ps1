@@ -286,13 +286,11 @@ function Export-DashboardReport {
     
     # RBAC/IAM metrics
     $rbacTotalPrincipals = 0
-    $rbacFullControl = 0
-    $rbacAccessManagers = 0
+    $rbacPrivileged = 0
     if ($AuditResult.RBACInventory) {
         $rbacStats = $AuditResult.RBACInventory.Statistics
         $rbacTotalPrincipals = $rbacStats.TotalPrincipals
-        $rbacFullControl = $rbacStats.ByAccessTier.FullControl
-        $rbacAccessManagers = $rbacStats.ByAccessTier.AccessManager
+        $rbacPrivileged = $rbacStats.ByRiskTier.Privileged
     }
     
     # Subscription count
@@ -598,7 +596,7 @@ $(if ($networkSubnetsMissingNSG -gt 0) {
                 <div class="report-icon" style="background: rgba(155, 89, 182, 0.15); color: var(--accent-purple);">🔐</div>
                 <div class="report-info">
                     <h3>RBAC/IAM Inventory</h3>
-                    <p>$rbacTotalPrincipals principals | $rbacFullControl full control | $rbacAccessManagers access managers</p>
+                    <p>$rbacTotalPrincipals principals | $rbacPrivileged privileged assignments</p>
                 </div>
             </a>
         </div>

@@ -63,6 +63,7 @@ function Export-RBACReport {
     function Get-ScopeIcon {
         param([string]$Type)
         switch ($Type) {
+            'Root' { return "&#127760;" }
             'ManagementGroup' { return "&#127970;" }
             'Subscription' { return "&#128273;" }
             'ResourceGroup' { return "&#128194;" }
@@ -104,6 +105,172 @@ function Export-RBACReport {
         return $ScopeFriendlyName
     }
 
+    function Format-AffectedSubscriptions {
+        param(
+            [array]$Subscriptions,
+            [int]$Count = 0,
+            [int]$InlineThreshold = 2
+        )
+        
+        if (-not $Subscriptions -or $Subscriptions.Count -eq 0) {
+            return '<span class="text-muted">-</span>'
+        }
+        
+        $actualCount = if ($Count -gt 0) { $Count } else { $Subscriptions.Count }
+        
+        if ($actualCount -le $InlineThreshold) {
+            $escaped = $Subscriptions | ForEach-Object { Encode-Html $_ }
+            return "<span class='affects-inline'>$($escaped -join ', ')</span>"
+        }
+        else {
+            $escaped = $Subscriptions | ForEach-Object { Encode-Html $_ }
+            $listItems = ($escaped | ForEach-Object { "<li>$_</li>" }) -join ''
+            return @"
+<span class="affects-expandable" onclick="toggleAffects(this); event.stopPropagation();">
+    <span class="affects-summary">$actualCount subs <span class="expand-arrow">&#9660;</span></span>
+    <ul class="affects-dropdown">$listItems</ul>
+</span>
+"@
+        }
+    }
+
+    function Build-PrincipalCard {
+        param([object]$Principal)
+        
+        # Icon based on type
+        $icon = switch ($Principal.PrincipalType) {
+            'User' { '&#128100;' }
+            'Group' { '&#128101;' }
+            'ServicePrincipal' { '&#129302;' }
+            'ManagedIdentity' { '&#9881;' }
+            default { '&#10067;' }
+        }
+        
+        # Border color
+        $borderColor = if ($Principal.IsOrphaned) { 
+            'var(--accent-purple)' 
+        } elseif ($Principal.IsExternal) { 
+            'var(--accent-orange)' 
+        } else { 
+            'var(--accent-blue)' 
+        }
+        
+        # Display name and subtitle
+        $displayName = [System.Web.HttpUtility]::HtmlEncode($Principal.PrincipalDisplayName)
+        $subtitle = if ($Principal.PrincipalUPN) {
+            "<div class='principal-view-subtitle'>$([System.Web.HttpUtility]::HtmlEncode($Principal.PrincipalUPN))</div>"
+        } elseif ($Principal.AppId) {
+            "<div class='principal-view-subtitle'>AppId: $($Principal.AppId.Substring(0,8))...</div>"
+        } else { "" }
+        
+        # Badges
+        $badges = ""
+        if ($Principal.IsOrphaned) { $badges += '<span class="badge badge-orphaned">Orphaned</span>' }
+        if ($Principal.IsExternal) { $badges += '<span class="badge badge-external">External</span>' }
+        $badges += "<span class='badge badge-type'>$($Principal.PrincipalType)</span>"
+        if ($Principal.HasPrivilegedRoles) { $badges += '<span class="badge badge-critical">Privileged</span>' }
+        
+        # Stats line
+        $statsLine = @(
+            "&#128193; $($Principal.AssignmentCount) assignments",
+            "&#127894; $($Principal.RoleCount) roles",
+            "&#128273; $($Principal.SubscriptionCount) subscriptions"
+        ) -join ' | '
+        
+        # Build assignments table rows
+        $tableRows = foreach ($a in $Principal.Assignments) {
+            $scopeIcon = switch ($a.ScopeType) {
+                'Tenant Root' { '&#127760;' }
+                'Management Group' { '&#127970;' }
+                'Subscription' { '&#128273;' }
+                'Resource Group' { '&#128194;' }
+                'Resource' { '&#128196;' }
+                default { '' }
+            }
+            
+            $subsHtml = Format-AffectedSubscriptions -Subscriptions $a.Subscriptions -Count $a.SubscriptionCount
+            $redundantHtml = if ($a.IsRedundant) {
+                if ($a.RedundantReason) {
+                    $reasonEncoded = [System.Web.HttpUtility]::HtmlEncode($a.RedundantReason)
+                    "<span class='redundant-yes' title='$reasonEncoded'>Yes &#9432;</span>"
+                } else {
+                    '<span class="redundant-yes">Yes</span>'
+                }
+            } else { 
+                '-' 
+            }
+            
+            $privilegedHtml = if ($a.IsPrivileged) {
+                '<span class="badge badge-critical">Privileged</span>'
+            } else {
+                '-'
+            }
+            
+            @"
+        <tr>
+            <td>$([System.Web.HttpUtility]::HtmlEncode($a.Role))</td>
+            <td>$scopeIcon $([System.Web.HttpUtility]::HtmlEncode($a.ScopeType))</td>
+            <td>$([System.Web.HttpUtility]::HtmlEncode($a.ScopeName))</td>
+            <td>$subsHtml</td>
+            <td>$privilegedHtml</td>
+            <td>$redundantHtml</td>
+        </tr>
+"@
+        }
+        
+        # Search data
+        $searchData = @(
+            $Principal.PrincipalDisplayName,
+            $Principal.PrincipalUPN,
+            ($Principal.UniqueRoles -join ' '),
+            ($Principal.UniqueSubscriptions -join ' ')
+        ) -join ' '
+        
+        # Build card
+        $principalId = $Principal.PrincipalId -replace '[^a-zA-Z0-9-]', '-'
+        return @"
+<div class="principal-view-row" 
+     id="principal-$principalId"
+     data-type="$($Principal.PrincipalType)"
+     data-orphaned="$($Principal.IsOrphaned)"
+     data-external="$($Principal.IsExternal)"
+     data-privileged="$($Principal.HasPrivilegedRoles)"
+     data-roles="$($Principal.UniqueRoles -join ',')"
+     data-search="$($searchData.ToLower())"
+     style="border-left-color: $borderColor;">
+    <div class="principal-view-header" onclick="togglePrincipalDetails(this)">
+        <div class="principal-view-info">
+            <div class="principal-view-name">
+                $icon $displayName $badges
+            </div>
+            $subtitle
+            <div class="principal-view-stats">$statsLine</div>
+        </div>
+        <span class="principal-view-toggle">&#9660;</span>
+    </div>
+    <div class="principal-view-details">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Role</th>
+                        <th>Scope Type</th>
+                        <th>Scope Name</th>
+                        <th>Subscriptions</th>
+                        <th>Privileged</th>
+                        <th>Redundant</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    $($tableRows -join "`n")
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+"@
+    }
+
     #endregion
 
     #region Build HTML
@@ -111,23 +278,10 @@ function Export-RBACReport {
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $stats = $RBACData.Statistics
     $metadata = $RBACData.Metadata
-    $principals = $RBACData.Principals
+    $assignments = $RBACData.Assignments
     $orphanedAssignments = $RBACData.OrphanedAssignments
     $customRoles = $RBACData.CustomRoles
     $displayTenantId = if ($TenantId -ne "Unknown") { $TenantId } else { $metadata.TenantId }
-
-    # Pre-calculate subscription options for filter
-    $allSubscriptions = @()
-    foreach ($principal in $principals) {
-        $allSubscriptions += $principal.AffectedSubscriptions
-    }
-    $subscriptionOptions = $allSubscriptions | 
-        Select-Object -Unique | 
-        Sort-Object |
-        ForEach-Object { 
-            $encoded = Encode-Html $_
-            "<option value=`"$encoded`">$encoded</option>" 
-        }
 
     # Get base stylesheet and add RBAC-specific styles
     $rbacSpecificStyles = @"
@@ -146,100 +300,74 @@ function Export-RBACReport {
             border: 1px solid var(--border-color);
         }
         
-        .summary-card .label {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 8px;
-        }
-        
-        .summary-card .value {
+        .summary-card .card-value {
             font-size: 2rem;
             font-weight: 700;
+            color: var(--text-primary);
         }
         
-        .summary-card .subtext {
-            font-size: 0.8rem;
-            color: var(--text-muted);
+        .summary-card .card-label {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
             margin-top: 5px;
         }
         
-        .value-critical { color: var(--accent-red); }
-        .value-high { color: var(--accent-yellow); }
-        .value-medium { color: var(--accent-blue); }
-        .value-low { color: var(--accent-green); }
-        .value-neutral { color: var(--text-primary); }
+        .summary-card .card-sublabel {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 3px;
+        }
+        
+        .summary-card.card-critical .card-value { color: var(--accent-red); }
+        .summary-card.card-warning .card-value { color: var(--accent-yellow); }
         
         /* Filters */
         .filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            align-items: center;
+            padding: 16px;
             background: var(--bg-surface);
             border-radius: var(--radius-md);
-            padding: 16px;
-            margin-bottom: 20px;
-            border: 1px solid var(--border-color);
+            margin-bottom: 16px;
         }
-        
-        .filters-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 12px;
-        }
-        
-        .filters-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 20px;
-            align-items: flex-start;
-        }
-        
-        
+
         .filter-group {
             display: flex;
-            flex-direction: column;
-            gap: 6px;
-            flex: 0 0 auto;
-        }
-        
-        .filter-group label {
-            font-size: 0.75rem;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-        }
-        
-        .filter-group input[type="text"],
-        .filter-group select {
-            padding: 6px 10px;
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border-color);
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-            font-size: 0.9rem;
-            min-width: 200px;
-        }
-        
-        .filter-group input[type="text"]:focus,
-        .filter-group select:focus {
-            outline: none;
-            border-color: var(--accent-blue);
-        }
-        
-        .filter-options {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
             align-items: center;
+            gap: 8px;
         }
-        
+
+        .filter-group input[type="text"] {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-width: 250px;
+        }
+
+        .filter-group select {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+
+        .filter-group label {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+
         .filter-stats {
             margin-left: auto;
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-            padding-top: 24px;
-            white-space: nowrap;
+            color: var(--text-muted);
+            font-size: 0.9rem;
         }
         
         /* Tier Checkboxes */
@@ -302,6 +430,96 @@ function Export-RBACReport {
         
         .tier-badge.tier-green {
             color: var(--accent-green);
+        }
+        
+        /* Risk badges */
+        .risk-badge {
+            display: inline-block;
+            width: 24px;
+            text-align: center;
+        }
+
+        .risk-red { color: #ff6b6b; }
+        .risk-yellow { color: #feca57; }
+        .risk-green { color: #1dd1a1; }
+
+        /* Type badges */
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            background: var(--bg-hover);
+        }
+
+        .badge-user { background: #3498db22; color: #3498db; }
+        .badge-group { background: #9b59b622; color: #9b59b6; }
+        .badge-sp { background: #e67e2222; color: #e67e22; }
+        .badge-mi { background: #1abc9c22; color: #1abc9c; }
+
+        /* Redundant indicator */
+        .redundant-yes {
+            color: #feca57;
+            font-weight: 500;
+        }
+
+        /* Affects dropdown */
+        .affects-expandable {
+            position: relative;
+            cursor: pointer;
+        }
+
+        .affects-summary {
+            color: var(--accent-blue);
+            text-decoration: underline dotted;
+        }
+
+        .expand-arrow {
+            font-size: 0.7rem;
+            transition: transform 0.2s;
+        }
+
+        .affects-expandable.expanded .expand-arrow {
+            transform: rotate(180deg);
+        }
+
+        .affects-dropdown {
+            display: none;
+            position: absolute;
+            left: 0;
+            top: 100%;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 8px 12px;
+            margin-top: 4px;
+            list-style: none;
+            z-index: 100;
+            min-width: 180px;
+            max-height: 200px;
+            overflow-y: auto;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+
+        .affects-expandable.expanded .affects-dropdown {
+            display: block;
+        }
+
+        .affects-dropdown li {
+            padding: 4px 0;
+            font-size: 0.85rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .affects-dropdown li:last-child {
+            border-bottom: none;
+        }
+
+        /* Matrix table */
+        .matrix-table td:not(:first-child) {
+            text-align: center;
+            font-weight: 500;
         }
         
         /* Sections */
@@ -803,9 +1021,9 @@ function Export-RBACReport {
             font-size: 0.75rem;
         }
         
-        .access-table th:nth-child(1) { width: 18%; } /* Scope */
-        .access-table th:nth-child(2) { width: 22%; } /* Name */
-        .access-table th:nth-child(3) { width: 18%; } /* Role */
+        .access-table th:nth-child(1) { width: 18%; } /* Role */
+        .access-table th:nth-child(2) { width: 18%; } /* Assigned At */
+        .access-table th:nth-child(3) { width: 22%; } /* Scope Name */
         .access-table th:nth-child(4) { width: 32%; } /* Affects */
         .access-table th:nth-child(5) { width: 10%; } /* Redundant */
         
@@ -814,6 +1032,42 @@ function Export-RBACReport {
             border-bottom: 1px solid var(--border-color);
             word-wrap: break-word;
             overflow-wrap: break-word;
+        }
+        
+        .affects-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        
+        .affects-toggle {
+            color: var(--accent-blue);
+            cursor: pointer;
+            user-select: none;
+            font-size: 0.85rem;
+            text-decoration: underline;
+        }
+        
+        .affects-toggle:hover {
+            color: var(--accent-blue);
+            opacity: 0.8;
+        }
+        
+        .affects-dropdown {
+            list-style: none;
+            margin: 5px 0 0 20px;
+            padding: 0;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-sm);
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+        }
+        
+        .affects-dropdown li {
+            padding: 2px 0;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
         }
         
         .scope-table {
@@ -985,8 +1239,8 @@ function Export-RBACReport {
         .principal-view-info {
             flex: 1;
             display: flex;
-            align-items: center;
-            gap: 15px;
+            flex-direction: column;
+            gap: 4px;
         }
         
         .principal-view-name {
@@ -996,12 +1250,18 @@ function Export-RBACReport {
             gap: 8px;
         }
         
+        .principal-view-subtitle {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            margin-top: 2px;
+        }
+        
         .principal-view-stats {
             display: flex;
             gap: 15px;
             font-size: 0.85rem;
             color: var(--text-secondary);
-            margin-left: auto;
+            margin-top: 4px;
         }
         
         .principal-view-toggle {
@@ -1031,10 +1291,12 @@ function Export-RBACReport {
             width: 100%;
         }
         
-        .principal-view-details table th:nth-child(1) { width: 20%; } /* Role */
-        .principal-view-details table th:nth-child(2) { width: 15%; } /* Type */
-        .principal-view-details table th:nth-child(3) { width: 45%; } /* Scope */
-        .principal-view-details table th:nth-child(4) { width: 20%; } /* Subscription */
+        .principal-view-details table th:nth-child(1) { width: 18%; } /* Role */
+        .principal-view-details table th:nth-child(2) { width: 15%; } /* Scope Type */
+        .principal-view-details table th:nth-child(3) { width: 22%; } /* Scope Name */
+        .principal-view-details table th:nth-child(4) { width: 20%; } /* Subscriptions */
+        .principal-view-details table th:nth-child(5) { width: 10%; } /* Privileged */
+        .principal-view-details table th:nth-child(6) { width: 15%; } /* Redundant */
         
         .principal-view-details table td {
             word-wrap: break-word;
@@ -1121,384 +1383,115 @@ $(Get-ReportNavigation -ActivePage "RBAC")
         <!-- Summary Cards -->
         <div class="summary-grid">
             <div class="summary-card">
-                <div class="label">Principals</div>
-                <div class="value value-neutral">$($stats.TotalPrincipals)</div>
-                <div class="subtext">with Azure access</div>
+                <div class="card-value">$($stats.TotalPrincipals)</div>
+                <div class="card-label">Principals</div>
+            </div>
+            <div class="summary-card card-critical">
+                <div class="card-value">$($stats.ByRiskTier.Privileged)</div>
+                <div class="card-label">Privileged Assignments</div>
+                <div class="card-sublabel">Owner, Contributor, UAA, RBAC Admin, Access Review Operator</div>
+            </div>
+            <div class="summary-card card-warning">
+                <div class="card-value">$($stats.OrphanedCount)</div>
+                <div class="card-label">Orphaned</div>
+                <div class="card-sublabel">Needs cleanup</div>
             </div>
             <div class="summary-card">
-                <div class="label">Full Control</div>
-                <div class="value value-critical">$($stats.ByAccessTier.FullControl)</div>
-                <div class="subtext">Owners</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Access Managers</div>
-                <div class="value value-high">$($stats.ByAccessTier.AccessManager)</div>
-                <div class="subtext">can grant access</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Orphaned Assignments</div>
-                <div class="value value-critical">$($stats.OrphanedCount)</div>
-                <div class="subtext">needs cleanup</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Redundant Assignments</div>
-                <div class="value value-critical">$($stats.RedundantCount)</div>
-                <div class="subtext">needs cleanup</div>
+                <div class="card-value">$($stats.RedundantCount)</div>
+                <div class="card-label">Redundant</div>
+                <div class="card-sublabel">Can be removed</div>
             </div>
         </div>
         
         <!-- Access Matrix -->
-        <div class="access-matrix">
-            <h3 style="margin-top: 0; margin-bottom: 15px;">Access Distribution by Tier and Scope</h3>
-            <table>
+        <div class="section">
+            <h2>Access Distribution</h2>
+            <table class="data-table matrix-table">
                 <thead>
                     <tr>
-                        <th>Access Level</th>
+                        <th>Role</th>
                         <th>&#127760; Root</th>
                         <th>&#127970; Mgmt Groups</th>
-                        <th>&#128194; Subscriptions</th>
+                        <th>&#128273; Subscriptions</th>
                         <th>&#128194; Resource Groups</th>
                         <th>&#128196; Resources</th>
+                        <th>Total</th>
                     </tr>
                 </thead>
                 <tbody>
-"@
-
-    # Build access matrix rows safely
-    $accessMatrix = $RBACData.AccessMatrix
-    $tierMatrixMap = @{
-        'FullControl' = 'FullControl'
-        'AccessManager' = 'AccessManager'
-        'Administrative' = 'Administrative'
-        'PrivilegedOps' = 'PrivilegedOps'
-        'Write' = 'Write'
-        'ReadOnly' = 'ReadOnly'
-    }
-    
-    $tierDisplayMap = @{
-        'FullControl' = @{ Badge = '&#128308; Full Control'; Class = 'tier-fullcontrol tier-red' }
-        'AccessManager' = @{ Badge = '&#128992; Access Manager'; Class = 'tier-accessmanager tier-orange' }
-        'Administrative' = @{ Badge = '&#128993; Administrative'; Class = 'tier-administrative tier-yellow' }
-        'PrivilegedOps' = @{ Badge = '&#128995; Privileged Ops'; Class = 'tier-privilegedops tier-purple' }
-        'Write' = @{ Badge = '&#128998; Write'; Class = 'tier-write tier-blue' }
-        'ReadOnly' = @{ Badge = '&#129001; Read Only'; Class = 'tier-readonly tier-green' }
-    }
-    
-    foreach ($tierKey in @('FullControl', 'AccessManager', 'Administrative', 'PrivilegedOps', 'Write', 'ReadOnly')) {
-        $tierData = $tierDisplayMap[$tierKey]
-        $matrixRow = $accessMatrix[$tierKey]
-        $rootCount = if ($matrixRow -and $matrixRow['Root']) { $matrixRow['Root'] } else { 0 }
-        $mgCount = if ($matrixRow -and $matrixRow['ManagementGroup']) { $matrixRow['ManagementGroup'] } else { 0 }
-        $subCount = if ($matrixRow -and $matrixRow['Subscription']) { $matrixRow['Subscription'] } else { 0 }
-        $rgCount = if ($matrixRow -and $matrixRow['ResourceGroup']) { $matrixRow['ResourceGroup'] } else { 0 }
-        $resCount = if ($matrixRow -and $matrixRow['Resource']) { $matrixRow['Resource'] } else { 0 }
-        
-        $html += @"
-                    <tr class="$($tierData.Class)">
-                        <td><span class="tier-badge $($tierData.Class.Split(' ')[1])">$($tierData.Badge)</span></td>
-                        <td>$rootCount</td>
-                        <td>$mgCount</td>
-                        <td>$subCount</td>
-                        <td>$rgCount</td>
-                        <td>$resCount</td>
+                    $(foreach ($roleName in ($RBACData.AccessMatrix.Keys | Sort-Object)) {
+                        $roleData = $RBACData.AccessMatrix[$roleName]
+                        $total = $roleData.Total
+                        @"
+                    <tr>
+                        <td>$([System.Web.HttpUtility]::HtmlEncode($roleName))</td>
+                        <td>$($roleData['Tenant Root'])</td>
+                        <td>$($roleData['Management Group'])</td>
+                        <td>$($roleData['Subscription'])</td>
+                        <td>$($roleData['Resource Group'])</td>
+                        <td>$($roleData['Resource'])</td>
+                        <td><strong>$total</strong></td>
                     </tr>
 "@
-    }
-    
-    $html += @"
+                    } -join "`n")
                 </tbody>
             </table>
         </div>
         
         <!-- Filters -->
         <div class="filters">
-            <div class="filters-title">Filters</div>
-            <div class="filters-row">
-                <div class="filter-group">
-                    <label>Search</label>
-                    <input type="text" id="searchInput" placeholder="Name, UPN, role...">
-                </div>
-                <div class="filter-group">
-                    <label>Access Level</label>
-                    <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-                        <div class="tier-checkboxes">
-                            <label class="checkbox-label">
-                                <input type="checkbox" class="tier-checkbox" value="FullControl" checked>
-                                <span class="tier-badge tier-red">&#128308; Full Control</span>
-                            </label>
-                            <label class="checkbox-label">
-                                <input type="checkbox" class="tier-checkbox" value="AccessManager" checked>
-                                <span class="tier-badge tier-orange">&#128992; Access Mgr</span>
-                            </label>
-                            <label class="checkbox-label">
-                                <input type="checkbox" class="tier-checkbox" value="Administrative" checked>
-                                <span class="tier-badge tier-yellow">&#128993; Admin</span>
-                            </label>
-                            <label class="checkbox-label">
-                                <input type="checkbox" class="tier-checkbox" value="PrivilegedOps">
-                                <span class="tier-badge tier-purple">&#128995; Privileged</span>
-                            </label>
-                            <label class="checkbox-label">
-                                <input type="checkbox" class="tier-checkbox" value="Write">
-                                <span class="tier-badge tier-blue">&#128998; Write</span>
-                            </label>
-                            <label class="checkbox-label">
-                                <input type="checkbox" class="tier-checkbox" value="ReadOnly">
-                                <span class="tier-badge tier-green">&#129001; Read Only</span>
-                            </label>
-                        </div>
-                        <div style="display: flex; gap: 8px;">
-                            <button type="button" id="selectAllTiers" style="padding: 4px 12px; font-size: 0.8rem; background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: var(--radius-sm); cursor: pointer;">Select All</button>
-                            <button type="button" id="deselectAllTiers" style="padding: 4px 12px; font-size: 0.8rem; background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: var(--radius-sm); cursor: pointer;">Deselect All</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="filter-group">
-                    <label>Type</label>
-                    <select id="typeFilter">
-                        <option value="">All Types</option>
-                        <option value="User">Users</option>
-                        <option value="Group">Groups</option>
-                        <option value="ServicePrincipal">Service Principals</option>
-                        <option value="ManagedIdentity">Managed Identities</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label>Options</label>
-                    <div class="filter-options">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="showExternal">
-                            <span>External only</span>
-                        </label>
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="showOrphaned">
-                            <span>Orphaned only</span>
-                        </label>
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="showRedundant">
-                            <span>Redundant only</span>
-                        </label>
-                    </div>
-                </div>
-                <div class="filter-stats">
-                    <span id="visibleCount">$($stats.TotalPrincipals)</span> / $($stats.TotalPrincipals)
-                </div>
+            <div class="filter-group">
+                <input type="text" id="searchInput" placeholder="Search principal, role, scope..." onkeyup="applyFilters()">
+            </div>
+            <div class="filter-group">
+                <select id="typeFilter" onchange="applyFilters()">
+                    <option value="">All Types</option>
+                    <option value="User">Users</option>
+                    <option value="Group">Groups</option>
+                    <option value="ServicePrincipal">Service Principals</option>
+                    <option value="ManagedIdentity">Managed Identities</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <select id="roleFilter" onchange="applyFilters()">
+                    <option value="">All Roles</option>
+                    $(if ($RBACData.Principals) {
+                        $uniqueRoles = $RBACData.Principals | ForEach-Object { $_.UniqueRoles } | Select-Object -Unique | Sort-Object
+                        foreach ($role in $uniqueRoles) {
+                            "<option value='$([System.Web.HttpUtility]::HtmlAttributeEncode($role))'>$([System.Web.HttpUtility]::HtmlEncode($role))</option>"
+                        } -join "`n"
+                    })
+                </select>
+            </div>
+            <div class="filter-group">
+                <label><input type="checkbox" id="redundantOnly" onchange="applyFilters()"> Redundant only</label>
+            </div>
+            <div class="filter-group">
+                <label><input type="checkbox" id="privilegedOnly" onchange="applyFilters()"> Privileged only</label>
+            </div>
+            <div class="filter-stats">
+                Showing <span id="visibleCount">0</span> of <span id="totalCount">0</span> principals
             </div>
         </div>
 "@
 
-    # Principal Access List Section (unified view with access tiers)
-    $html += @"
-        
-        <!-- Principal Access List -->
-        <div class="principals-section">
-            <h2>Principal Access <span class="count">$($principals.Count) principals</span></h2>
-"@
-
-    # Tier display names and colors
-    $tierInfo = @{
-        'FullControl' = @{ Display = 'Full Control'; Emoji = '&#128308;'; Color = 'red'; Class = 'tier-red' }
-        'AccessManager' = @{ Display = 'Access Manager'; Emoji = '&#128992;'; Color = 'orange'; Class = 'tier-orange' }
-        'Administrative' = @{ Display = 'Administrative'; Emoji = '&#128993;'; Color = 'yellow'; Class = 'tier-yellow' }
-        'PrivilegedOps' = @{ Display = 'Privileged Ops'; Emoji = '&#128995;'; Color = 'purple'; Class = 'tier-purple' }
-        'Write' = @{ Display = 'Write'; Emoji = '&#128998;'; Color = 'blue'; Class = 'tier-blue' }
-        'ReadOnly' = @{ Display = 'Read Only'; Emoji = '&#129001;'; Color = 'green'; Class = 'tier-green' }
+    # Principal Access Section (principal cards)
+    $principalsHtml = if ($RBACData.Principals) {
+        foreach ($principal in $RBACData.Principals) {
+            Build-PrincipalCard -Principal $principal
+        } -join "`n"
+    } else {
+        "<p>No principals found.</p>"
     }
 
-    foreach ($principal in $principals) {
-        $icon = Get-PrincipalTypeIcon -Type $principal.PrincipalType
-        $principalNameEncoded = Encode-Html $principal.PrincipalDisplayName
-        $principalUpnEncoded = if ($principal.PrincipalUPN) { Encode-Html $principal.PrincipalUPN } else { "" }
-        $safePrincipalId = "$($principal.PrincipalId)-$($principal.PrincipalType)" -replace '[^a-zA-Z0-9\-]', '-'
-        $principalCardId = "principal-$safePrincipalId"
+    $html += @"
         
-        # Get tier info
-        $tier = $tierInfo[$principal.HighestAccessTier]
-        $tierDisplay = $tier.Display
-        $tierEmoji = $tier.Emoji
-        $tierClass = $tier.Class
-        
-        # Build search data
-        $rolesList = ($principal.RolesSummary -join " ") -replace '<[^>]+>', ''
-        $searchData = "$principalNameEncoded $principalUpnEncoded $rolesList $tierDisplay".ToLower()
-        $searchDataEncoded = Encode-Html $searchData
-        
-        # Build external badge if applicable
-        $externalBadge = ""
-        if ($principal.IsExternal) {
-            $externalBadge = '<span class="badge badge-external">External</span>'
-        }
-        
-        # Check if principal has any redundant assignments
-        $hasRedundant = $false
-        foreach ($tierName in @('FullControl', 'AccessManager', 'Administrative', 'PrivilegedOps', 'Write', 'ReadOnly')) {
-            if ($principal.AccessByTier -and $principal.AccessByTier.ContainsKey($tierName)) {
-                $redundantEntries = $principal.AccessByTier[$tierName] | Where-Object { $_.IsRedundant }
-                if ($redundantEntries -and $redundantEntries.Count -gt 0) {
-                    $hasRedundant = $true
-                    break
-                }
-            }
-        }
-        
-        # Build insights for header
-        $insightsHeaderHtml = ""
-        if ($principal.Insights -and $principal.Insights.Count -gt 0) {
-            # Map ASCII icon codes to HTML entities for display
-            $iconMap = @{
-                '[!!]' = '&#128680;'  # 🚨
-                '[!]' = '&#9888;&#65039;'  # ⚠️
-                '[EXT]' = '&#128123;'  # 👻
-                '[SP]' = '&#129302;'  # 🤖
-                '[i]' = '&#8505;&#65039;'  # ℹ️
-                '[~]' = '&#129529;'  # 🧹
-            }
-            
-            $insightsHeaderHtml = '<div class="principal-insights">'
-            foreach ($insight in $principal.Insights) {
-                $severityClass = $insight.Severity.ToLower()
-                $messageEncoded = Encode-Html $insight.Message
-                $iconHtml = if ($iconMap.ContainsKey($insight.Icon)) { $iconMap[$insight.Icon] } else { $insight.Icon }
-                $insightsHeaderHtml += "<span class='insight-badge insight-$severityClass'>$iconHtml $messageEncoded</span>"
-            }
-            $insightsHeaderHtml += '</div>'
-        }
-        
-        $html += @"
-            <div class="principal-card" 
-                 id="$principalCardId" 
-                 data-tier="$($principal.HighestAccessTier)" 
-                 data-type="$($principal.PrincipalType)"
-                 data-external="$($principal.IsExternal.ToString().ToLower())"
-                 data-orphaned="$($principal.IsOrphaned.ToString().ToLower())"
-                 data-redundant="$($hasRedundant.ToString().ToLower())"
-                 data-search="$searchDataEncoded">
-                <div class="principal-header" onclick="togglePrincipal(this)">
-                    <div class="principal-header-row">
-                        <div class="principal-identity">
-                            <span class="principal-icon">$icon</span>
-                            <span class="principal-name">$principalNameEncoded</span>
-                            <div class="principal-badges">
-                                <span class="badge badge-type">$($principal.PrincipalType)</span>
-                                $externalBadge
-                            </div>
-                        </div>
-                        <div class="principal-summary">
-                            <span class="tier-indicator $tierClass">$tierEmoji $tierDisplay</span>
-                            <span class="summary-stat">&#127894; $($principal.RolesSummary.Count) roles</span>
-                            <span class="summary-stat">&#128193; $($principal.ScopeCount) scopes</span>
-                            <span class="summary-stat">&#128273; $($principal.AffectedSubscriptionCount) subs</span>
-                            $insightsHeaderHtml
-                        </div>
-                        <span class="toggle-icon">&#9660;</span>
-                    </div>
-                    $(if ($principalUpnEncoded) { "<div class='principal-upn-row'><span class='principal-upn'>$principalUpnEncoded</span></div>" })
-                </div>
-                
-                <div class="principal-details">
-"@
-
-        # Group access by tier
-        $tierOrder = @('FullControl', 'AccessManager', 'Administrative', 'PrivilegedOps', 'Write', 'ReadOnly')
-        foreach ($tierName in $tierOrder) {
-            if ($principal.AccessByTier.ContainsKey($tierName) -and $principal.AccessByTier[$tierName].Count -gt 0) {
-                $tier = $tierInfo[$tierName]
-                $tierDisplay = $tier.Display
-                $tierEmoji = $tier.Emoji
-                $tierClass = $tier.Class
-                
-                # Sort entries by scope hierarchy: Root (0) → MG (1) → Subscription (2) → RG (3) → Resource (4)
-                $sortedEntries = $principal.AccessByTier[$tierName] | Sort-Object ScopeLevel, ScopeFriendlyName
-                
-                $tierDisplayUpper = $tierDisplay.ToUpper()
-                $html += @"
-                    <div class="access-tier-group tier-$($tierName.ToLower())" data-tier-group="$tierName">
-                        <div class="tier-header">$tierEmoji $tierDisplayUpper</div>
-                        <table class="access-table">
-                            <thead>
-                                <tr>
-                                    <th>Scope</th>
-                                    <th>Name</th>
-                                    <th>Role</th>
-                                    <th>Affects</th>
-                                    <th>Redundant</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-"@
-                
-                foreach ($entry in $sortedEntries) {
-                    $scopeIcon = Get-ScopeIcon -Type $entry.ScopeType
-                    $scopeTypeDisplay = Get-ScopeTypeDisplay -Type $entry.ScopeType
-                    $scopeTypeDisplayEncoded = Encode-Html $scopeTypeDisplay
-                    $scopeName = Parse-ScopeName -ScopeFriendlyName $entry.ScopeFriendlyName
-                    $scopeNameEncoded = Encode-Html $scopeName
-                    $roleEncoded = Encode-Html $entry.Role
-                    
-                    # Build Affects column with key icon
-                    $affectsHtml = ""
-                    if ($entry.AffectedSubscriptions -and $entry.AffectedSubscriptions.Count -gt 0) {
-                        if ($entry.AffectedSubscriptions[0] -match '^All \d+ subscriptions$') {
-                            $affectsHtml = "<span class='affects-badge'>&#128273; $($entry.AffectedSubscriptions[0])</span>"
-                        } else {
-                            $subsList = ($entry.AffectedSubscriptions | ForEach-Object { Encode-Html $_ }) -join ", "
-                            $count = $entry.AffectedSubscriptions.Count
-                            if ($count -le 3) {
-                                $affectsHtml = "<span class='affects-badge'>&#128273; $subsList</span>"
-                            } else {
-                                $firstSubEncoded = Encode-Html $entry.AffectedSubscriptions[0]
-                                $affectsHtml = "<span class='affects-badge'>&#128273; $firstSubEncoded, ... ($count subscriptions)</span>"
-                            }
-                        }
-                    }
-                    
-                    # Build Redundant column
-                    $redundantDisplay = "No"
-                    $redundantIcon = ""
-                    if ($entry.IsRedundant) {
-                        $redundantDisplay = "Yes"
-                        $redundantReason = if ($entry.RedundantReason) { Encode-Html $entry.RedundantReason } else { "Redundant: Same role already assigned at a broader scope" }
-                        $redundantIcon = " <span class='redundant-badge' title='$redundantReason'>&#129529;</span>"
-                    }
-                    $redundantDisplayEncoded = Encode-Html $redundantDisplay
-                    
-                    $rowClass = if ($entry.IsRedundant) { 'class="redundant"' } else { '' }
-                    
-                    $html += @"
-                                <tr $rowClass>
-                                    <td><span class="scope-type">$scopeIcon</span> $scopeTypeDisplayEncoded</td>
-                                    <td>$scopeNameEncoded</td>
-                                    <td>$roleEncoded</td>
-                                    <td>$affectsHtml</td>
-                                    <td>$redundantDisplayEncoded$redundantIcon</td>
-                                </tr>
-"@
-                }
-                
-                $html += @"
-                            </tbody>
-                        </table>
-                    </div>
-"@
-            }
-        }
-        
-        # Add group note if it's a group
-        if ($principal.PrincipalType -eq 'Group') {
-            $html += @"
-                    <div class="group-note">
-                        &#8505; This is a group. All members inherit this access. Review membership in Entra ID → Groups.
-                    </div>
-"@
-        }
-        
-        $html += @"
-                </div>
+        <!-- Principal Access -->
+        <div class="section">
+            <h2>Principal Access</h2>
+            <div class="section-content">
+                $principalsHtml
             </div>
-"@
-    }
-        
-    $html += @"
         </div>
 "@
 
@@ -1800,6 +1793,26 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             }
         }
         
+        // Toggle affects dropdown
+        function toggleAffects(toggle) {
+            const targetId = toggle.getAttribute('data-target');
+            const dropdown = document.getElementById(targetId);
+            if (!dropdown) return;
+            
+            const arrow = toggle.querySelector('.affects-arrow');
+            if (!arrow) return;
+            
+            const isExpanded = dropdown.style.display !== 'none';
+            
+            if (isExpanded) {
+                dropdown.style.display = 'none';
+                arrow.innerHTML = '&#9660;';
+            } else {
+                dropdown.style.display = 'block';
+                arrow.innerHTML = '▲';
+            }
+        }
+        
         // Toggle custom role card
         function toggleCustomRole(header) {
             const card = header.parentElement;
@@ -1834,109 +1847,71 @@ $(Get-ReportNavigation -ActivePage "RBAC")
         }
         
         // Filtering logic
-        const searchInput = document.getElementById('searchInput');
-        const tierCheckboxes = document.querySelectorAll('.tier-checkbox');
-        const typeFilter = document.getElementById('typeFilter');
-        const showExternal = document.getElementById('showExternal');
-        const showOrphaned = document.getElementById('showOrphaned');
-        const showRedundant = document.getElementById('showRedundant');
-        const visibleCount = document.getElementById('visibleCount');
-        
-        function getSelectedTiers() {
-            const selected = [];
-            tierCheckboxes.forEach(checkbox => {
-                if (checkbox.checked) {
-                    selected.push(checkbox.value);
-                }
-            });
-            return selected;
-        }
-        
         function applyFilters() {
-            const searchTerm = searchInput.value.toLowerCase();
-            const selectedTiers = getSelectedTiers();
-            const typeValue = typeFilter.value;
-            const externalOnly = showExternal.checked;
-            const orphanedOnly = showOrphaned.checked;
-            const redundantOnly = showRedundant.checked;
+            const search = document.getElementById('searchInput').value.toLowerCase();
+            const typeFilter = document.getElementById('typeFilter').value;
+            const roleFilter = document.getElementById('roleFilter').value;
+            const redundantOnly = document.getElementById('redundantOnly').checked;
+            const privilegedOnly = document.getElementById('privilegedOnly').checked;
             
-            // Filter principal cards
-            const cards = document.querySelectorAll('.principal-card');
+            const rows = document.querySelectorAll('.principal-view-row');
             let visible = 0;
             
-            cards.forEach(card => {
-                const matchesSearch = !searchTerm || card.dataset.search.includes(searchTerm);
-                const matchesType = !typeValue || card.dataset.type === typeValue;
-                const matchesExternal = !externalOnly || card.dataset.external === 'true';
-                const matchesOrphaned = !orphanedOnly || card.dataset.orphaned === 'true';
-                const matchesRedundant = !redundantOnly || card.dataset.redundant === 'true';
+            rows.forEach(row => {
+                const matchesSearch = !search || row.dataset.search.includes(search);
+                const matchesType = !typeFilter || row.dataset.type === typeFilter;
+                const matchesRole = !roleFilter || row.dataset.roles.includes(roleFilter);
                 
-                // Check if principal has any of the selected tiers
-                let matchesTier = false;
-                if (selectedTiers.length === 0) {
-                    matchesTier = true; // No filter = show all
-                } else {
-                    // Check if this principal has access at any of the selected tiers
-                    const tierGroups = card.querySelectorAll('.access-tier-group[data-tier-group]');
-                    tierGroups.forEach(group => {
-                        if (selectedTiers.includes(group.dataset.tierGroup)) {
-                            matchesTier = true;
-                        }
-                    });
+                // For redundant filter, check if any assignment in the card is redundant
+                let matchesRedundant = true;
+                if (redundantOnly) {
+                    const redundantCells = row.querySelectorAll('.redundant-yes');
+                    matchesRedundant = redundantCells.length > 0;
                 }
                 
-                if (matchesSearch && matchesType && matchesTier && matchesExternal && matchesOrphaned && matchesRedundant) {
-                    card.style.display = 'block';
+                // For privileged filter, check if principal has privileged roles
+                let matchesPrivileged = true;
+                if (privilegedOnly) {
+                    matchesPrivileged = row.dataset.privileged === 'True';
+                }
+                
+                if (matchesSearch && matchesType && matchesRole && matchesRedundant && matchesPrivileged) {
+                    row.style.display = '';
                     visible++;
-                    
-                    // Filter tier groups within this card
-                    const tierGroups = card.querySelectorAll('.access-tier-group[data-tier-group]');
-                    tierGroups.forEach(group => {
-                        if (selectedTiers.length === 0 || selectedTiers.includes(group.dataset.tierGroup)) {
-                            group.style.display = 'block';
-                        } else {
-                            group.style.display = 'none';
-                        }
-                    });
                 } else {
-                    card.style.display = 'none';
+                    row.style.display = 'none';
                 }
             });
             
-            // Update visible count
-            visibleCount.textContent = visible;
+            document.getElementById('visibleCount').textContent = visible;
         }
-        
-        // Select all / Deselect all buttons
-        const selectAllTiers = document.getElementById('selectAllTiers');
-        const deselectAllTiers = document.getElementById('deselectAllTiers');
-        
-        if (selectAllTiers) {
-            selectAllTiers.addEventListener('click', () => {
-                tierCheckboxes.forEach(checkbox => {
-                    checkbox.checked = true;
+
+        function togglePrincipalDetails(header) {
+            const row = header.closest('.principal-view-row');
+            row.classList.toggle('expanded');
+        }
+
+        function toggleAffects(el) {
+            el.classList.toggle('expanded');
+            event.stopPropagation();
+        }
+
+        // Close dropdowns when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.affects-expandable')) {
+                document.querySelectorAll('.affects-expandable.expanded').forEach(el => {
+                    el.classList.remove('expanded');
                 });
-                applyFilters();
-            });
-        }
-        
-        if (deselectAllTiers) {
-            deselectAllTiers.addEventListener('click', () => {
-                tierCheckboxes.forEach(checkbox => {
-                    checkbox.checked = false;
-                });
-                applyFilters();
-            });
-        }
-        
-        searchInput.addEventListener('input', applyFilters);
-        tierCheckboxes.forEach(checkbox => {
-            checkbox.addEventListener('change', applyFilters);
+            }
         });
-        typeFilter.addEventListener('change', applyFilters);
-        showExternal.addEventListener('change', applyFilters);
-        showOrphaned.addEventListener('change', applyFilters);
-        showRedundant.addEventListener('change', applyFilters);
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            const total = document.querySelectorAll('.principal-view-row').length;
+            document.getElementById('totalCount').textContent = total;
+            document.getElementById('visibleCount').textContent = total;
+            applyFilters();
+        });
     </script>
 </body>
 </html>
