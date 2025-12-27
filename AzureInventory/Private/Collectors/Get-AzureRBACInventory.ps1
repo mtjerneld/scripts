@@ -84,108 +84,78 @@ function Get-AzureRBACInventory {
         try {
             switch ($ObjectType) {
                 'User' {
-                    $errorRecord = $null
-                    $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
+                    $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue
                     if ($user) {
                         $info.DisplayName = $user.DisplayName
                         $info.UserPrincipalName = $user.UserPrincipalName
                         $info.IsExternal = $user.UserPrincipalName -match '#EXT#'
                     }
-                    elseif ($errorRecord) {
-                        # Check error message to determine if it's "not found" vs other error
-                        $errorMessage = $errorRecord[0].Exception.Message
-                        $isNotFound = $errorMessage -match 'not found|does not exist|NotFound|ResourceNotFound|404|does not match|cannot be found'
-                        
-                        if ($isNotFound) {
-                            $info.IsOrphaned = $true
-                            $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted User: $ObjectId]" }
+                    else {
+                        # Resolution failed - use KnownDisplayName if available, otherwise use ObjectId
+                        if ($KnownDisplayName) {
+                            $info.DisplayName = $KnownDisplayName
                         }
                         else {
-                            # Permission or other error - use KnownDisplayName or ObjectId but don't mark as orphaned
-                            Write-Verbose "Could not resolve User $ObjectId (error: $errorMessage)"
-                            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
-                            $info.IsOrphaned = $false
+                            $info.DisplayName = $ObjectId
                         }
-                    }
-                    else {
-                        # No error recorded, but no user returned - treat as not found
-                        $info.IsOrphaned = $true
-                        $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted User: $ObjectId]" }
+                        $info.IsOrphaned = $false
                     }
                 }
                 'Group' {
-                    $errorRecord = $null
-                    $group = Get-AzADGroup -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
+                    $group = Get-AzADGroup -ObjectId $ObjectId -ErrorAction SilentlyContinue
                     if ($group) {
                         $info.DisplayName = $group.DisplayName
                     }
-                    elseif ($errorRecord) {
-                        $errorMessage = $errorRecord[0].Exception.Message
-                        $isNotFound = $errorMessage -match 'not found|does not exist|NotFound|ResourceNotFound|404|does not match|cannot be found'
-                        
-                        if ($isNotFound) {
-                            $info.IsOrphaned = $true
-                            $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted Group: $ObjectId]" }
+                    else {
+                        if ($KnownDisplayName) {
+                            $info.DisplayName = $KnownDisplayName
                         }
                         else {
-                            Write-Verbose "Could not resolve Group $ObjectId (error: $errorMessage)"
-                            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
-                            $info.IsOrphaned = $false
+                            $info.DisplayName = $ObjectId
                         }
-                    }
-                    else {
-                        $info.IsOrphaned = $true
-                        $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted Group: $ObjectId]" }
+                        $info.IsOrphaned = $false
                     }
                 }
                 'ServicePrincipal' {
-                    $errorRecord = $null
-                    $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
+                    $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue
                     if ($sp) {
                         $info.DisplayName = $sp.DisplayName
                         $info.AppId = $sp.AppId
                         $info.ObjectType = if ($sp.ServicePrincipalType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
                     }
-                    elseif ($errorRecord) {
-                        $errorMessage = $errorRecord[0].Exception.Message
-                        $isNotFound = $errorMessage -match 'not found|does not exist|NotFound|ResourceNotFound|404|does not match|cannot be found'
-                        
-                        if ($isNotFound) {
-                            $info.IsOrphaned = $true
-                            $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted SP: $ObjectId]" }
+                    else {
+                        if ($KnownDisplayName) {
+                            $info.DisplayName = $KnownDisplayName
                         }
                         else {
-                            Write-Verbose "Could not resolve ServicePrincipal $ObjectId (error: $errorMessage)"
-                            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
-                            $info.IsOrphaned = $false
+                            $info.DisplayName = $ObjectId
                         }
-                    }
-                    else {
-                        $info.IsOrphaned = $true
-                        $info.DisplayName = if ($KnownDisplayName) { "$KnownDisplayName (Deleted)" } else { "[Deleted SP: $ObjectId]" }
+                        $info.IsOrphaned = $false
                     }
                 }
                 default {
                     # Unknown type - try to resolve as ServicePrincipal first, then User
-                    $errorRecord = $null
-                    $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
+                    $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue
                     if ($sp) {
                         $info.DisplayName = $sp.DisplayName
                         $info.AppId = $sp.AppId
                         $info.ObjectType = if ($sp.ServicePrincipalType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
                     }
                     else {
-                        $errorRecord = $null
-                        $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue -ErrorVariable errorRecord
+                        $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue
                         if ($user) {
                             $info.DisplayName = $user.DisplayName
                             $info.UserPrincipalName = $user.UserPrincipalName
                             $info.ObjectType = 'User'
                         }
                         else {
-                            Write-Verbose "Could not resolve principal $ObjectId as any known type"
-                            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
-                            $info.IsOrphaned = $true
+                            if ($KnownDisplayName) {
+                                $info.DisplayName = $KnownDisplayName
+                            }
+                            else {
+                                $info.DisplayName = $ObjectId
+                            }
+                            $info.IsOrphaned = $false
                         }
                     }
                 }
@@ -193,7 +163,12 @@ function Get-AzureRBACInventory {
         }
         catch {
             Write-Verbose "Unexpected error resolving principal $ObjectId : $_"
-            if (-not $info.DisplayName) { $info.DisplayName = $ObjectId }
+            if ($KnownDisplayName) {
+                $info.DisplayName = $KnownDisplayName
+            }
+            else {
+                $info.DisplayName = $ObjectId
+            }
             $info.IsOrphaned = $false
         }
         
@@ -1442,6 +1417,14 @@ resourcecontainers
             $accessMatrix[$roleName][$scopeType] = $count
         }
         $accessMatrix[$roleName]['Total'] = $roleGroup.Count
+        
+        # Add privileged flag (check if any assignment for this role is privileged)
+        $isPrivileged = ($roleGroup.Group | Where-Object { $_.IsPrivileged }).Count -gt 0
+        $accessMatrix[$roleName]['IsPrivileged'] = $isPrivileged
+        
+        # Count unique principals for this role
+        $uniquePrincipals = @($roleGroup.Group | Select-Object -Property PrincipalId -Unique)
+        $accessMatrix[$roleName]['Unique'] = $uniquePrincipals.Count
     }
     
     # Calculate statistics
@@ -1478,6 +1461,22 @@ resourcecontainers
     # Build subscription names array for metadata
     $subscriptionNames = @($subscriptions | Select-Object -ExpandProperty Name | Sort-Object)
     
+    # Calculate resolution statistics
+    $totalPrincipals = @($assignmentRows | Select-Object -Property PrincipalId -Unique).Count
+    $unresolvedCount = @($assignmentRows | Where-Object { 
+        $_.PrincipalDisplayName -eq $_.PrincipalId 
+    } | Select-Object -Property PrincipalId -Unique).Count
+
+    $resolvedPercentage = if ($totalPrincipals -gt 0) { 
+        [math]::Round((($totalPrincipals - $unresolvedCount) / $totalPrincipals) * 100, 0) 
+    } else { 
+        100 
+    }
+
+    # Only flag as "lacking Entra ID access" if less than 50% resolved
+    # Otherwise it's likely just B2B/foreign principals that can't be resolved
+    $lacksEntraIdAccess = $resolvedPercentage -lt 50
+    
     return [PSCustomObject]@{
         Metadata = @{
             TenantId = $currentTenantId
@@ -1485,6 +1484,10 @@ resourcecontainers
             Duration = $duration.TotalSeconds
             SubscriptionsScanned = $subscriptions.Count
             SubscriptionNames = $subscriptionNames
+            UnresolvedPrincipalCount = $unresolvedCount
+            TotalPrincipalCount = $totalPrincipals
+            ResolvedPercentage = $resolvedPercentage
+            LacksEntraIdAccess = $lacksEntraIdAccess
         }
         Statistics = $newStats
         Principals = $principals              # NEW: Principal-grouped structure

@@ -218,6 +218,9 @@ function Export-RBACReport {
 "@
         }
         
+        # Get unique scope types for this principal
+        $uniqueScopeTypes = $Principal.Assignments | Select-Object -ExpandProperty ScopeType -Unique | Sort-Object
+        
         # Search data
         $searchData = @(
             $Principal.PrincipalDisplayName,
@@ -236,6 +239,7 @@ function Export-RBACReport {
      data-external="$($Principal.IsExternal)"
      data-privileged="$($Principal.HasPrivilegedRoles)"
      data-roles="$($Principal.UniqueRoles -join ',')"
+     data-scopes="$($uniqueScopeTypes -join ',')"
      data-search="$($searchData.ToLower())"
      style="border-left-color: $borderColor;">
     <div class="principal-view-header" onclick="togglePrincipalDetails(this)">
@@ -282,6 +286,21 @@ function Export-RBACReport {
     $orphanedAssignments = $RBACData.OrphanedAssignments
     $customRoles = $RBACData.CustomRoles
     $displayTenantId = if ($TenantId -ne "Unknown") { $TenantId } else { $metadata.TenantId }
+    
+    # Sort AccessMatrix roles: privileged first, then by total descending
+    $sortedRoleNames = $RBACData.AccessMatrix.Keys | Sort-Object {
+        $roleData = $RBACData.AccessMatrix[$_]
+        $isPriv = if ($roleData.IsPrivileged) { $roleData.IsPrivileged } else { $false }
+        $total = $roleData.Total
+        # Create sort key: "0-{total}" for privileged (sorts first), "1-{total}" for non-privileged
+        # Use inverted total (100000 - total) so higher totals sort first within each group
+        $sortKey = if ($isPriv) {
+            "0-{0:D6}" -f (1000000 - $total)
+        } else {
+            "1-{0:D6}" -f (1000000 - $total)
+        }
+        $sortKey
+    }
 
     # Get base stylesheet and add RBAC-specific styles
     $rbacSpecificStyles = @"
@@ -323,14 +342,28 @@ function Export-RBACReport {
         
         /* Filters */
         .filters {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 16px;
-            align-items: center;
-            padding: 16px;
             background: var(--bg-surface);
             border-radius: var(--radius-md);
             margin-bottom: 16px;
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+        }
+        
+        .filters-header {
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+            font-size: 0.95rem;
+            color: var(--text-primary);
+        }
+        
+        .filters-content {
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 12px;
+            align-items: center;
+            padding: 12px 16px;
         }
 
         .filter-group {
@@ -340,20 +373,22 @@ function Export-RBACReport {
         }
 
         .filter-group input[type="text"] {
-            padding: 8px 12px;
+            padding: 6px 10px;
             border: 1px solid var(--border-color);
             border-radius: 4px;
             background: var(--bg-primary);
             color: var(--text-primary);
-            min-width: 250px;
+            min-width: 200px;
+            font-size: 0.9rem;
         }
 
         .filter-group select {
-            padding: 8px 12px;
+            padding: 6px 10px;
             border: 1px solid var(--border-color);
             border-radius: 4px;
             background: var(--bg-primary);
             color: var(--text-primary);
+            font-size: 0.9rem;
         }
 
         .filter-group label {
@@ -368,6 +403,7 @@ function Export-RBACReport {
             margin-left: auto;
             color: var(--text-muted);
             font-size: 0.9rem;
+            white-space: nowrap;
         }
         
         /* Tier Checkboxes */
@@ -529,6 +565,15 @@ function Export-RBACReport {
             margin-bottom: 20px;
             border: 1px solid var(--border-color);
             overflow: hidden;
+        }
+        
+        .section h2 {
+            padding: 15px 20px;
+            margin: 0;
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-color);
         }
         
         .section-header {
@@ -1316,12 +1361,15 @@ function Export-RBACReport {
             table-layout: fixed;
         }
         
-        .access-matrix table th:nth-child(1) { width: 18%; } /* Access Level */
-        .access-matrix table th:nth-child(2) { width: 14%; } /* Root */
-        .access-matrix table th:nth-child(3) { width: 18%; } /* Mgmt Groups */
-        .access-matrix table th:nth-child(4) { width: 18%; } /* Subscriptions */
-        .access-matrix table th:nth-child(5) { width: 16%; } /* Resource Groups */
-        .access-matrix table th:nth-child(6) { width: 16%; } /* Resources */
+        .access-matrix table th:nth-child(1) { width: 16%; } /* Role */
+        .access-matrix table th:nth-child(2) { width: 10%; } /* Privileged */
+        .access-matrix table th:nth-child(3) { width: 10%; } /* Root */
+        .access-matrix table th:nth-child(4) { width: 12%; } /* Mgmt Groups */
+        .access-matrix table th:nth-child(5) { width: 12%; } /* Subscriptions */
+        .access-matrix table th:nth-child(6) { width: 12%; } /* Resource Groups */
+        .access-matrix table th:nth-child(7) { width: 12%; } /* Resources */
+        .access-matrix table th:nth-child(8) { width: 8%; }  /* Total */
+        .access-matrix table th:nth-child(9) { width: 8%; }  /* Unique */
         
         .access-matrix table td {
             word-wrap: break-word;
@@ -1338,14 +1386,37 @@ function Export-RBACReport {
         }
         
         /* Responsive */
+        @media (max-width: 1200px) {
+            .filters-content {
+                flex-wrap: wrap;
+            }
+            
+            .filter-stats {
+                margin-left: 0;
+                width: 100%;
+            }
+        }
+        
         @media (max-width: 768px) {
             .summary-grid {
                 grid-template-columns: repeat(2, 1fr);
             }
             
-            .filters-row {
+            .filters-content {
                 flex-direction: column;
                 align-items: stretch;
+            }
+            
+            .filter-group {
+                width: 100%;
+            }
+            
+            .filter-group input[type="text"] {
+                width: 100%;
+            }
+            
+            .filter-group select {
+                width: 100%;
             }
             
             .filter-stats {
@@ -1380,6 +1451,36 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             </div>
         </div>
         
+        $(if ($RBACData.Metadata.LacksEntraIdAccess) {
+            $unresolvedCount = $RBACData.Metadata.UnresolvedPrincipalCount
+            @"
+        <!-- Entra ID Access Warning -->
+        <div class="warning-banner" style="background: rgba(254, 202, 87, 0.15); border: 1px solid var(--accent-yellow); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 1.2rem;">&#9888;</span>
+            <div>
+                <strong style="color: var(--accent-yellow);">Limited Entra ID Access</strong>
+                <p style="margin: 4px 0 0 0; color: var(--text-secondary); font-size: 0.9rem;">
+                    Unable to resolve $unresolvedCount principal name(s). The audit account lacks Directory Reader access to Entra ID. Principal IDs are shown instead of display names.
+                </p>
+            </div>
+        </div>
+"@
+        } elseif ($RBACData.Metadata.UnresolvedPrincipalCount -gt 0) {
+            $unresolvedCount = $RBACData.Metadata.UnresolvedPrincipalCount
+            @"
+        <!-- External Principals Info -->
+        <div class="info-banner" style="background: rgba(84, 160, 255, 0.1); border: 1px solid var(--accent-blue); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 1.2rem;">&#8505;</span>
+            <div>
+                <strong style="color: var(--accent-blue);">External Principals</strong>
+                <p style="margin: 4px 0 0 0; color: var(--text-secondary); font-size: 0.9rem;">
+                    $unresolvedCount external principal(s) could not be resolved (B2B guests or groups from external tenants).
+                </p>
+            </div>
+        </div>
+"@
+        })
+        
         <!-- Summary Cards -->
         <div class="summary-grid">
             <div class="summary-card">
@@ -1410,27 +1511,38 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                 <thead>
                     <tr>
                         <th>Role</th>
+                        <th>Privileged</th>
                         <th>&#127760; Root</th>
                         <th>&#127970; Mgmt Groups</th>
                         <th>&#128273; Subscriptions</th>
                         <th>&#128194; Resource Groups</th>
                         <th>&#128196; Resources</th>
                         <th>Total</th>
+                        <th>Unique</th>
                     </tr>
                 </thead>
                 <tbody>
-                    $(foreach ($roleName in ($RBACData.AccessMatrix.Keys | Sort-Object)) {
+                    $(foreach ($roleName in $sortedRoleNames) {
                         $roleData = $RBACData.AccessMatrix[$roleName]
                         $total = $roleData.Total
+                        $unique = if ($roleData.Unique) { $roleData.Unique } else { 0 }
+                        $isPrivileged = if ($roleData.IsPrivileged) { $roleData.IsPrivileged } else { $false }
+                        $privilegedBadge = if ($isPrivileged) {
+                            '<span class="badge badge-critical">Privileged</span>'
+                        } else {
+                            '-'
+                        }
                         @"
                     <tr>
                         <td>$([System.Web.HttpUtility]::HtmlEncode($roleName))</td>
+                        <td>$privilegedBadge</td>
                         <td>$($roleData['Tenant Root'])</td>
                         <td>$($roleData['Management Group'])</td>
                         <td>$($roleData['Subscription'])</td>
                         <td>$($roleData['Resource Group'])</td>
                         <td>$($roleData['Resource'])</td>
                         <td><strong>$total</strong></td>
+                        <td><strong>$unique</strong></td>
                     </tr>
 "@
                     } -join "`n")
@@ -1440,37 +1552,50 @@ $(Get-ReportNavigation -ActivePage "RBAC")
         
         <!-- Filters -->
         <div class="filters">
-            <div class="filter-group">
-                <input type="text" id="searchInput" placeholder="Search principal, role, scope..." onkeyup="applyFilters()">
-            </div>
-            <div class="filter-group">
-                <select id="typeFilter" onchange="applyFilters()">
-                    <option value="">All Types</option>
-                    <option value="User">Users</option>
-                    <option value="Group">Groups</option>
-                    <option value="ServicePrincipal">Service Principals</option>
-                    <option value="ManagedIdentity">Managed Identities</option>
-                </select>
-            </div>
-            <div class="filter-group">
-                <select id="roleFilter" onchange="applyFilters()">
-                    <option value="">All Roles</option>
-                    $(if ($RBACData.Principals) {
-                        $uniqueRoles = $RBACData.Principals | ForEach-Object { $_.UniqueRoles } | Select-Object -Unique | Sort-Object
-                        foreach ($role in $uniqueRoles) {
-                            "<option value='$([System.Web.HttpUtility]::HtmlAttributeEncode($role))'>$([System.Web.HttpUtility]::HtmlEncode($role))</option>"
-                        } -join "`n"
-                    })
-                </select>
-            </div>
-            <div class="filter-group">
-                <label><input type="checkbox" id="redundantOnly" onchange="applyFilters()"> Redundant only</label>
-            </div>
-            <div class="filter-group">
-                <label><input type="checkbox" id="privilegedOnly" onchange="applyFilters()"> Privileged only</label>
-            </div>
-            <div class="filter-stats">
-                Showing <span id="visibleCount">0</span> of <span id="totalCount">0</span> principals
+            <div class="filters-header">Filters</div>
+            <div class="filters-content">
+                <div class="filter-group">
+                    <input type="text" id="searchInput" placeholder="Search principal, role, scope..." onkeyup="applyFilters()">
+                </div>
+                <div class="filter-group">
+                    <select id="typeFilter" onchange="applyFilters()">
+                        <option value="">All Types</option>
+                        <option value="User">Users</option>
+                        <option value="Group">Groups</option>
+                        <option value="ServicePrincipal">Service Principals</option>
+                        <option value="ManagedIdentity">Managed Identities</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <select id="roleFilter" onchange="applyFilters()">
+                        <option value="">All Roles</option>
+                        $(if ($RBACData.Principals) {
+                            $uniqueRoles = $RBACData.Principals | ForEach-Object { $_.UniqueRoles } | Select-Object -Unique | Sort-Object
+                            foreach ($role in $uniqueRoles) {
+                                "<option value='$([System.Web.HttpUtility]::HtmlAttributeEncode($role))'>$([System.Web.HttpUtility]::HtmlEncode($role))</option>"
+                            } -join "`n"
+                        })
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <select id="scopeTypeFilter" onchange="applyFilters()">
+                        <option value="">All Scope Types</option>
+                        <option value="Tenant Root">Tenant Root</option>
+                        <option value="Management Group">Management Group</option>
+                        <option value="Subscription">Subscription</option>
+                        <option value="Resource Group">Resource Group</option>
+                        <option value="Resource">Resource</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label><input type="checkbox" id="redundantOnly" onchange="applyFilters()"> Redundant only</label>
+                </div>
+                <div class="filter-group">
+                    <label><input type="checkbox" id="privilegedOnly" onchange="applyFilters()"> Privileged only</label>
+                </div>
+                <div class="filter-stats">
+                    Showing <span id="visibleCount">0</span> of <span id="totalCount">0</span> principals
+                </div>
             </div>
         </div>
 "@
@@ -1851,6 +1976,7 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             const search = document.getElementById('searchInput').value.toLowerCase();
             const typeFilter = document.getElementById('typeFilter').value;
             const roleFilter = document.getElementById('roleFilter').value;
+            const scopeTypeFilter = document.getElementById('scopeTypeFilter').value;
             const redundantOnly = document.getElementById('redundantOnly').checked;
             const privilegedOnly = document.getElementById('privilegedOnly').checked;
             
@@ -1861,6 +1987,7 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                 const matchesSearch = !search || row.dataset.search.includes(search);
                 const matchesType = !typeFilter || row.dataset.type === typeFilter;
                 const matchesRole = !roleFilter || row.dataset.roles.includes(roleFilter);
+                const matchesScopeType = !scopeTypeFilter || row.dataset.scopes.includes(scopeTypeFilter);
                 
                 // For redundant filter, check if any assignment in the card is redundant
                 let matchesRedundant = true;
@@ -1875,7 +2002,7 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                     matchesPrivileged = row.dataset.privileged === 'True';
                 }
                 
-                if (matchesSearch && matchesType && matchesRole && matchesRedundant && matchesPrivileged) {
+                if (matchesSearch && matchesType && matchesRole && matchesScopeType && matchesRedundant && matchesPrivileged) {
                     row.style.display = '';
                     visible++;
                 } else {
