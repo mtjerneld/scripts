@@ -1,6 +1,8 @@
 # Environment files with secrets
 .env
 *.env
+# But allow .env.example as a template
+!.env.example
 *.mp
 
 # PowerShell module cache

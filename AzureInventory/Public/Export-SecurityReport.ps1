@@ -22,7 +22,16 @@ function Export-SecurityReport {
         [PSCustomObject]$AuditResult,
         
         [Parameter(Mandatory = $true)]
-        [string]$OutputPath
+        [string]$OutputPath,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$AI,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AITopN = 20,
+        
+        [Parameter(Mandatory = $false)]
+        [bool]$AICriticalOnly = $true
     )
     
     # Encode-Html is now imported from Private/Helpers/Encode-Html.ps1
@@ -893,7 +902,7 @@ $(Get-ReportScript -ScriptType "SecurityReport")
         
         # Return metadata for Dashboard consumption
         # Note: Dashboard will calculate TotalFailedFindings by summing severity counts
-        return @{
+        $result = @{
             OutputPath = $OutputPath
             SecurityScore = $securityScore
             TotalChecks = $totalChecks
@@ -905,6 +914,34 @@ $(Get-ReportScript -ScriptType "SecurityReport")
             DeprecatedCount = $deprecatedCount
             PastDueCount = $pastDueCount
         }
+        
+        # Generate AI insights if requested
+        if ($AI) {
+            Write-Verbose "Generating AI insights for security analysis..."
+            try {
+                # Ensure ConvertTo-SecurityAIInsights is available
+                if (-not (Get-Command -Name ConvertTo-SecurityAIInsights -ErrorAction SilentlyContinue)) {
+                    $moduleRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+                    $helperPath = Join-Path $moduleRoot "Private\Helpers\ConvertTo-SecurityAIInsights.ps1"
+                    if (Test-Path $helperPath) {
+                        . $helperPath
+                    }
+                }
+                
+                if (Get-Command -Name ConvertTo-SecurityAIInsights -ErrorAction SilentlyContinue) {
+                    $aiInsights = ConvertTo-SecurityAIInsights -Findings $findings -TopN $AITopN -CriticalOnly $AICriticalOnly
+                    $result.AIInsights = $aiInsights
+                    Write-Verbose "AI insights generated: $($aiInsights.summary.total_findings) findings"
+                } else {
+                    Write-Warning "ConvertTo-SecurityAIInsights function not available. AI insights not generated."
+                }
+            }
+            catch {
+                Write-Warning "Failed to generate AI insights: $_"
+            }
+        }
+        
+        return $result
     }
     catch {
         Write-Error "Failed to generate HTML report: $_"

@@ -147,6 +147,80 @@ Invoke-AzureSecurityAudit -OutputPath ".\Reports\SecurityAudit_2025.html"
 # Scan specific categories with JSON export
 Invoke-AzureSecurityAudit -Categories Storage, SQL -ExportJson -OutputPath ".\audit.html"
 
+## AI-Powered Analysis
+
+The module includes optional AI-powered analysis using OpenAI to provide strategic recommendations and prioritization across your customer portfolio.
+
+### Prerequisites
+
+- OpenAI API key (set via `OPENAI_API_KEY` environment variable or `-OpenAIKey` parameter)
+- OpenAI API access (gpt-4o-mini or gpt-5-mini recommended for cost efficiency)
+
+### Basic AI Analysis
+
+```powershell
+# Run audit with AI analysis enabled
+Invoke-AzureSecurityAudit -AI
+
+# With custom OpenAI model
+Invoke-AzureSecurityAudit -AI -OpenAIModel "gpt-4o-mini"
+
+# With custom API key
+Invoke-AzureSecurityAudit -AI -OpenAIKey "sk-..."
+```
+
+### AI Analysis Parameters
+
+```powershell
+Invoke-AzureSecurityAudit `
+    -AI `
+    -OpenAIKey $env:OPENAI_API_KEY `
+    -OpenAIModel "gpt-4o-mini" `
+    -AICostTopN 15 `          # Top N cost opportunities to analyze
+    -AISecurityTopN 20         # Top N security findings to analyze
+```
+
+### AI Output Files
+
+When `-AI` is enabled, the following files are generated in the output folder:
+
+- `AI_Analysis_YYYY-MM-DD_HHmmss.txt` - Full AI analysis report with recommendations
+- `AI_Metadata_YYYY-MM-DD_HHmmss.json` - Token usage, cost, and metadata
+- `AI_Insights_Payload_YYYY-MM-DD_HHmmss.json` - Combined governance data sent to AI
+
+### AI Analysis Content
+
+The AI analysis includes:
+
+1. **Executive Summary** - Top critical issues and portfolio health
+2. **Strategic Priorities** - Top 5 ranked actions with business impact
+3. **Cost Optimization Roadmap** - Quick wins, medium-term, and strategic projects
+4. **Security & Compliance Actions** - Immediate escalations and remediation priorities
+5. **Infrastructure Modernization** - EOL remediation and technical debt
+6. **Cross-Cutting Insights** - Portfolio patterns and proactive recommendations
+
+### Cost Considerations
+
+- Typical analysis: ~$0.10-0.50 per run (depends on portfolio size)
+- Token usage: ~20-40K input tokens, ~3-8K output tokens
+- Cost scales with number of subscriptions and findings
+
+### Standalone AI Agent
+
+You can also call the AI agent directly with pre-generated insights:
+
+```powershell
+# Generate insights separately
+$costInsights = ConvertTo-CostAIInsights -AdvisorRecommendations $recs
+$secInsights = ConvertTo-SecurityAIInsights -Findings $findings
+
+# Combine and analyze
+$payload = ConvertTo-CombinedPayload -CostInsights $costInsights -SecurityInsights $secInsights -SubscriptionCount 30
+$json = $payload | ConvertTo-Json -Depth 10
+
+$analysis = Invoke-AzureArchitectAgent -GovernanceDataJson $json -ApiKey $env:OPENAI_API_KEY
+```
+
 # Include Level 2 controls (for critical data or high-security environments)
 Invoke-AzureSecurityAudit -Categories Storage -IncludeLevel2
 

@@ -184,8 +184,8 @@ function Connect-AuditEnvironment {
                 # Remove surrounding quotes from value if present
                 $value = $value -replace '^["\x27](.*)["\x27]$', '$1'
                 
-                # Only load Azure-related environment variables
-                if ($key -match '^AZURE_') {
+                # Load Azure and OpenAI environment variables
+                if ($key -match '^(AZURE_|OPENAI_)') {
                     Set-Item -Path "env:$key" -Value $value -ErrorAction SilentlyContinue
                     $envVarsLoaded++
                     $loadedKeys += $key
@@ -197,11 +197,12 @@ function Connect-AuditEnvironment {
             Write-Host ('[OK] Loaded ' + $envVarsLoaded + ' environment variable(s) from .env file: ' + ($loadedKeys -join ', ')) -ForegroundColor Green
         }
         else {
-            Write-Host '[WARNING] .env file found but no AZURE_* variables were loaded' -ForegroundColor Yellow
+            Write-Host '[WARNING] .env file found but no AZURE_* or OPENAI_* variables were loaded' -ForegroundColor Yellow
             Write-Host '  Check that your .env file contains lines like:' -ForegroundColor Gray
             Write-Host '    AZURE_TENANT_ID=your-tenant-id' -ForegroundColor Gray
             Write-Host '    AZURE_CLIENT_ID=your-client-id' -ForegroundColor Gray
             Write-Host '    AZURE_CLIENT_SECRET=your-client-secret' -ForegroundColor Gray
+            Write-Host '    OPENAI_API_KEY=sk-your-api-key (for AI analysis)' -ForegroundColor Gray
         }
     }
     else {

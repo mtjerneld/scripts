@@ -61,7 +61,22 @@ function Invoke-AzureSecurityAudit {
         
         [string[]]$CriticalStorageAccounts = @(),
         
-        [switch]$SkipChangeTracking
+        [switch]$SkipChangeTracking,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$AI,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$OpenAIKey = $env:OPENAI_API_KEY,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$OpenAIModel = "gpt-4o-mini",
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AICostTopN = 15,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AISecurityTopN = 20
     )
     
     $scanStart = Get-Date
@@ -635,6 +650,122 @@ function Invoke-AzureSecurityAudit {
     $dashboardUri = "file:///$($dashboardPath.Replace('\', '/'))"
     Write-Host "`nOpen dashboard: " -NoNewline
     Write-Host $dashboardUri -ForegroundColor Cyan
+    
+    # AI Analysis (if requested)
+    if ($AI) {
+        Write-Host "`n=== AI Analysis ===" -ForegroundColor Cyan
+        
+        if ([string]::IsNullOrWhiteSpace($OpenAIKey)) {
+            Write-Warning "OpenAI API key not provided. Set via -OpenAIKey or OPENAI_API_KEY environment variable."
+            Write-Warning "Skipping AI analysis."
+        }
+        else {
+            try {
+                # Ensure helper functions are loaded
+                $moduleRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+                
+                # Load cost insights converter
+                if (-not (Get-Command -Name ConvertTo-CostAIInsights -ErrorAction SilentlyContinue)) {
+                    $costHelperPath = Join-Path $moduleRoot "Private\Helpers\ConvertTo-CostAIInsights.ps1"
+                    if (Test-Path $costHelperPath) {
+                        . $costHelperPath
+                    }
+                }
+                
+                # Load security insights converter
+                if (-not (Get-Command -Name ConvertTo-SecurityAIInsights -ErrorAction SilentlyContinue)) {
+                    $secHelperPath = Join-Path $moduleRoot "Private\Helpers\ConvertTo-SecurityAIInsights.ps1"
+                    if (Test-Path $secHelperPath) {
+                        . $secHelperPath
+                    }
+                }
+                
+                # Load payload builder
+                if (-not (Get-Command -Name ConvertTo-CombinedPayload -ErrorAction SilentlyContinue)) {
+                    $payloadHelperPath = Join-Path $moduleRoot "Private\Helpers\ConvertTo-CombinedPayload.ps1"
+                    if (Test-Path $payloadHelperPath) {
+                        . $payloadHelperPath
+                    }
+                }
+                
+                # Load AI agent
+                if (-not (Get-Command -Name Invoke-AzureArchitectAgent -ErrorAction SilentlyContinue)) {
+                    $agentPath = Join-Path $moduleRoot "Public\Invoke-AzureArchitectAgent.ps1"
+                    if (Test-Path $agentPath) {
+                        . $agentPath
+                    }
+                }
+                
+                # Generate cost insights
+                $costInsights = $null
+                if ($advisorRecommendations.Count -gt 0) {
+                    Write-Host "  Generating cost insights..." -ForegroundColor Gray
+                    if (Get-Command -Name ConvertTo-CostAIInsights -ErrorAction SilentlyContinue) {
+                        $costInsights = ConvertTo-CostAIInsights -AdvisorRecommendations $advisorRecommendations -TopN $AICostTopN
+                        Write-Host "    Cost insights: $($costInsights.summary.recommendation_count) recommendations" -ForegroundColor Green
+                    }
+                }
+                
+                # Generate security insights
+                $securityInsights = $null
+                if ($allFindings.Count -gt 0) {
+                    Write-Host "  Generating security insights..." -ForegroundColor Gray
+                    if (Get-Command -Name ConvertTo-SecurityAIInsights -ErrorAction SilentlyContinue) {
+                        $securityInsights = ConvertTo-SecurityAIInsights -Findings $allFindings -TopN $AISecurityTopN
+                        Write-Host "    Security insights: $($securityInsights.summary.total_findings) findings" -ForegroundColor Green
+                    }
+                }
+                
+                # Build combined payload
+                if ($costInsights -or $securityInsights) {
+                    Write-Host "  Building combined payload..." -ForegroundColor Gray
+                    if (Get-Command -Name ConvertTo-CombinedPayload -ErrorAction SilentlyContinue) {
+                        $combinedPayload = ConvertTo-CombinedPayload `
+                            -CostInsights $costInsights `
+                            -SecurityInsights $securityInsights `
+                            -SubscriptionCount $subscriptions.Count
+                        
+                        $jsonPayload = $combinedPayload | ConvertTo-Json -Depth 10
+                        
+                        # Save payload if requested
+                        $payloadFile = Join-Path $outputFolder "AI_Insights_Payload_$(Get-Date -Format 'yyyy-MM-dd_HHmmss').json"
+                        $jsonPayload | Out-File $payloadFile -Encoding UTF8
+                        Write-Host "    Payload saved: $payloadFile" -ForegroundColor Gray
+                        
+                        # Call AI agent
+                        Write-Host "  Calling AI agent..." -ForegroundColor Gray
+                        if (Get-Command -Name Invoke-AzureArchitectAgent -ErrorAction SilentlyContinue) {
+                            $aiResult = Invoke-AzureArchitectAgent `
+                                -GovernanceDataJson $jsonPayload `
+                                -ApiKey $OpenAIKey `
+                                -Model $OpenAIModel `
+                                -OutputPath $outputFolder
+                            
+                            if ($aiResult.Success) {
+                                Write-Host "    AI analysis complete" -ForegroundColor Green
+                                Write-Host "      Estimated cost: `$$($aiResult.Metadata.EstimatedCost.ToString('F4'))" -ForegroundColor Gray
+                                
+                                # Add AI results to return object
+                                $result.AIAnalysis = $aiResult
+                            } else {
+                                Write-Warning "AI analysis failed: $($aiResult.Error)"
+                            }
+                        } else {
+                            Write-Warning "Invoke-AzureArchitectAgent function not available."
+                        }
+                    } else {
+                        Write-Warning "ConvertTo-CombinedPayload function not available."
+                    }
+                } else {
+                    Write-Warning "No insights generated. Skipping AI analysis."
+                }
+            }
+            catch {
+                Write-Warning "AI analysis failed: $_"
+                Write-Verbose "AI analysis error details: $($_.Exception.Message)"
+            }
+        }
+    }
     
     if ($PassThru) {
         return $result

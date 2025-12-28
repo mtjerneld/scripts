@@ -23,7 +23,8 @@
         'Export-ChangeTrackingReport',
         'Export-DashboardReport',
         'Export-NetworkInventoryReport',
-        'Connect-AuditEnvironment'
+        'Connect-AuditEnvironment',
+        'Invoke-AzureArchitectAgent'
     )
     
     # Cmdlets to export from this module

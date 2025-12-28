@@ -37,6 +37,7 @@ $functionsToRemove = @(
     'Export-CostTrackingReport',
     'Export-EOLReport',
     'Export-RBACReport',
+    'Invoke-AzureArchitectAgent',
     # Helper functions
     'Get-SubscriptionContext',
     'Invoke-AzureApiWithRetry',
@@ -61,6 +62,15 @@ $functionsToRemove = @(
     'Collect-CostData',
     'Get-NsgRiskAnalysis',
     'Generate-AuditReports',
+    # AI helper functions
+    'Invoke-OpenAIAnalysis',
+    'ConvertFrom-OpenAIResponseJson',
+    'Get-FirstResponsesOutputText',
+    'ConvertTo-CostAIInsights',
+    'ConvertTo-SecurityAIInsights',
+    'ConvertTo-CombinedPayload',
+    'Get-ImplementationComplexity',
+    'Get-RemediationEffort',
     # Config functions
     'Get-ControlDefinitions',
     # Scanner functions
@@ -1258,6 +1268,7 @@ Write-Host "`nInteractive / test functions:" -ForegroundColor Cyan
 $userFunctions = @(
     'Connect-AuditEnvironment',
     'Invoke-AzureSecurityAudit',
+    'Invoke-AzureArchitectAgent',
     'Test-SecurityReport',
     'Test-ChangeTracking',
     'Test-NetworkInventory',
@@ -1278,6 +1289,8 @@ foreach ($funcName in $userFunctions) {
 
 Write-Host "`nTip: Common test commands:" -ForegroundColor Cyan
 Write-Host "  - Connect-AuditEnvironment            # Sign in to Azure and select tenant/subscription" -ForegroundColor Gray
+Write-Host "  - Invoke-AzureSecurityAudit -AI       # Run full audit with AI analysis" -ForegroundColor Gray
+Write-Host "  - Invoke-AzureArchitectAgent          # Run AI analysis on governance data" -ForegroundColor Gray
 Write-Host "  - Test-SecurityReport                 # Run security report (can take -SubscriptionIds/-Categories)" -ForegroundColor Gray
 Write-Host "  - Test-ChangeTracking                 # Generate Change Tracking report" -ForegroundColor Gray
 Write-Host "  - Test-NetworkInventory               # Generate Network Inventory report" -ForegroundColor Gray

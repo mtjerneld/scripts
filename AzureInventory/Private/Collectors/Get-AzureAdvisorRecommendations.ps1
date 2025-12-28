@@ -30,7 +30,16 @@ function Export-AdvisorReport {
         [Parameter(Mandatory = $true)]
         [string]$OutputPath,
         
-        [string]$TenantId = "Unknown"
+        [string]$TenantId = "Unknown",
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$AI,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AITopN = 15,
+        
+        [Parameter(Mandatory = $false)]
+        [double]$AIMinSavings = 100
     )
     
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -550,8 +559,34 @@ $(Get-ReportNavigation -ActivePage "Advisor")
     $advisorCount = $totalRecs
     $advisorHighCount = @($groupedRecs | Where-Object { $_.Impact -eq 'High' }).Count
     
+    # Generate AI insights if requested
+    $aiInsights = $null
+    if ($AI) {
+        Write-Verbose "Generating AI insights for cost analysis..."
+        try {
+            # Ensure ConvertTo-CostAIInsights is available
+            if (-not (Get-Command -Name ConvertTo-CostAIInsights -ErrorAction SilentlyContinue)) {
+                $moduleRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+                $helperPath = Join-Path $moduleRoot "Private\Helpers\ConvertTo-CostAIInsights.ps1"
+                if (Test-Path $helperPath) {
+                    . $helperPath
+                }
+            }
+            
+            if (Get-Command -Name ConvertTo-CostAIInsights -ErrorAction SilentlyContinue) {
+                $aiInsights = ConvertTo-CostAIInsights -AdvisorRecommendations $AdvisorRecommendations -TopN $AITopN -MinSavings $AIMinSavings
+                Write-Verbose "AI insights generated: $($aiInsights.summary.recommendation_count) recommendations"
+            } else {
+                Write-Warning "ConvertTo-CostAIInsights function not available. AI insights not generated."
+            }
+        }
+        catch {
+            Write-Warning "Failed to generate AI insights: $_"
+        }
+    }
+    
     # Return both path and calculated savings data for reuse in Dashboard
-    return @{
+    $result = @{
         OutputPath = $OutputPath
         AdvisorCount = $advisorCount
         AdvisorHighCount = $advisorHighCount
@@ -562,5 +597,12 @@ $(Get-ReportNavigation -ActivePage "Advisor")
         OtherCostTotal = $otherCostTotal
         RecommendedStrategy = $recommendedStrategy
     }
+    
+    # Add AI insights if generated
+    if ($aiInsights) {
+        $result.AIInsights = $aiInsights
+    }
+    
+    return $result
 }
 

@@ -1,0 +1,79 @@
+Analyze this month's Azure governance data across our MSP customer portfolio and provide comprehensive strategic recommendations.
+
+ANALYSIS REQUIREMENTS:
+
+1. EXECUTIVE SUMMARY
+   - Top 3-5 most critical issues requiring immediate attention
+   - Overall portfolio health assessment (improving/stable/declining)
+   - Any emerging trends or patterns worth highlighting
+
+2. STRATEGIC PRIORITIES (Rank Top 5)
+   Evaluate and rank by: (Risk Level × Impact) / Implementation Effort
+   For each priority:
+   - Specific customer and issue description
+   - Business impact analysis (financial, compliance, security, availability)
+   - Recommended action plan with timeline
+   - Customer conversation strategy
+   - Success criteria
+
+3. COST OPTIMIZATION ROADMAP
+   Quick Wins (Implement This Week):
+   - List top opportunities under $5K annual savings that need minimal coordination
+   - Highlight any "no-brainer" optimizations
+   
+   Medium-Term Initiatives (This Month):
+   - Opportunities $5K-$25K that require customer approval
+   - Reserved instance/capacity recommendations with ROI analysis
+   
+   Strategic Projects (This Quarter):
+   - Major architectural changes or consolidations >$25K savings
+   - Long-term optimization strategies
+
+4. SECURITY & COMPLIANCE ACTIONS
+   Immediate Escalations (This Week):
+   - Any Critical severity findings that represent imminent risk
+   - Customer-specific security incidents or policy violations
+   
+   High Priority Remediation (This Month):
+   - High severity findings with broad impact
+   - Compliance gaps affecting multiple customers
+   
+   Proactive Security Improvements (This Quarter):
+   - Security posture enhancements
+   - Compliance framework alignment
+   - Security awareness recommendations
+
+5. INFRASTRUCTURE MODERNIZATION
+   Urgent (Next 30 Days):
+   - Resources retiring within 30 days
+   - Critical workloads without backup
+   - Immediate availability risks
+   
+   Important (Next 90 Days):
+   - Resources retiring within 90 days
+   - RBAC hygiene issues
+   - Technical debt priorities
+
+6. CROSS-CUTTING INSIGHTS
+   - Identify resources with multiple compounding issues
+   - Portfolio-wide patterns (e.g., "50% of customers have storage security issues")
+   - Proactive recommendations based on trends
+   - Opportunities for standardization or automation
+
+IMPORTANT GUIDELINES:
+- Always use specific customer names and resource identifiers
+- Provide dollar amounts for cost recommendations
+- Include confidence levels for estimates (High/Medium/Low)
+- Acknowledge when data is incomplete or uncertain
+- Suggest follow-up analysis where needed
+- Balance technical detail with business context
+
+---
+
+GOVERNANCE DATA:
+{{GOVERNANCE_DATA_JSON}}
+
+---
+
+Provide your comprehensive analysis following the structure above. Be specific, quantitative, and actionable.
+
