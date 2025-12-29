@@ -59,6 +59,7 @@ function Get-AzureRBACInventory {
         <#
         .SYNOPSIS
             Resolves principal details with caching to minimize Graph API calls.
+            Uses Microsoft Graph REST API to avoid requiring Graph scope in Azure PowerShell connection.
         #>
         param(
             [string]$ObjectId,
@@ -81,72 +82,78 @@ function Get-AzureRBACInventory {
             AppId = $null
         }
         
+        # Use cached Graph token (set at collector level)
+        $graphToken = $script:graphToken
+        
         try {
             switch ($ObjectType) {
                 'User' {
-                    $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue
-                    if ($user) {
-                        $info.DisplayName = $user.DisplayName
-                        $info.UserPrincipalName = $user.UserPrincipalName
-                        $info.IsExternal = $user.UserPrincipalName -match '#EXT#'
-                    }
-                    else {
-                        # Resolution failed - use KnownDisplayName if available, otherwise use ObjectId
-                        if ($KnownDisplayName) {
-                            $info.DisplayName = $KnownDisplayName
+                    # Try Graph REST API first if we have a token
+                    if ($graphToken) {
+                        try {
+                            $headers = @{
+                                'Authorization' = "Bearer $graphToken"
+                                'Content-Type' = 'application/json'
+                            }
+                            $graphUri = "https://graph.microsoft.com/v1.0/users/$ObjectId"
+                            $userResponse = Invoke-RestMethod -Method GET -Uri $graphUri -Headers $headers -ErrorAction Stop
+                            if ($userResponse) {
+                                $info.DisplayName = $userResponse.displayName
+                                $info.UserPrincipalName = $userResponse.userPrincipalName
+                                $info.IsExternal = $userResponse.userPrincipalName -match '#EXT#' -or $userResponse.userType -eq 'Guest'
+                            }
                         }
-                        else {
-                            $info.DisplayName = $ObjectId
+                        catch {
+                            Write-Verbose "Graph API call failed for user $ObjectId : $_"
+                            # Fall through to try Get-AzADUser
                         }
-                        $info.IsOrphaned = $false
                     }
-                }
-                'Group' {
-                    $group = Get-AzADGroup -ObjectId $ObjectId -ErrorAction SilentlyContinue
-                    if ($group) {
-                        $info.DisplayName = $group.DisplayName
-                    }
-                    else {
-                        if ($KnownDisplayName) {
-                            $info.DisplayName = $KnownDisplayName
-                        }
-                        else {
-                            $info.DisplayName = $ObjectId
-                        }
-                        $info.IsOrphaned = $false
-                    }
-                }
-                'ServicePrincipal' {
-                    $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue
-                    if ($sp) {
-                        $info.DisplayName = $sp.DisplayName
-                        $info.AppId = $sp.AppId
-                        $info.ObjectType = if ($sp.ServicePrincipalType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
-                    }
-                    else {
-                        if ($KnownDisplayName) {
-                            $info.DisplayName = $KnownDisplayName
-                        }
-                        else {
-                            $info.DisplayName = $ObjectId
-                        }
-                        $info.IsOrphaned = $false
-                    }
-                }
-                default {
-                    # Unknown type - try to resolve as ServicePrincipal first, then User
-                    $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue
-                    if ($sp) {
-                        $info.DisplayName = $sp.DisplayName
-                        $info.AppId = $sp.AppId
-                        $info.ObjectType = if ($sp.ServicePrincipalType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
-                    }
-                    else {
+                    
+                    # Fallback to Get-AzADUser if Graph API didn't work or no token
+                    if (-not $info.DisplayName -or $info.DisplayName -eq $ObjectId) {
                         $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue
                         if ($user) {
                             $info.DisplayName = $user.DisplayName
                             $info.UserPrincipalName = $user.UserPrincipalName
-                            $info.ObjectType = 'User'
+                            $info.IsExternal = $user.UserPrincipalName -match '#EXT#'
+                        }
+                        else {
+                            # Resolution failed - use KnownDisplayName if available, otherwise use ObjectId
+                            if ($KnownDisplayName) {
+                                $info.DisplayName = $KnownDisplayName
+                            }
+                            else {
+                                $info.DisplayName = $ObjectId
+                            }
+                            $info.IsOrphaned = $false
+                        }
+                    }
+                }
+                'Group' {
+                    # Try Graph REST API first if we have a token
+                    if ($graphToken) {
+                        try {
+                            $headers = @{
+                                'Authorization' = "Bearer $graphToken"
+                                'Content-Type' = 'application/json'
+                            }
+                            $graphUri = "https://graph.microsoft.com/v1.0/groups/$ObjectId"
+                            $groupResponse = Invoke-RestMethod -Method GET -Uri $graphUri -Headers $headers -ErrorAction Stop
+                            if ($groupResponse) {
+                                $info.DisplayName = $groupResponse.displayName
+                            }
+                        }
+                        catch {
+                            Write-Verbose "Graph API call failed for group $ObjectId : $_"
+                            # Fall through to try Get-AzADGroup
+                        }
+                    }
+                    
+                    # Fallback to Get-AzADGroup if Graph API didn't work or no token
+                    if (-not $info.DisplayName -or $info.DisplayName -eq $ObjectId) {
+                        $group = Get-AzADGroup -ObjectId $ObjectId -ErrorAction SilentlyContinue
+                        if ($group) {
+                            $info.DisplayName = $group.DisplayName
                         }
                         else {
                             if ($KnownDisplayName) {
@@ -156,6 +163,112 @@ function Get-AzureRBACInventory {
                                 $info.DisplayName = $ObjectId
                             }
                             $info.IsOrphaned = $false
+                        }
+                    }
+                }
+                'ServicePrincipal' {
+                    # Try Graph REST API first if we have a token
+                    if ($graphToken) {
+                        try {
+                            $headers = @{
+                                'Authorization' = "Bearer $graphToken"
+                                'Content-Type' = 'application/json'
+                            }
+                            $graphUri = "https://graph.microsoft.com/v1.0/servicePrincipals/$ObjectId"
+                            $spResponse = Invoke-RestMethod -Method GET -Uri $graphUri -Headers $headers -ErrorAction Stop
+                            if ($spResponse) {
+                                $info.DisplayName = $spResponse.displayName
+                                $info.AppId = $spResponse.appId
+                                # Check if it's a managed identity
+                                if ($spResponse.servicePrincipalType -eq 'ManagedIdentity') {
+                                    $info.ObjectType = 'ManagedIdentity'
+                                } else {
+                                    $info.ObjectType = 'ServicePrincipal'
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Verbose "Graph API call failed for service principal $ObjectId : $_"
+                            # Fall through to try Get-AzADServicePrincipal
+                        }
+                    }
+                    
+                    # Fallback to Get-AzADServicePrincipal if Graph API didn't work or no token
+                    if (-not $info.DisplayName -or $info.DisplayName -eq $ObjectId) {
+                        $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue
+                        if ($sp) {
+                            $info.DisplayName = $sp.DisplayName
+                            $info.AppId = $sp.AppId
+                            $info.ObjectType = if ($sp.ServicePrincipalType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
+                        }
+                        else {
+                            if ($KnownDisplayName) {
+                                $info.DisplayName = $KnownDisplayName
+                            }
+                            else {
+                                $info.DisplayName = $ObjectId
+                            }
+                            $info.IsOrphaned = $false
+                        }
+                    }
+                }
+                default {
+                    # Unknown type - try to resolve as ServicePrincipal first, then User
+                    # Try Graph REST API first if we have a token
+                    if ($graphToken) {
+                        try {
+                            $headers = @{
+                                'Authorization' = "Bearer $graphToken"
+                                'Content-Type' = 'application/json'
+                            }
+                            # Try as ServicePrincipal first
+                            $graphUri = "https://graph.microsoft.com/v1.0/servicePrincipals/$ObjectId"
+                            $spResponse = Invoke-RestMethod -Method GET -Uri $graphUri -Headers $headers -ErrorAction SilentlyContinue
+                            if ($spResponse) {
+                                $info.DisplayName = $spResponse.displayName
+                                $info.AppId = $spResponse.appId
+                                $info.ObjectType = if ($spResponse.servicePrincipalType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
+                            }
+                            else {
+                                # Try as User
+                                $graphUri = "https://graph.microsoft.com/v1.0/users/$ObjectId"
+                                $userResponse = Invoke-RestMethod -Method GET -Uri $graphUri -Headers $headers -ErrorAction SilentlyContinue
+                                if ($userResponse) {
+                                    $info.DisplayName = $userResponse.displayName
+                                    $info.UserPrincipalName = $userResponse.userPrincipalName
+                                    $info.ObjectType = 'User'
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Verbose "Graph API call failed for unknown type $ObjectId : $_"
+                        }
+                    }
+                    
+                    # Fallback to Get-AzAD cmdlets if Graph API didn't work or no token
+                    if (-not $info.DisplayName -or $info.DisplayName -eq $ObjectId) {
+                        $sp = Get-AzADServicePrincipal -ObjectId $ObjectId -ErrorAction SilentlyContinue
+                        if ($sp) {
+                            $info.DisplayName = $sp.DisplayName
+                            $info.AppId = $sp.AppId
+                            $info.ObjectType = if ($sp.ServicePrincipalType -eq 'ManagedIdentity') { 'ManagedIdentity' } else { 'ServicePrincipal' }
+                        }
+                        else {
+                            $user = Get-AzADUser -ObjectId $ObjectId -ErrorAction SilentlyContinue
+                            if ($user) {
+                                $info.DisplayName = $user.DisplayName
+                                $info.UserPrincipalName = $user.UserPrincipalName
+                                $info.ObjectType = 'User'
+                            }
+                            else {
+                                if ($KnownDisplayName) {
+                                    $info.DisplayName = $KnownDisplayName
+                                }
+                                else {
+                                    $info.DisplayName = $ObjectId
+                                }
+                                $info.IsOrphaned = $false
+                            }
                         }
                     }
                 }
@@ -937,6 +1050,10 @@ resourcecontainers
 
     $currentTenantId = if ($TenantId) { $TenantId } else { $context.Tenant.Id }
     Write-Host "Tenant: $currentTenantId" -ForegroundColor Gray
+    
+    # Initialize Graph token (will be set below)
+    $script:graphToken = $null
+    $script:graphTokenAvailable = $false
 
     # Get subscriptions
     $subscriptions = if ($SubscriptionIds) {
@@ -1027,6 +1144,29 @@ resourcecontainers
     $allAssignments = [System.Collections.Generic.List[object]]::new()
     $allCustomRoles = [System.Collections.Generic.List[object]]::new()
     $principalCache = @{}
+    
+    # Try to get Microsoft Graph access token once for all principal resolutions
+    # This avoids getting a new token for each principal lookup
+    # Note: We don't test the token here - individual lookups will try it and fall back gracefully if it fails
+    Write-Host "Checking Microsoft Graph API access for principal name resolution..." -ForegroundColor Gray
+    try {
+        $tokenResult = Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com" -ErrorAction Stop
+        if ($tokenResult -and $tokenResult.Token) {
+            $script:graphToken = $tokenResult.Token
+            $script:graphTokenAvailable = $true
+            Write-Host "  Graph API token obtained - will attempt principal name resolution" -ForegroundColor Green
+        }
+        else {
+            Write-Host "  Could not obtain Graph API token - will use fallback methods" -ForegroundColor Yellow
+            $script:graphTokenAvailable = $false
+        }
+    }
+    catch {
+        # Token not available - principal lookups will use Get-AzAD* cmdlets as fallback
+        Write-Host "  Graph API token not available - will use fallback methods for principal names" -ForegroundColor Yellow
+        $script:graphToken = $null
+        $script:graphTokenAvailable = $false
+    }
 
     # Track statistics
     $stats = @{
@@ -1063,8 +1203,146 @@ resourcecontainers
             Set-AzContext -SubscriptionId $sub.Id -TenantId $currentTenantId -ErrorAction Stop | Out-Null
             
             # Get role assignments
-            $assignments = Get-AzRoleAssignment -ErrorAction SilentlyContinue
-            Write-Host "  Found $($assignments.Count) role assignments" -ForegroundColor Gray
+            # Note: Get-AzRoleAssignment tries to resolve principal names via Microsoft Graph API,
+            # which requires -AuthScope MicrosoftGraphEndpointResourceId when connecting.
+            # To avoid this requirement, we'll use REST API directly to get raw role assignments,
+            # then resolve principals separately (which we already do with Get-PrincipalDisplayInfo).
+            $assignments = @()
+            $subScope = "/subscriptions/$($sub.Id)"
+            
+            # Method 1: Try using REST API to avoid Graph API dependency
+            # This method doesn't require Microsoft Graph API access
+            try {
+                # Use REST API to get role assignments - this returns all assignments at subscription scope and below
+                # The $filter=atScope() parameter returns assignments at the specified scope and all descendant scopes
+                # Note: $filter uses OData syntax, and we need to URL-encode it properly
+                $filterValue = "atScope()"
+                $encodedFilter = [System.Uri]::EscapeDataString($filterValue)
+                $uri = "https://management.azure.com$subScope/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&`$filter=$encodedFilter"
+                $response = Invoke-AzRestMethod -Method GET -Uri $uri -ErrorAction Stop
+                
+                if ($response.StatusCode -eq 200 -and $response.Content) {
+                    $roleAssignmentsData = $response.Content | ConvertFrom-Json
+                    
+                    if ($roleAssignmentsData.value) {
+                        # Convert REST API response to objects similar to Get-AzRoleAssignment output
+                        foreach ($ra in $roleAssignmentsData.value) {
+                            # Get role definition details
+                            $roleDefId = $ra.properties.roleDefinitionId -replace '.*/', ''
+                            $roleDefScope = $ra.properties.scope
+                            
+                            try {
+                                $roleDef = Get-AzRoleDefinition -Id $roleDefId -Scope $roleDefScope -ErrorAction SilentlyContinue
+                                if (-not $roleDef) {
+                                    # Fallback: try without scope
+                                    $roleDef = Get-AzRoleDefinition -Id $roleDefId -ErrorAction SilentlyContinue
+                                }
+                            }
+                            catch {
+                                Write-Verbose "  Could not get role definition for $roleDefId : $_"
+                            }
+                            
+                            # Create assignment object similar to Get-AzRoleAssignment output
+                            $assignmentObj = [PSCustomObject]@{
+                                RoleAssignmentId = $ra.id
+                                RoleDefinitionId = $ra.properties.roleDefinitionId
+                                RoleDefinitionName = if ($roleDef) { $roleDef.Name } else { "Unknown" }
+                                Scope = $ra.properties.scope
+                                ObjectId = $ra.properties.principalId
+                                ObjectType = $ra.properties.principalType
+                                DisplayName = $null  # Will be resolved later
+                                SignInName = $null   # Will be resolved later
+                                CanDelegate = $ra.properties.canDelegate
+                                Description = $ra.properties.description
+                                Condition = $ra.properties.condition
+                                ConditionVersion = $ra.properties.conditionVersion
+                                CreatedOn = if ($ra.properties.createdOn) { [DateTime]::Parse($ra.properties.createdOn) } else { $null }
+                                UpdatedOn = if ($ra.properties.updatedOn) { [DateTime]::Parse($ra.properties.updatedOn) } else { $null }
+                            }
+                            
+                            $assignments += $assignmentObj
+                        }
+                        
+                        # Handle pagination if needed
+                        $nextLink = $roleAssignmentsData.nextLink
+                        while ($nextLink) {
+                            try {
+                                $nextResponse = Invoke-AzRestMethod -Method GET -Uri $nextLink -ErrorAction Stop
+                                if ($nextResponse.StatusCode -eq 200 -and $nextResponse.Content) {
+                                    $nextData = $nextResponse.Content | ConvertFrom-Json
+                                    if ($nextData.value) {
+                                        foreach ($ra in $nextData.value) {
+                                            $roleDefId = $ra.properties.roleDefinitionId -replace '.*/', ''
+                                            $roleDefScope = $ra.properties.scope
+                                            $roleDef = Get-AzRoleDefinition -Id $roleDefId -Scope $roleDefScope -ErrorAction SilentlyContinue
+                                            if (-not $roleDef) {
+                                                $roleDef = Get-AzRoleDefinition -Id $roleDefId -ErrorAction SilentlyContinue
+                                            }
+                                            
+                                            $assignmentObj = [PSCustomObject]@{
+                                                RoleAssignmentId = $ra.id
+                                                RoleDefinitionId = $ra.properties.roleDefinitionId
+                                                RoleDefinitionName = if ($roleDef) { $roleDef.Name } else { "Unknown" }
+                                                Scope = $ra.properties.scope
+                                                ObjectId = $ra.properties.principalId
+                                                ObjectType = $ra.properties.principalType
+                                                DisplayName = $null
+                                                SignInName = $null
+                                                CanDelegate = $ra.properties.canDelegate
+                                                Description = $ra.properties.description
+                                                Condition = $ra.properties.condition
+                                                ConditionVersion = $ra.properties.conditionVersion
+                                                CreatedOn = if ($ra.properties.createdOn) { [DateTime]::Parse($ra.properties.createdOn) } else { $null }
+                                                UpdatedOn = if ($ra.properties.updatedOn) { [DateTime]::Parse($ra.properties.updatedOn) } else { $null }
+                                            }
+                                            $assignments += $assignmentObj
+                                        }
+                                    }
+                                    $nextLink = $nextData.nextLink
+                                } else {
+                                    $nextLink = $null
+                                }
+                            }
+                            catch {
+                                Write-Verbose "  Error fetching next page: $_"
+                                $nextLink = $null
+                            }
+                        }
+                        
+                        Write-Host "  Found $($assignments.Count) role assignments (via REST API)" -ForegroundColor Gray
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "  REST API method failed, trying Get-AzRoleAssignment: $_"
+                
+                # Method 2: Fallback to Get-AzRoleAssignment (requires Graph API scope)
+                try {
+                    $assignments = Get-AzRoleAssignment -Scope $subScope -ErrorAction Stop
+                    if ($null -eq $assignments) {
+                        $assignments = @()
+                    }
+                    Write-Host "  Found $($assignments.Count) role assignments (via Get-AzRoleAssignment)" -ForegroundColor Gray
+                }
+                catch {
+                    $errorMsg = $_.Exception.Message
+                    Write-Warning "  Failed to get role assignments: $errorMsg"
+                    
+                    # Check for Graph API authentication error
+                    if ($errorMsg -match "MicrosoftGraphEndpointResourceId|Authentication failed against resource") {
+                        Write-Warning "  Graph API authentication required. To fix this, reconnect with:"
+                        Write-Warning "    Connect-AzAccount -AuthScope MicrosoftGraphEndpointResourceId"
+                        Write-Warning "  Or use REST API method (which doesn't require Graph API)."
+                    }
+                    # Check if it's a permission error
+                    elseif ($errorMsg -match "Authorization|Permission|Access|Forbidden|Unauthorized|does not have authorization") {
+                        Write-Warning "  Permission issue detected. Current user may lack 'Reader' or 'User Access Administrator' role."
+                        Write-Warning "  Required permissions: Microsoft.Authorization/roleAssignments/read"
+                    }
+                    
+                    $assignments = @()
+                }
+            }
             
             foreach ($assignment in $assignments) {
                 # Resolve principal
@@ -1292,6 +1570,115 @@ resourcecontainers
         }
     } | Sort-Object PrincipalDisplayName, RiskOrder, ScopeLevel
 
+    # Combine duplicate inherited assignments (Tenant Root and Management Groups)
+    # This handles cases where multiple assignments exist at the same scope but should be shown as one row
+    Write-Host "`nCombining duplicate inherited assignments..." -ForegroundColor Cyan
+    $assignmentRowsList = [System.Collections.Generic.List[object]]::new()
+    
+    # Separate inherited scopes (Root and Management Groups) from direct assignments
+    $inheritedRows = $assignmentRows | Where-Object { 
+        ($_.ScopeType -eq 'Tenant Root' -and $_.ScopeRaw -eq '/') -or 
+        $_.ScopeType -eq 'Management Group'
+    }
+    $otherRows = $assignmentRows | Where-Object { 
+        -not (($_.ScopeType -eq 'Tenant Root' -and $_.ScopeRaw -eq '/') -or $_.ScopeType -eq 'Management Group')
+    }
+    
+    # Group inherited rows by PrincipalId + Role + ScopeRaw (to identify same scope)
+    $inheritedGroups = $inheritedRows | Group-Object -Property @{Expression={"{0}|{1}|{2}" -f $_.PrincipalId, $_.Role, $_.ScopeRaw}}
+    
+    foreach ($group in $inheritedGroups) {
+        $first = $group.Group[0]
+        
+        if ($group.Count -gt 1) {
+            # Multiple assignments at same inherited scope with same principal+role - combine them
+            
+            # Collect all unique subscription names from all rows in the group
+            $allSubscriptions = @()
+            foreach ($row in $group.Group) {
+                if ($row.AffectedSubscriptions) {
+                    # Extract subscription names, handling both "All X subscriptions" format and actual names
+                    foreach ($sub in $row.AffectedSubscriptions) {
+                        if ($sub -notmatch '^All \d+ subscriptions$') {
+                            $allSubscriptions += $sub
+                        }
+                    }
+                }
+            }
+            
+            # Get unique subscription names and sort
+            $uniqueSubs = $allSubscriptions | Select-Object -Unique | Sort-Object
+            
+            # Determine how to display subscriptions
+            if ($first.ScopeType -eq 'Tenant Root') {
+                # For Tenant Root, always show "All X subscriptions"
+                $totalSubCount = $subscriptions.Count
+                $affectedSubs = @("All $totalSubCount subscriptions")
+                $affectedCount = $totalSubCount
+            }
+            else {
+                # For Management Groups, show all unique subscription names or "All X" if it matches total
+                if ($uniqueSubs.Count -eq $subscriptions.Count) {
+                    $affectedSubs = @("All $($uniqueSubs.Count) subscriptions")
+                    $affectedCount = $uniqueSubs.Count
+                }
+                else {
+                    $affectedSubs = $uniqueSubs
+                    $affectedCount = $uniqueSubs.Count
+                }
+            }
+            
+            # Create combined row
+            $combinedRow = [PSCustomObject]@{
+                # Principal (same for all)
+                PrincipalId = $first.PrincipalId
+                PrincipalDisplayName = $first.PrincipalDisplayName
+                PrincipalType = $first.PrincipalType
+                PrincipalUPN = $first.PrincipalUPN
+                AppId = $first.AppId
+                IsOrphaned = $first.IsOrphaned
+                IsExternal = $first.IsExternal
+                
+                # Role (same for all)
+                Role = $first.Role
+                RiskTier = $first.RiskTier
+                RiskOrder = $first.RiskOrder
+                RiskColor = $first.RiskColor
+                
+                # Scope (same for all)
+                ScopeType = $first.ScopeType
+                ScopeLevel = $first.ScopeLevel
+                ScopeName = $first.ScopeName
+                ScopeRaw = $first.ScopeRaw
+                
+                # Subscription context - combined
+                SubscriptionName = $null
+                AffectedSubscriptions = $affectedSubs
+                AffectedCount = $affectedCount
+                
+                # Flags - take from first (should be same for all)
+                IsRedundant = $false  # Will be calculated below
+                RedundantReason = $null
+                IsPrivileged = $first.IsPrivileged
+                AssignmentId = $first.AssignmentId  # Use first assignment ID
+            }
+            
+            $assignmentRowsList.Add($combinedRow)
+        }
+        else {
+            # Single assignment at inherited scope - keep as-is (already has correct subscription info)
+            $assignmentRowsList.Add($first)
+        }
+    }
+    
+    # Add all non-inherited rows as-is
+    foreach ($row in $otherRows) {
+        $assignmentRowsList.Add($row)
+    }
+    
+    $assignmentRows = $assignmentRowsList.ToArray()
+    Write-Host "  Combined inherited scope duplicates - assignment rows: $($assignmentRows.Count)" -ForegroundColor Gray
+
     # Mark redundant assignments using hierarchy-based detection
     Write-Host "`nDetecting redundant assignments..." -ForegroundColor Cyan
     $principalGroups = $assignmentRows | Group-Object PrincipalId
@@ -1317,7 +1704,17 @@ resourcecontainers
         $allSubs = @()
         foreach ($assignment in $assignments) {
             if ($assignment.AffectedSubscriptions) {
-                $allSubs += $assignment.AffectedSubscriptions
+                foreach ($sub in $assignment.AffectedSubscriptions) {
+                    # Handle summary strings like "All X subscriptions" - add all actual subscription names
+                    if ($sub -match '^All (\d+) subscriptions$') {
+                        # "All X subscriptions" means all subscriptions in the tenant
+                        $allSubs += $subscriptions | Select-Object -ExpandProperty Name
+                    }
+                    else {
+                        # Actual subscription name
+                        $allSubs += $sub
+                    }
+                }
             }
         }
         $uniqueSubs = $allSubs | Select-Object -Unique | Sort-Object

@@ -124,7 +124,7 @@ function Export-CostTrackingReport {
     
     # Initially hide resources beyond top 20 (JavaScript will show/hide based on filters)
     # We generate HTML for all resources so JavaScript can recalculate top 20 based on subscription filter
-    $dailyTrend = $CostTrackingData.DailyTrend
+    $dailyTrend = if ($CostTrackingData.DailyTrend) { $CostTrackingData.DailyTrend } else { @() }
     
     # Calculate trend (compare first half vs second half of period)
     # Remove highest and lowest day from each half to reduce outlier impact
@@ -360,7 +360,12 @@ function Export-CostTrackingReport {
     }
     
     # Convert raw daily data to JSON for JavaScript
-    $rawDailyDataJson = $rawDailyData | ConvertTo-Json -Depth 6 -Compress
+    # Ensure we always have a valid JSON array, even if empty
+    if ($rawDailyData -and $rawDailyData.Count -gt 0) {
+        $rawDailyDataJson = $rawDailyData | ConvertTo-Json -Depth 6 -Compress
+    } else {
+        $rawDailyDataJson = "[]"
+    }
     
     # Color palette for categories
     $colors = @(

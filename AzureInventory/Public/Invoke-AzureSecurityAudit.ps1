@@ -802,8 +802,9 @@ function Invoke-AzureSecurityAudit {
                     Write-Host "  Generating cost tracking insights..." -ForegroundColor Gray
                     if (Get-Command -Name ConvertTo-CostTrackingAIInsights -ErrorAction SilentlyContinue) {
                         $costTrackingInsights = ConvertTo-CostTrackingAIInsights -CostTrackingData $costTrackingData -TopN $AICostTrackingTopN
-                        $costValue = $costTrackingInsights.summary.total_cost_usd
-                        Write-Host "    Cost tracking insights: `$$([math]::Round($costValue, 2)) USD total spending" -ForegroundColor Green
+                        $costValue = $costTrackingInsights.summary.total_cost
+                        $currency = $costTrackingInsights.summary.currency
+                        Write-Host "    Cost tracking insights: $currency $([math]::Round($costValue, 2)) total spending" -ForegroundColor Green
                     }
                 }
                 

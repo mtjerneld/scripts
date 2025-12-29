@@ -34,8 +34,7 @@ function ConvertTo-CostTrackingAIInsights {
             domain = "cost_tracking"
             generated_at = (Get-Date).ToString("o")
             summary = @{
-                total_cost_usd = 0
-                total_cost_local = 0
+                total_cost = 0
                 currency = ""
                 period_days = 0
                 subscription_count = 0
@@ -51,8 +50,8 @@ function ConvertTo-CostTrackingAIInsights {
     }
     
     # Extract data
-    $totalCostUSD = if ($CostTrackingData.TotalCostUSD) { $CostTrackingData.TotalCostUSD } else { 0 }
     $totalCostLocal = if ($CostTrackingData.TotalCostLocal) { $CostTrackingData.TotalCostLocal } else { 0 }
+    # Currency is automatically determined from cost data collected by scanners
     $currency = if ($CostTrackingData.Currency) { $CostTrackingData.Currency } else { "USD" }
     $periodDays = if ($CostTrackingData.DaysToInclude) { $CostTrackingData.DaysToInclude } else { 30 }
     
@@ -85,8 +84,7 @@ function ConvertTo-CostTrackingAIInsights {
                     resource_type = $_.ResourceType
                     resource_group = $_.ResourceGroup
                     subscription = $_.SubscriptionName
-                    cost_usd = [math]::Round($_.CostUSD, 2)
-                    cost_local = [math]::Round($_.CostLocal, 2)
+                    cost = [math]::Round($_.CostLocal, 2)
                     meter_category = $_.MeterCategory
                 }
             })
@@ -99,7 +97,6 @@ function ConvertTo-CostTrackingAIInsights {
         $topSpenders = @($resourceGroups | 
             ForEach-Object {
                 $resItems = $_.Group
-                $resCostUSD = ($resItems | Measure-Object -Property CostUSD -Sum).Sum
                 $resCostLocal = ($resItems | Measure-Object -Property CostLocal -Sum).Sum
                 $firstItem = $resItems[0]
                 
@@ -108,12 +105,11 @@ function ConvertTo-CostTrackingAIInsights {
                     ResourceType = $firstItem.ResourceType
                     ResourceGroup = $firstItem.ResourceGroup
                     SubscriptionName = $firstItem.SubscriptionName
-                    CostUSD = $resCostUSD
                     CostLocal = $resCostLocal
                     MeterCategory = ($resItems | Group-Object MeterCategory | Sort-Object Count -Descending | Select-Object -First 1).Name
                 }
             } | 
-            Sort-Object CostUSD -Descending | 
+            Sort-Object CostLocal -Descending | 
             Select-Object -First $TopN | 
             ForEach-Object {
                 @{
@@ -121,8 +117,7 @@ function ConvertTo-CostTrackingAIInsights {
                     resource_type = $_.ResourceType
                     resource_group = $_.ResourceGroup
                     subscription = $_.SubscriptionName
-                    cost_usd = [math]::Round($_.CostUSD, 2)
-                    cost_local = [math]::Round($_.CostLocal, 2)
+                    cost = [math]::Round($_.CostLocal, 2)
                     meter_category = $_.MeterCategory
                 }
             })
@@ -159,16 +154,15 @@ function ConvertTo-CostTrackingAIInsights {
     $byCategory = @()
     if ($byMeterCategory.Count -gt 0) {
         $byCategory = @($byMeterCategory.Values | 
-            Sort-Object { $_.CostUSD } -Descending | 
+            Sort-Object { $_.CostLocal } -Descending | 
             Select-Object -First 10 | 
             ForEach-Object {
                 $categoryName = if ($_.MeterCategory) { $_.MeterCategory } else { "Unknown" }
                 @{
                     category = $categoryName
-                    cost_usd = [math]::Round($_.CostUSD, 2)
-                    cost_local = [math]::Round($_.CostLocal, 2)
-                    percentage = if ($totalCostUSD -gt 0) {
-                        [math]::Round(($_.CostUSD / $totalCostUSD) * 100, 1)
+                    cost = [math]::Round($_.CostLocal, 2)
+                    percentage = if ($totalCostLocal -gt 0) {
+                        [math]::Round(($_.CostLocal / $totalCostLocal) * 100, 1)
                     } else {
                         0
                     }
@@ -197,10 +191,9 @@ function ConvertTo-CostTrackingAIInsights {
                     } else {
                         $day.DateString
                     }
-                    cost_local = [math]::Round($day.TotalCostLocal, 2)
-                    cost_usd = [math]::Round($day.TotalCostUSD, 2)
+                    cost = [math]::Round($day.TotalCostLocal, 2)
                     deviation = [math]::Round((($day.TotalCostLocal - $mean) / $mean) * 100, 1)
-                    description = "Unusual cost spike: $($day.TotalCostLocal) (mean: $([math]::Round($mean, 2)))"
+                    description = "Unusual cost spike: $($day.TotalCostLocal) $currency (mean: $([math]::Round($mean, 2)) $currency)"
                 }
             }
         }
@@ -210,15 +203,14 @@ function ConvertTo-CostTrackingAIInsights {
     $bySubscriptionList = @()
     if ($bySubscription.Count -gt 0) {
         $bySubscriptionList = @($bySubscription.Values | 
-            Sort-Object { $_.CostUSD } -Descending | 
+            Sort-Object { $_.CostLocal } -Descending | 
             Select-Object -First 10 | 
             ForEach-Object {
                 @{
                     subscription = $_.Name
-                    cost_usd = [math]::Round($_.CostUSD, 2)
-                    cost_local = [math]::Round($_.CostLocal, 2)
-                    percentage = if ($totalCostUSD -gt 0) {
-                        [math]::Round(($_.CostUSD / $totalCostUSD) * 100, 1)
+                    cost = [math]::Round($_.CostLocal, 2)
+                    percentage = if ($totalCostLocal -gt 0) {
+                        [math]::Round(($_.CostLocal / $totalCostLocal) * 100, 1)
                     } else {
                         0
                     }
@@ -231,8 +223,7 @@ function ConvertTo-CostTrackingAIInsights {
         generated_at = (Get-Date).ToString("o")
         
         summary = @{
-            total_cost_usd = [math]::Round($totalCostUSD, 2)
-            total_cost_local = [math]::Round($totalCostLocal, 2)
+            total_cost = [math]::Round($totalCostLocal, 2)
             currency = $currency
             period_days = $periodDays
             subscription_count = $subscriptionCount
@@ -251,7 +242,7 @@ function ConvertTo-CostTrackingAIInsights {
         by_subscription = $bySubscriptionList
     }
     
-    Write-Verbose "Cost tracking insights generated: $$totalCostUSD USD total, $resourceCount resources, $subscriptionCount subscriptions"
+    Write-Verbose "Cost tracking insights generated: $currency $([math]::Round($totalCostLocal, 2)) total, $resourceCount resources, $subscriptionCount subscriptions"
     
     return $insights
 }
