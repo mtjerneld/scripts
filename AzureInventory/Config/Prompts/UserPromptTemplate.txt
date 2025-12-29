@@ -75,5 +75,5 @@ GOVERNANCE DATA:
 
 ---
 
-Provide your comprehensive analysis following the structure above. Be specific, quantitative, and actionable.
+Provide your comprehensive analysis in Markdown format following the structure above. Use proper Markdown headings (## for sections, ### for subsections), bullet points, tables where appropriate, and emphasize important information with bold text. Be specific, quantitative, and actionable.
 

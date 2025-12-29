@@ -44,7 +44,7 @@ function Invoke-OpenAIAnalysis {
         [string]$ApiKey = $env:OPENAI_API_KEY,
         
         [Parameter(Mandatory = $false)]
-        [string]$Model = "gpt-4o-mini",
+        [string]$Model,
         
         [Parameter(Mandatory = $false)]
         [int]$MaxOutputTokens = 8000,
@@ -53,7 +53,11 @@ function Invoke-OpenAIAnalysis {
         [int]$TimeoutSeconds = 60,
         
         [Parameter(Mandatory = $false)]
-        [double]$MaxCostPerRun = 0.10
+        [double]$MaxCostPerRun = 0.10,
+        
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('json', 'markdown')]
+        [string]$OutputFormat = 'json'
     )
     
     # Validate API key
@@ -83,35 +87,59 @@ function Invoke-OpenAIAnalysis {
         return $BodyObj
     }
     
-    # Estimate input tokens
-    $inputTokens = Get-EstimatedTokens -Text ($SystemPrompt + $UserPrompt)
-    
-    # Get pricing from environment or use defaults
-    $priceIn = [double]([double]$env:OPENAI_PRICE_INPUT_PER_1K_USD | ForEach-Object { if ($_ -gt 0) { $_ } else { 0.005 } })
-    $priceOut = [double]([double]$env:OPENAI_PRICE_OUTPUT_PER_1K_USD | ForEach-Object { if ($_ -gt 0) { $_ } else { 0.015 } })
-    $maxCost = [double]([double]$env:OPENAI_MAX_COST_USD_PER_RUN | ForEach-Object { if ($_ -gt 0) { $_ } else { $MaxCostPerRun } })
-    
-    # Calculate costs
-    $inputCost = [Math]::Round((($inputTokens/1000.0)*$priceIn), 4)
-    $allowedOutputCost = $maxCost - $inputCost
-    $allowedOutputTokens = if ($allowedOutputCost -gt 0) { 
-        [int][Math]::Floor(($allowedOutputCost / $priceOut) * 1000) 
-    } else { 
-        0 
-    }
-    $effectiveMaxOutput = [int][Math]::Max(0, [int][Math]::Min($MaxOutputTokens, $allowedOutputTokens))
-    $costEstimate = [Math]::Round($inputCost + (($effectiveMaxOutput/1000.0)*$priceOut), 4)
-    
-    Write-Verbose "Cost cap: $maxCost | Input est: $inputCost | Allowed out tokens: $allowedOutputTokens | Using out tokens: $effectiveMaxOutput | Est total: $costEstimate"
-    
-    if ($effectiveMaxOutput -le 0) { 
-        throw ("Estimated cost $inputCost exceeds cap $maxCost.") 
-    }
-    
     # Build request
     $baseUrl = 'https://api.openai.com/v1'
     $url = "$baseUrl/responses"
     $modelToUse = if ($Model) { $Model } elseif ($env:OPENAI_MODEL) { $env:OPENAI_MODEL } else { 'gpt-4o-mini' }
+    
+    # Check if model is a reasoning model (gpt-5 series)
+    $isReasoningModel = $modelToUse -match '^gpt-5'
+    
+    # Get max output tokens from environment variable if set, otherwise use parameter default
+    $maxOutputTokensToUse = if ($env:OPENAI_MAX_OUTPUT_TOKENS) {
+        [int]$env:OPENAI_MAX_OUTPUT_TOKENS
+    } else {
+        $MaxOutputTokens
+    }
+    
+    # Estimate input tokens
+    $inputTokens = Get-EstimatedTokens -Text ($SystemPrompt + $UserPrompt)
+    
+    # Get pricing from environment or use defaults (per 1M tokens, matching OpenAI's pricing format)
+    $priceIn = [double]([double]$env:OPENAI_PRICE_INPUT_PER_1M_USD | ForEach-Object { if ($_ -gt 0) { $_ } else { 5.0 } })
+    $priceOut = [double]([double]$env:OPENAI_PRICE_OUTPUT_PER_1M_USD | ForEach-Object { if ($_ -gt 0) { $_ } else { 15.0 } })
+    $maxCost = [double]([double]$env:OPENAI_MAX_COST_USD_PER_RUN | ForEach-Object { if ($_ -gt 0) { $_ } else { $MaxCostPerRun } })
+    
+    # Calculate costs (convert tokens to millions for pricing)
+    $inputCost = [Math]::Round((($inputTokens/1000000.0)*$priceIn), 4)
+    $allowedOutputCost = $maxCost - $inputCost
+    $allowedOutputTokens = if ($allowedOutputCost -gt 0) { 
+        [int][Math]::Floor(($allowedOutputCost / $priceOut) * 1000000) 
+    } else { 
+        0 
+    }
+    
+    # If OPENAI_MAX_OUTPUT_TOKENS is explicitly set, use it (but warn if cost constraint would limit it)
+    # Otherwise, apply cost constraint
+    if ($env:OPENAI_MAX_OUTPUT_TOKENS) {
+        $effectiveMaxOutput = [int]$maxOutputTokensToUse
+        if ($allowedOutputTokens -lt $maxOutputTokensToUse) {
+            Write-Warning "OPENAI_MAX_OUTPUT_TOKENS=$maxOutputTokensToUse is set, but cost constraint (OPENAI_MAX_COST_USD_PER_RUN=$maxCost) would limit it to $allowedOutputTokens tokens. Consider increasing OPENAI_MAX_COST_USD_PER_RUN if you need more tokens."
+        }
+    } else {
+        $effectiveMaxOutput = [int][Math]::Max(0, [int][Math]::Min($maxOutputTokensToUse, $allowedOutputTokens))
+    }
+    
+    $costEstimate = [Math]::Round($inputCost + (($effectiveMaxOutput/1000000.0)*$priceOut), 4)
+    
+    Write-Verbose "Cost cap: $maxCost | Input est: $inputCost | Allowed out tokens: $allowedOutputTokens | Requested: $maxOutputTokensToUse | Using: $effectiveMaxOutput | Est total: $costEstimate"
+    if ($env:OPENAI_MAX_OUTPUT_TOKENS) {
+        Write-Host "Using OPENAI_MAX_OUTPUT_TOKENS=$maxOutputTokensToUse (cost estimate: `$$costEstimate)" -ForegroundColor Gray
+    }
+    
+    if ($effectiveMaxOutput -le 0) { 
+        throw ("Estimated cost $inputCost exceeds cap $maxCost. Increase OPENAI_MAX_COST_USD_PER_RUN or reduce input size.") 
+    }
     
     Write-Verbose "Building JSON payload..."
     $swBuild = [Diagnostics.Stopwatch]::StartNew()
@@ -151,15 +179,18 @@ function Invoke-OpenAIAnalysis {
         }
     }
     
-    # Check if model is a reasoning model (gpt-5 series)
-    $isReasoningModel = $modelToUse -match '^gpt-5'
     $verbosityLevel = if ($isReasoningModel) { 'low' } else { 'medium' }
     
     # Build request body
     $bodyObj = [ordered]@{
         model = $modelToUse
         max_output_tokens = $effectiveMaxOutput
-        text = [ordered]@{
+        input = $inputBlocks
+    }
+    
+    # Add format constraint only for JSON output
+    if ($OutputFormat -eq 'json') {
+        $bodyObj['text'] = [ordered]@{
             format = [ordered]@{
                 type = 'json_schema'
                 name = 'governance_analysis'
@@ -168,7 +199,11 @@ function Invoke-OpenAIAnalysis {
             }
             verbosity = $verbosityLevel
         }
-        input = $inputBlocks
+    } else {
+        # For markdown, use plain text format (no format constraint)
+        $bodyObj['text'] = [ordered]@{
+            verbosity = $verbosityLevel
+        }
     }
     
     # Add reasoning parameter for reasoning models
@@ -261,7 +296,83 @@ function Invoke-OpenAIAnalysis {
         throw 'Failed to parse OpenAI response JSON' 
     }
     
-    # Try to parse structured response
+    # Extract actual token usage from response (do this once, before format checks)
+    $actualInputTokens = $inputTokens  # Keep estimated as fallback
+    $actualOutputTokens = $null
+    $actualReasoningTokens = $null
+    
+    if ($json.usage) {
+        if ($json.usage.input_tokens) {
+            $actualInputTokens = [int]$json.usage.input_tokens
+        }
+        if ($json.usage.output_tokens) {
+            $actualOutputTokens = [int]$json.usage.output_tokens
+        }
+        # For reasoning models, check for reasoning tokens
+        if ($json.usage.output_tokens_details -and $json.usage.output_tokens_details.reasoning_tokens) {
+            $actualReasoningTokens = [int]$json.usage.output_tokens_details.reasoning_tokens
+        }
+    }
+    
+    # Recalculate actual cost with real token counts if available
+    $actualCost = $costEstimate
+    if ($actualOutputTokens) {
+        $actualInputCost = [Math]::Round((($actualInputTokens/1000000.0)*$priceIn), 4)
+        $actualOutputCost = [Math]::Round((($actualOutputTokens/1000000.0)*$priceOut), 4)
+        $actualCost = [Math]::Round($actualInputCost + $actualOutputCost, 4)
+    }
+    
+    # Check for incomplete response and handle appropriately
+    if ($json.status -eq 'incomplete') {
+        $incompleteReason = if ($json.incomplete_details) { $json.incomplete_details.reason } else { 'unknown' }
+        $actualMaxTokens = if ($json.max_output_tokens) { $json.max_output_tokens } else { 'unknown' }
+        Write-Warning "Response is incomplete (reason: $incompleteReason, max_output_tokens sent: $actualMaxTokens, requested: $effectiveMaxOutput)"
+        
+        # For markdown format with incomplete response, try to extract any available text
+        if ($OutputFormat -eq 'markdown') {
+            $textPayload = Get-FirstResponsesOutputText -Json $json -FallbackContent $resp
+            # If we only got the raw JSON, indicate it's incomplete
+            if ($textPayload -eq $resp -or $textPayload -match '^\s*\{') {
+                $errorMsg = "Response incomplete due to $incompleteReason. max_output_tokens sent: $actualMaxTokens. "
+                if ($env:OPENAI_MAX_OUTPUT_TOKENS) {
+                    $errorMsg += "You have OPENAI_MAX_OUTPUT_TOKENS=$maxOutputTokensToUse set. "
+                }
+                $errorMsg += "Consider increasing OPENAI_MAX_OUTPUT_TOKENS further or reducing input size."
+                throw $errorMsg
+            }
+            return [PSCustomObject]@{
+                Success = $true
+                Raw = $json
+                Text = $textPayload
+                InputTokens = $actualInputTokens
+                OutputTokens = $actualOutputTokens
+                ReasoningTokens = $actualReasoningTokens
+                EstimatedCost = $actualCost
+                Model = $modelToUse
+                Incomplete = $true
+                IncompleteReason = $incompleteReason
+            }
+        } else {
+            throw "Response incomplete (reason: $incompleteReason, max_output_tokens sent: $actualMaxTokens). Consider increasing OPENAI_MAX_OUTPUT_TOKENS."
+        }
+    }
+    
+    # For markdown format, always extract text directly (no JSON parsing)
+    if ($OutputFormat -eq 'markdown') {
+        $textPayload = Get-FirstResponsesOutputText -Json $json -FallbackContent $resp
+        return [PSCustomObject]@{
+            Success = $true
+            Raw = $json
+            Text = $textPayload
+            InputTokens = $actualInputTokens
+            OutputTokens = $actualOutputTokens
+            ReasoningTokens = $actualReasoningTokens
+            EstimatedCost = $actualCost
+            Model = $modelToUse
+        }
+    }
+    
+    # For JSON format, try to parse structured response
     $parsedObj = $null
     try { 
         $parsedObj = ConvertFrom-OpenAIResponseJson -RespObj $json 
@@ -275,8 +386,10 @@ function Invoke-OpenAIAnalysis {
             Raw = $json
             Parsed = $parsedObj
             Text = ($parsedObj | ConvertTo-Json -Depth 50)
-            InputTokens = $inputTokens
-            EstimatedCost = $costEstimate
+            InputTokens = $actualInputTokens
+            OutputTokens = $actualOutputTokens
+            ReasoningTokens = $actualReasoningTokens
+            EstimatedCost = $actualCost
             Model = $modelToUse
         }
     } else {
@@ -286,8 +399,10 @@ function Invoke-OpenAIAnalysis {
             Success = $true
             Raw = $json
             Text = $textPayload
-            InputTokens = $inputTokens
-            EstimatedCost = $costEstimate
+            InputTokens = $actualInputTokens
+            OutputTokens = $actualOutputTokens
+            ReasoningTokens = $actualReasoningTokens
+            EstimatedCost = $actualCost
             Model = $modelToUse
         }
     }

@@ -295,6 +295,20 @@ function Connect-AuditEnvironment {
         }
     }
     
+    # Prompt for tenant ID if not found (unless using Managed Identity)
+    # This prevents Connect-AzAccount from iterating through all subscriptions/tenants
+    if ([string]::IsNullOrWhiteSpace($tenantIdToUse) -and -not $UseManagedIdentity) {
+        Write-Host ''
+        Write-Host 'Tenant ID is recommended to avoid iterating through all available subscriptions.' -ForegroundColor Yellow
+        Write-Host 'Find this in Azure Portal > Entra ID > Overview, or use: (Get-AzContext).Tenant.Id' -ForegroundColor Gray
+        Write-Host ''
+        $promptedTenantId = Read-Host 'Please enter your Azure Tenant ID (or press Enter to skip and use default behavior)'
+        if (-not [string]::IsNullOrWhiteSpace($promptedTenantId)) {
+            $tenantIdToUse = $promptedTenantId.Trim()
+            Write-Host ('Tenant ID set: ' + $tenantIdToUse.Substring(0, [Math]::Min(8, $tenantIdToUse.Length)) + '...') -ForegroundColor Green
+        }
+    }
+    
     # Connect to Azure
     Write-Host ''
     Write-Host '=== Connecting to Azure ===' -ForegroundColor Cyan

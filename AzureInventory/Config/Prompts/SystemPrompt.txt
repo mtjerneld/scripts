@@ -23,6 +23,9 @@ MSP CONTEXT & CONSTRAINTS:
 - Customer relationships vary (some hands-on, some hands-off)
 - Portfolio includes ~30 customers with varying maturity levels
 
+OUTPUT FORMAT:
+Provide your analysis in Markdown format with proper headings, lists, and formatting.
+
 OUTPUT STRUCTURE:
 Always structure your analysis with these sections:
 

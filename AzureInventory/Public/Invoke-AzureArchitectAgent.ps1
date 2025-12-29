@@ -32,7 +32,7 @@ function Invoke-AzureArchitectAgent {
         [string]$ApiKey = $env:OPENAI_API_KEY,
         
         [Parameter(Mandatory = $false)]
-        [string]$Model = "gpt-4o-mini",
+        [string]$Model,
         
         [Parameter(Mandatory = $false)]
         [string]$OutputPath
@@ -40,8 +40,27 @@ function Invoke-AzureArchitectAgent {
     
     Write-Host "Invoking Azure Architect AI Agent..." -ForegroundColor Cyan
     
+    # Determine model to use (parameter > env var > default)
+    $modelToUse = if ($Model) { $Model } elseif ($env:OPENAI_MODEL) { $env:OPENAI_MODEL } else { "gpt-4o-mini" }
+    
     # Get module root to find prompt files
-    $moduleRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    # Try to find module root by looking for AzureSecurityAudit.psm1 (more robust)
+    $moduleRoot = $null
+    $currentPath = $PSScriptRoot
+    while ($currentPath -and -not $moduleRoot) {
+        if (Test-Path (Join-Path $currentPath "AzureSecurityAudit.psm1")) {
+            $moduleRoot = $currentPath
+            break
+        }
+        $parentPath = Split-Path -Parent $currentPath
+        if ($parentPath -eq $currentPath) { break }
+        $currentPath = $parentPath
+    }
+    
+    # Fallback: assume we're in Public (go up one level)
+    if (-not $moduleRoot) {
+        $moduleRoot = Split-Path -Parent $PSScriptRoot
+    }
     
     # Load system prompt
     $systemPromptPath = Join-Path $moduleRoot "Config\Prompts\SystemPrompt.txt"
@@ -79,17 +98,25 @@ function Invoke-AzureArchitectAgent {
     }
     
     # Call OpenAI API
-    Write-Verbose "Calling OpenAI API with model: $Model"
+    Write-Verbose "Calling OpenAI API with model: $modelToUse"
     $startTime = Get-Date
     
     try {
+        # Determine timeout from environment variable or use default
+        $timeoutSeconds = if ($env:OPENAI_TIMEOUT_SECONDS) { 
+            [int]$env:OPENAI_TIMEOUT_SECONDS 
+        } else { 
+            120  # Default timeout
+        }
+        
         $response = Invoke-OpenAIAnalysis `
             -SystemPrompt $systemPrompt `
             -UserPrompt $userPrompt `
             -ApiKey $ApiKey `
-            -Model $Model `
+            -Model $modelToUse `
             -MaxOutputTokens 8000 `
-            -TimeoutSeconds 120
+            -TimeoutSeconds $timeoutSeconds `
+            -OutputFormat 'markdown'
         
         $duration = (Get-Date) - $startTime
         
@@ -97,49 +124,64 @@ function Invoke-AzureArchitectAgent {
             throw "OpenAI API request failed"
         }
         
-        # Extract analysis text
+        # Extract analysis text (for markdown format, use Text directly)
         $analysis = if ($response.Text) {
             $response.Text
         } elseif ($response.Parsed) {
-            # Try to extract from parsed object
-            if ($response.Parsed.executive_summary) {
-                # Structured response
-                $response.Parsed | ConvertTo-Json -Depth 10
-            } else {
-                $response.Parsed | ConvertTo-Json -Depth 10
-            }
+            # Fallback: if we got parsed JSON, convert to markdown-like format
+            # This shouldn't happen with markdown format, but handle gracefully
+            $response.Parsed | ConvertTo-Json -Depth 10
         } else {
             "Analysis completed but no text content available."
         }
         
         # Log token usage and cost
         $inputTokens = $response.InputTokens
-        $estimatedCost = $response.EstimatedCost
+        $outputTokens = $response.OutputTokens
+        $reasoningTokens = $response.ReasoningTokens
+        $actualCost = $response.EstimatedCost
         
         Write-Host "  AI Analysis Complete" -ForegroundColor Green
         Write-Host "    Duration: $($duration.TotalSeconds.ToString('F1')) seconds" -ForegroundColor Gray
-        Write-Host "    Tokens: ~$inputTokens (estimated)" -ForegroundColor Gray
-        Write-Host "    Estimated Cost: `$$($estimatedCost.ToString('F4'))" -ForegroundColor Gray
+        if ($outputTokens) {
+            Write-Host "    Tokens: $inputTokens input, $outputTokens output" -ForegroundColor Gray
+            if ($reasoningTokens) {
+                Write-Host "      (including $reasoningTokens reasoning tokens)" -ForegroundColor Gray
+            }
+        } else {
+            Write-Host "    Tokens: ~$inputTokens (estimated)" -ForegroundColor Gray
+        }
+        Write-Host "    Cost: `$$($actualCost.ToString('F4'))" -ForegroundColor Gray
         
         # Save output if path provided
         if ($OutputPath) {
             $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
-            $outputFile = Join-Path $OutputPath "AI_Analysis_$timestamp.txt"
+            $outputFile = Join-Path $OutputPath "AI_Analysis_$timestamp.md"
             $analysis | Out-File $outputFile -Encoding UTF8
             Write-Host "  Analysis saved: $outputFile" -ForegroundColor Green
             
             # Also save metadata
             $metadataFile = Join-Path $OutputPath "AI_Metadata_$timestamp.json"
+            $tokenUsage = @{
+                input = $inputTokens
+            }
+            if ($outputTokens) {
+                $tokenUsage.output = $outputTokens
+                $tokenUsage.estimated = $false
+            } else {
+                $tokenUsage.estimated = $true
+            }
+            if ($reasoningTokens) {
+                $tokenUsage.reasoning = $reasoningTokens
+            }
+            
             @{
                 timestamp = $timestamp
                 model = $Model
                 duration_seconds = $duration.TotalSeconds
-                token_usage = @{
-                    input = $inputTokens
-                    estimated = $true
-                }
-                estimated_cost = $estimatedCost
-                finish_reason = if ($response.Raw) { "completed" } else { "unknown" }
+                token_usage = $tokenUsage
+                cost = $actualCost
+                finish_reason = if ($response.Raw -and $response.Raw.status) { $response.Raw.status } else { "completed" }
             } | ConvertTo-Json | Out-File $metadataFile -Encoding UTF8
         }
         
@@ -151,9 +193,11 @@ function Invoke-AzureArchitectAgent {
                 Duration = $duration
                 TokenUsage = @{
                     Input = $inputTokens
-                    Estimated = $true
+                    Output = $outputTokens
+                    Reasoning = $reasoningTokens
+                    Estimated = if ($outputTokens) { $false } else { $true }
                 }
-                EstimatedCost = $estimatedCost
+                EstimatedCost = $actualCost
                 Timestamp = Get-Date
             }
             RawResponse = $response

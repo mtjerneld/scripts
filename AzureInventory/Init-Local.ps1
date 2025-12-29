@@ -11,6 +11,33 @@ param()
 
 $ModuleRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Get-Location }
 
+# Load .env file if it exists (to get OPENAI_MODEL, OPENAI_API_KEY, AZURE_*, etc.)
+$envFilePath = Join-Path $ModuleRoot ".env"
+if (Test-Path $envFilePath) {
+    Write-Verbose "Loading .env file: $envFilePath"
+    $envVarsLoaded = 0
+    Get-Content $envFilePath -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object {
+        $line = $_.Trim() -replace '^["\x27](.*)["\x27]$', '$1'
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { return }
+        
+        if ($line -match '^([^=]+)=(.*)$') {
+            $key = $Matches[1].Trim()
+            $value = $Matches[2].Trim()
+            $value = $value -replace '^["\x27](.*)["\x27]$', '$1'
+            
+            # Load Azure and OpenAI environment variables
+            if ($key -match '^(AZURE_|OPENAI_)') {
+                Set-Item -Path "env:$key" -Value $value -ErrorAction SilentlyContinue
+                $envVarsLoaded++
+                Write-Verbose "Loaded $key from .env file"
+            }
+        }
+    }
+    if ($envVarsLoaded -gt 0) {
+        Write-Verbose "Loaded $envVarsLoaded environment variable(s) from .env file"
+    }
+}
+
 # Varna om skriptet körs utan dot-source
 if ($MyInvocation.InvocationName -ne '.' -and $MyInvocation.Line -notmatch '^\s*\.\s+') {
     Write-Host "`n[ERROR] Script must be run with dot-source!" -ForegroundColor Red
@@ -1238,6 +1265,103 @@ function Test-RBAC {
     }
 }
 
+# Retry AI analysis with existing JSON payload
+function Test-RetryAIAnalysis {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$JsonFilePath,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Model
+    )
+    
+    Write-Host "`n=== Retry AI Analysis with Existing JSON ===" -ForegroundColor Cyan
+    
+    # Check if Invoke-AzureArchitectAgent is available
+    if (-not (Get-Command -Name Invoke-AzureArchitectAgent -ErrorAction SilentlyContinue)) {
+        Write-Error "Invoke-AzureArchitectAgent function not found. Make sure Init-Local.ps1 has loaded all functions."
+        return
+    }
+    
+    # If no JSON file path provided, find the latest one in output folder
+    if ([string]::IsNullOrWhiteSpace($JsonFilePath)) {
+        Write-Host "No JSON file specified, searching for latest AI_Insights_Payload JSON file..." -ForegroundColor Gray
+        $outputFolder = Join-Path (Get-Location) "output"
+        if (Test-Path $outputFolder) {
+            $jsonFiles = Get-ChildItem -Path $outputFolder -Recurse -Filter "AI_Insights_Payload_*.json" -ErrorAction SilentlyContinue | 
+                Sort-Object LastWriteTime -Descending
+            if ($jsonFiles.Count -gt 0) {
+                $JsonFilePath = $jsonFiles[0].FullName
+                Write-Host "Found latest JSON file: $JsonFilePath" -ForegroundColor Green
+            }
+        }
+        
+        if ([string]::IsNullOrWhiteSpace($JsonFilePath)) {
+            Write-Error "No AI_Insights_Payload JSON file found in output folder. Please specify -JsonFilePath parameter or run an audit first."
+            return
+        }
+    }
+    
+    # Resolve the JSON file path
+    if (-not [System.IO.Path]::IsPathRooted($JsonFilePath)) {
+        $JsonFilePath = Join-Path (Get-Location) $JsonFilePath
+    }
+    
+    if (-not (Test-Path $JsonFilePath)) {
+        Write-Error "JSON file not found: $JsonFilePath"
+        return
+    }
+    
+    Write-Host "Loading JSON from: $JsonFilePath" -ForegroundColor Gray
+    
+    # Read the JSON file
+    try {
+        $json = Get-Content $JsonFilePath -Raw -Encoding UTF8
+    }
+    catch {
+        Write-Error "Failed to read JSON file: $_"
+        return
+    }
+    
+    # Get the output folder (same folder as the JSON file)
+    $outputFolder = Split-Path -Parent $JsonFilePath
+    
+    Write-Host "Output folder: $outputFolder" -ForegroundColor Gray
+    
+    # Determine model to use (parameter > env var > default)
+    $modelToUse = if ($Model) { $Model } elseif ($env:OPENAI_MODEL) { $env:OPENAI_MODEL } else { "gpt-4o-mini" }
+    Write-Host "Model: $modelToUse" -ForegroundColor Gray
+    
+    # Call the AI agent
+    Write-Host "`nInvoking AI analysis..." -ForegroundColor Cyan
+    try {
+        $result = Invoke-AzureArchitectAgent `
+            -GovernanceDataJson $json `
+            -Model $modelToUse `
+            -OutputPath $outputFolder
+        
+        if ($result.Success) {
+            Write-Host "`n[SUCCESS] AI Analysis completed successfully!" -ForegroundColor Green
+            Write-Host "  Analysis saved to: $outputFolder" -ForegroundColor Gray
+            if ($result.Metadata) {
+                Write-Host "  Estimated cost: `$$($result.Metadata.EstimatedCost.ToString('F4'))" -ForegroundColor Gray
+                Write-Host "  Duration: $([math]::Round($result.Metadata.Duration.TotalSeconds, 1)) seconds" -ForegroundColor Gray
+            }
+        }
+        else {
+            Write-Error "AI Analysis failed: $($result.Error)"
+        }
+    }
+    catch {
+        Write-Error "Failed to invoke AI analysis: $_"
+        Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
+    }
+}
+
 # Summary of loaded functions (backend + interactive) – printed last so that all Test-* are defined
 Write-Host "`nBackend / core functions (auto-loaded):" -ForegroundColor Cyan
 $backendFunctions = @()
@@ -1276,7 +1400,8 @@ $userFunctions = @(
     'Test-Advisor',
     'Test-EOLTracking',
     'Test-CostTracking',
-    'Test-RBAC'
+    'Test-RBAC',
+    'Test-RetryAIAnalysis'
 )
 
 foreach ($funcName in $userFunctions) {
@@ -1291,6 +1416,7 @@ Write-Host "`nTip: Common test commands:" -ForegroundColor Cyan
 Write-Host "  - Connect-AuditEnvironment            # Sign in to Azure and select tenant/subscription" -ForegroundColor Gray
 Write-Host "  - Invoke-AzureSecurityAudit -AI       # Run full audit with AI analysis" -ForegroundColor Gray
 Write-Host "  - Invoke-AzureArchitectAgent          # Run AI analysis on governance data" -ForegroundColor Gray
+Write-Host "  - Test-RetryAIAnalysis                # Retry AI analysis with existing JSON payload" -ForegroundColor Gray
 Write-Host "  - Test-SecurityReport                 # Run security report (can take -SubscriptionIds/-Categories)" -ForegroundColor Gray
 Write-Host "  - Test-ChangeTracking                 # Generate Change Tracking report" -ForegroundColor Gray
 Write-Host "  - Test-NetworkInventory               # Generate Network Inventory report" -ForegroundColor Gray

@@ -1,9 +1,7 @@
 # Environment files with secrets
+!.env.example
 .env
 *.env
-# But allow .env.example as a template
-!.env.example
-*.mp
 
 # PowerShell module cache
 *.psm1.bak
