@@ -1,79 +1,145 @@
-Analyze this month's Azure governance data across our MSP customer portfolio and provide comprehensive strategic recommendations.
+You are analyzing Azure governance data for a single tenant. Provide strategic, opinionated recommendations.
 
-ANALYSIS REQUIREMENTS:
+## ANALYSIS PROCESS
 
-1. EXECUTIVE SUMMARY
-   - Top 3-5 most critical issues requiring immediate attention
-   - Overall portfolio health assessment (improving/stable/declining)
-   - Any emerging trends or patterns worth highlighting
+### Stage 1: Reasoning (Show Your Work)
 
-2. STRATEGIC PRIORITIES (Rank Top 5)
-   Evaluate and rank by: (Risk Level × Impact) / Implementation Effort
-   For each priority:
-   - Specific customer and issue description
-   - Business impact analysis (financial, compliance, security, availability)
-   - Recommended action plan with timeline
-   - Customer conversation strategy
-   - Success criteria
+Before making recommendations, document your critical thinking:
 
-3. COST OPTIMIZATION ROADMAP
-   Quick Wins (Implement This Week):
-   - List top opportunities under $5K annual savings that need minimal coordination
-   - Highlight any "no-brainer" optimizations
-   
-   Medium-Term Initiatives (This Month):
-   - Opportunities $5K-$25K that require customer approval
-   - Reserved instance/capacity recommendations with ROI analysis
-   
-   Strategic Projects (This Quarter):
-   - Major architectural changes or consolidations >$25K savings
-   - Long-term optimization strategies
+#### A) Cost Recommendation Analysis
+- List all cost recommendations by resource
+- Identify overlapping/mutually exclusive options (RI vs Savings Plan for same resource)
+- For each resource with multiple options:
+  - Compare: Which option is ACTUALLY better and why?
+  - Calculate: What are the REAL savings (not additive sum)?
+  - Decide: What's the single best recommendation?
+- Deduplicate: Same recommendation with different lookback periods = one opportunity
+- Calculate: True total potential savings (no double-counting)
 
-4. SECURITY & COMPLIANCE ACTIONS
-   Immediate Escalations (This Week):
-   - Any Critical severity findings that represent imminent risk
-   - Customer-specific security incidents or policy violations
-   
-   High Priority Remediation (This Month):
-   - High severity findings with broad impact
-   - Compliance gaps affecting multiple customers
-   
-   Proactive Security Improvements (This Quarter):
-   - Security posture enhancements
-   - Compliance framework alignment
-   - Security awareness recommendations
+#### B) Security Risk Filtering
+- Separate Critical findings into:
+  - **Real Critical**: Internet-exposed, data at risk, active exploitation vectors
+  - **Important**: Compliance gaps, defense-in-depth improvements
+  - **Noise**: Low-risk compliance checkboxes, informational findings
+- For each Critical/High finding, assess:
+  - What's the actual exploitation scenario?
+  - What's the business impact if exploited?
+  - Is this internet-facing or internal?
+- Flag findings that are compliance theater vs real risk
 
-5. INFRASTRUCTURE MODERNIZATION
-   Urgent (Next 30 Days):
-   - Resources retiring within 30 days
-   - Critical workloads without backup
-   - Immediate availability risks
-   
-   Important (Next 90 Days):
-   - Resources retiring within 90 days
-   - RBAC hygiene issues
-   - Technical debt priorities
+#### C) Implementation Dependencies
+- What must be done first? (e.g., Bastion before disabling RDP)
+- What conflicts? (e.g., can't do X and Y simultaneously)
+- What requires architecture changes vs configuration tweaks?
 
-6. CROSS-CUTTING INSIGHTS
-   - Identify resources with multiple compounding issues
-   - Portfolio-wide patterns (e.g., "50% of customers have storage security issues")
-   - Proactive recommendations based on trends
-   - Opportunities for standardization or automation
+#### D) Data Quality Assessment
+- What's missing from the data?
+- What assumptions are you making?
+- Where is there uncertainty?
 
-IMPORTANT GUIDELINES:
-- Always use specific customer names and resource identifiers
-- Provide dollar amounts for cost recommendations
-- Include confidence levels for estimates (High/Medium/Low)
-- Acknowledge when data is incomplete or uncertain
-- Suggest follow-up analysis where needed
-- Balance technical detail with business context
+**Document your reasoning above before proceeding to recommendations.**
 
 ---
 
-GOVERNANCE DATA:
+### Stage 2: Recommendations (Final Output)
+
+Now provide your analysis in the following structured format:
+
+## EXECUTIVE SUMMARY
+
+**2-3 bullets maximum. Only include items that are:**
+- Critical risk OR high financial impact
+- Immediately actionable
+- Have clear business consequence
+
+## CRITICAL ACTIONS
+
+**Maximum 5 items. These are non-negotiable must-dos.**
+
+For each action:
+- Resource/Service and specific issue
+- WHY this matters (risk × impact analysis)
+- Recommended action (specific, not generic)
+- Timeline (days/weeks, be realistic)
+- Expected outcome (quantified if possible)
+- What happens if we DON'T do this
+
+**Prioritization logic: Why these 5 vs everything else in the data?**
+
+## COST OPTIMIZATION
+
+### Best Opportunities (Deduplicated)
+For each opportunity:
+- Resource identification
+- Single best option (RI 1Y vs RI 3Y vs Savings Plan - pick ONE)
+- Annual savings (true number, not additive sum)
+- Trade-off explanation (why this option vs alternatives)
+- Implementation complexity and timeline
+- Confidence level (High/Medium/Low)
+
+**Total Potential Savings: [Deduplicated sum]**
+
+### Cost Optimization Notes
+- Explain any conflicting recommendations you resolved
+- Note any overlapping opportunities you combined
+- Highlight any uncertainty in savings estimates
+
+## SECURITY & COMPLIANCE
+
+### Immediate Risks (This Week)
+- Only TRUE critical risks (internet exposure, data leakage, active attack vectors)
+- Explain WHY each is critical vs merely "high severity"
+
+### Important Improvements (This Month)
+- High-impact security posture improvements
+- Compliance gaps with business impact
+
+### Lower Priority (This Quarter)
+- Defense-in-depth enhancements
+- Compliance checkbox items
+- Informational findings
+
+**Note items you explicitly de-prioritized and why.**
+
+## INFRASTRUCTURE HEALTH
+
+### Urgent (30 days)
+- End-of-life items with retirement dates
+- Backup gaps for critical workloads
+- Immediate availability risks
+
+### Important (90 days)
+- Upcoming EOL items
+- RBAC hygiene
+- Technical debt
+
+## KEY INSIGHTS
+
+**3-5 bullets:**
+- Patterns observed in this tenant
+- Resources with multiple compounding issues
+- Architecture or governance recommendations
+- Proactive improvements to prevent future issues
+
+## RECOMMENDATIONS REJECTED OR DEPRIORITIZED
+
+**Document what you explicitly chose NOT to include and why:**
+- Low-value recommendations filtered out
+- Findings that are noise vs signal
+- Items blocked by other priorities
+- Uncertain or incomplete data points
+
+---
+
+## GOVERNANCE DATA:
 {{GOVERNANCE_DATA_JSON}}
 
 ---
 
-Provide your comprehensive analysis in Markdown format following the structure above. Use proper Markdown headings (## for sections, ### for subsections), bullet points, tables where appropriate, and emphasize important information with bold text. Be specific, quantitative, and actionable.
-
+## IMPORTANT REMINDERS:
+- Reserved Instances and Savings Plans are MUTUALLY EXCLUSIVE - choose one, don't sum both
+- Multiple lookback period recommendations = one opportunity evaluated two ways
+- Not all "Critical" findings are equally critical - assess real risk
+- Be opinionated - make calls and explain trade-offs
+- Focus on signal over noise - less is more
+- Show your reasoning in Stage 1, then provide clean recommendations in Stage 2
