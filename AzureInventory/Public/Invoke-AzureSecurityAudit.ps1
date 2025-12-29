@@ -76,7 +76,28 @@ function Invoke-AzureSecurityAudit {
         [int]$AICostTopN = 15,
         
         [Parameter(Mandatory = $false)]
-        [int]$AISecurityTopN = 20
+        [int]$AISecurityTopN = 20,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AIAdvisorTopN = 15,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AIRBACTopN = 20,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AINetworkTopN = 20,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AIEOLTopN = 20,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AIChangeTrackingTopN = 20,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AIVMBackupTopN = 20,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$AICostTrackingTopN = 20
     )
     
     $scanStart = Get-Date
@@ -401,6 +422,7 @@ function Invoke-AzureSecurityAudit {
         EOLStatus               = @()
         Errors                  = $errors
         ToolVersion             = "2.0.0"
+        AIAnalysis              = $null
     }
     
     # Collect Azure Advisor Recommendations
@@ -664,27 +686,25 @@ function Invoke-AzureSecurityAudit {
                 # Ensure helper functions are loaded
                 $moduleRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
                 
-                # Load cost insights converter
-                if (-not (Get-Command -Name ConvertTo-CostAIInsights -ErrorAction SilentlyContinue)) {
-                    $costHelperPath = Join-Path $moduleRoot "Private\Helpers\ConvertTo-CostAIInsights.ps1"
-                    if (Test-Path $costHelperPath) {
-                        . $costHelperPath
-                    }
-                }
+                # Load all converter functions
+                $converterFunctions = @(
+                    @{ Name = "ConvertTo-AdvisorAIInsights"; Path = "Private\Helpers\ConvertTo-AdvisorAIInsights.ps1" }
+                    @{ Name = "ConvertTo-SecurityAIInsights"; Path = "Private\Helpers\ConvertTo-SecurityAIInsights.ps1" }
+                    @{ Name = "ConvertTo-RBACAIInsights"; Path = "Private\Helpers\ConvertTo-RBACAIInsights.ps1" }
+                    @{ Name = "ConvertTo-NetworkAIInsights"; Path = "Private\Helpers\ConvertTo-NetworkAIInsights.ps1" }
+                    @{ Name = "ConvertTo-EOLAIInsights"; Path = "Private\Helpers\ConvertTo-EOLAIInsights.ps1" }
+                    @{ Name = "ConvertTo-ChangeTrackingAIInsights"; Path = "Private\Helpers\ConvertTo-ChangeTrackingAIInsights.ps1" }
+                    @{ Name = "ConvertTo-VMBackupAIInsights"; Path = "Private\Helpers\ConvertTo-VMBackupAIInsights.ps1" }
+                    @{ Name = "ConvertTo-CostTrackingAIInsights"; Path = "Private\Helpers\ConvertTo-CostTrackingAIInsights.ps1" }
+                    @{ Name = "ConvertTo-CombinedPayload"; Path = "Private\Helpers\ConvertTo-CombinedPayload.ps1" }
+                )
                 
-                # Load security insights converter
-                if (-not (Get-Command -Name ConvertTo-SecurityAIInsights -ErrorAction SilentlyContinue)) {
-                    $secHelperPath = Join-Path $moduleRoot "Private\Helpers\ConvertTo-SecurityAIInsights.ps1"
-                    if (Test-Path $secHelperPath) {
-                        . $secHelperPath
-                    }
-                }
-                
-                # Load payload builder
-                if (-not (Get-Command -Name ConvertTo-CombinedPayload -ErrorAction SilentlyContinue)) {
-                    $payloadHelperPath = Join-Path $moduleRoot "Private\Helpers\ConvertTo-CombinedPayload.ps1"
-                    if (Test-Path $payloadHelperPath) {
-                        . $payloadHelperPath
+                foreach ($func in $converterFunctions) {
+                    if (-not (Get-Command -Name $func.Name -ErrorAction SilentlyContinue)) {
+                        $funcPath = Join-Path $moduleRoot $func.Path
+                        if (Test-Path $funcPath) {
+                            . $funcPath
+                        }
                     }
                 }
                 
@@ -696,18 +716,26 @@ function Invoke-AzureSecurityAudit {
                     }
                 }
                 
-                # Generate cost insights
-                $costInsights = $null
+                # Generate insights for each module
+                $advisorInsights = $null
+                $securityInsights = $null
+                $rbacInsights = $null
+                $networkInsights = $null
+                $eolInsights = $null
+                $changeTrackingInsights = $null
+                $vmBackupInsights = $null
+                $costTrackingInsights = $null
+                
+                # Advisor insights (comprehensive - all categories)
                 if ($advisorRecommendations.Count -gt 0) {
-                    Write-Host "  Generating cost insights..." -ForegroundColor Gray
-                    if (Get-Command -Name ConvertTo-CostAIInsights -ErrorAction SilentlyContinue) {
-                        $costInsights = ConvertTo-CostAIInsights -AdvisorRecommendations $advisorRecommendations -TopN $AICostTopN
-                        Write-Host "    Cost insights: $($costInsights.summary.recommendation_count) recommendations" -ForegroundColor Green
+                    Write-Host "  Generating Advisor insights..." -ForegroundColor Gray
+                    if (Get-Command -Name ConvertTo-AdvisorAIInsights -ErrorAction SilentlyContinue) {
+                        $advisorInsights = ConvertTo-AdvisorAIInsights -AdvisorRecommendations $advisorRecommendations -TopN $AIAdvisorTopN
+                        Write-Host "    Advisor insights: $($advisorInsights.summary.total_recommendations) recommendations across all categories" -ForegroundColor Green
                     }
                 }
                 
-                # Generate security insights
-                $securityInsights = $null
+                # Security insights
                 if ($allFindings.Count -gt 0) {
                     Write-Host "  Generating security insights..." -ForegroundColor Gray
                     if (Get-Command -Name ConvertTo-SecurityAIInsights -ErrorAction SilentlyContinue) {
@@ -716,13 +744,82 @@ function Invoke-AzureSecurityAudit {
                     }
                 }
                 
+                # RBAC insights
+                if ($rbacInventory) {
+                    Write-Host "  Generating RBAC insights..." -ForegroundColor Gray
+                    if (Get-Command -Name ConvertTo-RBACAIInsights -ErrorAction SilentlyContinue) {
+                        $rbacInsights = ConvertTo-RBACAIInsights -RBACData $rbacInventory -TopN $AIRBACTopN
+                        Write-Host "    RBAC insights: $($rbacInsights.summary.total_assignments) assignments analyzed" -ForegroundColor Green
+                    }
+                }
+                
+                # Network insights
+                if ($networkInventory.Count -gt 0) {
+                    Write-Host "  Generating network insights..." -ForegroundColor Gray
+                    if (Get-Command -Name ConvertTo-NetworkAIInsights -ErrorAction SilentlyContinue) {
+                        $networkInsights = ConvertTo-NetworkAIInsights -NetworkInventory $networkInventory -TopN $AINetworkTopN
+                        Write-Host "    Network insights: $($networkInsights.summary.total_vnets) VNets, $($networkInsights.summary.total_nsg_risks) NSG risks" -ForegroundColor Green
+                    }
+                }
+                
+                # EOL insights (always generate, even if empty, so AI knows EOL was checked)
+                Write-Host "  Generating EOL insights..." -ForegroundColor Gray
+                if (Get-Command -Name ConvertTo-EOLAIInsights -ErrorAction SilentlyContinue) {
+                    # Ensure we always pass a valid array (even if empty)
+                    $eolFindingsForAI = if ($eolFindingsArray -and $eolFindingsArray.Count -gt 0) {
+                        @($eolFindingsArray)
+                    } else {
+                        @()
+                    }
+                    $eolInsights = ConvertTo-EOLAIInsights -EOLFindings $eolFindingsForAI -TopN $AIEOLTopN
+                    if ($eolInsights.summary.total_findings -gt 0) {
+                        Write-Host "    EOL insights: $($eolInsights.summary.total_findings) findings" -ForegroundColor Green
+                    } else {
+                        Write-Host "    EOL insights: No findings (EOL data checked)" -ForegroundColor Gray
+                    }
+                }
+                
+                # Change tracking insights
+                if ($changeTrackingData.Count -gt 0) {
+                    Write-Host "  Generating change tracking insights..." -ForegroundColor Gray
+                    if (Get-Command -Name ConvertTo-ChangeTrackingAIInsights -ErrorAction SilentlyContinue) {
+                        $changeTrackingInsights = ConvertTo-ChangeTrackingAIInsights -ChangeTrackingData $changeTrackingData -TopN $AIChangeTrackingTopN
+                        Write-Host "    Change tracking insights: $($changeTrackingInsights.summary.total_changes) changes, $($changeTrackingInsights.summary.security_alerts) security alerts" -ForegroundColor Green
+                    }
+                }
+                
+                # VM Backup insights
+                if ($vmInventory.Count -gt 0) {
+                    Write-Host "  Generating VM backup insights..." -ForegroundColor Gray
+                    if (Get-Command -Name ConvertTo-VMBackupAIInsights -ErrorAction SilentlyContinue) {
+                        $vmBackupInsights = ConvertTo-VMBackupAIInsights -VMInventory $vmInventory -TopN $AIVMBackupTopN
+                        Write-Host "    VM backup insights: $($vmBackupInsights.summary.total_vms) VMs, $($vmBackupInsights.summary.unprotected_vms) unprotected" -ForegroundColor Green
+                    }
+                }
+                
+                # Cost tracking insights (actual spending data)
+                if ($costTrackingData) {
+                    Write-Host "  Generating cost tracking insights..." -ForegroundColor Gray
+                    if (Get-Command -Name ConvertTo-CostTrackingAIInsights -ErrorAction SilentlyContinue) {
+                        $costTrackingInsights = ConvertTo-CostTrackingAIInsights -CostTrackingData $costTrackingData -TopN $AICostTrackingTopN
+                        $costValue = $costTrackingInsights.summary.total_cost_usd
+                        Write-Host "    Cost tracking insights: `$$([math]::Round($costValue, 2)) USD total spending" -ForegroundColor Green
+                    }
+                }
+                
                 # Build combined payload
-                if ($costInsights -or $securityInsights) {
+                if ($advisorInsights -or $securityInsights -or $rbacInsights -or $networkInsights -or $eolInsights -or $changeTrackingInsights -or $vmBackupInsights -or $costTrackingInsights) {
                     Write-Host "  Building combined payload..." -ForegroundColor Gray
                     if (Get-Command -Name ConvertTo-CombinedPayload -ErrorAction SilentlyContinue) {
                         $combinedPayload = ConvertTo-CombinedPayload `
-                            -CostInsights $costInsights `
+                            -AdvisorInsights $advisorInsights `
                             -SecurityInsights $securityInsights `
+                            -RBACInsights $rbacInsights `
+                            -NetworkInsights $networkInsights `
+                            -EOLInsights $eolInsights `
+                            -ChangeTrackingInsights $changeTrackingInsights `
+                            -VMBackupInsights $vmBackupInsights `
+                            -CostTrackingInsights $costTrackingInsights `
                             -SubscriptionCount $subscriptions.Count
                         
                         $jsonPayload = $combinedPayload | ConvertTo-Json -Depth 10
@@ -743,7 +840,15 @@ function Invoke-AzureSecurityAudit {
                             
                             if ($aiResult.Success) {
                                 Write-Host "    AI analysis complete" -ForegroundColor Green
-                                Write-Host "      Estimated cost: `$$($aiResult.Metadata.EstimatedCost.ToString('F4'))" -ForegroundColor Gray
+                                if ($aiResult.Metadata.Cost) {
+                                    $cost = $aiResult.Metadata.Cost
+                                    Write-Host "      Cost: `$$($cost.Total.ToString('F4')) total" -ForegroundColor Gray
+                                    Write-Host "        Input: `$$($cost.Input.ToString('F4'))" -ForegroundColor Gray
+                                    Write-Host "        Output: `$$($cost.Output.ToString('F4'))" -ForegroundColor Gray
+                                } else {
+                                    # Fallback to EstimatedCost for backward compatibility
+                                    Write-Host "      Estimated cost: `$$($aiResult.Metadata.EstimatedCost.ToString('F4'))" -ForegroundColor Gray
+                                }
                                 
                                 # Add AI results to return object
                                 $result.AIAnalysis = $aiResult

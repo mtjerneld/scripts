@@ -1,10 +1,16 @@
-You are analyzing Azure governance data for a single tenant. Provide strategic, opinionated recommendations.
+You are analyzing Azure governance data for a single tenant across FOUR governance domains:
+1. Cost Optimization
+2. Security & Compliance  
+3. Infrastructure Operations (EOL, Backup, Changes)
+4. RBAC Governance
+
+Provide strategic, opinionated recommendations across ALL four domains.
 
 ## ANALYSIS PROCESS
 
-### Stage 1: Reasoning (Show Your Work)
+### Stage 1: Reasoning (Show Your Work Across All Domains)
 
-Before making recommendations, document your critical thinking:
+Before making recommendations, document your critical thinking for EACH domain:
 
 #### A) Cost Recommendation Analysis
 - List all cost recommendations by resource
@@ -15,6 +21,7 @@ Before making recommendations, document your critical thinking:
   - Decide: What's the single best recommendation?
 - Deduplicate: Same recommendation with different lookback periods = one opportunity
 - Calculate: True total potential savings (no double-counting)
+- Analyse cost_trends, top_spenders, by_category, by_subscription to draw insights. We are looking for things that require our attention.
 
 #### B) Security Risk Filtering
 - Separate Critical findings into:
@@ -27,12 +34,47 @@ Before making recommendations, document your critical thinking:
   - Is this internet-facing or internal?
 - Flag findings that are compliance theater vs real risk
 
-#### C) Implementation Dependencies
-- What must be done first? (e.g., Bastion before disabling RDP)
-- What conflicts? (e.g., can't do X and Y simultaneously)
-- What requires architecture changes vs configuration tweaks?
+#### C) Infrastructure Operations Analysis
+- **EOL Remediation:**
+  - <90 days to retirement: CRITICAL (list these)
+  - <180 days to retirement: IMPORTANT (summarize count)
+  - >180 days: Planning phase (note for future)
+- **Backup Coverage:**
+  - VMs without backup: Categorize by criticality (production vs dev)
+  - Running backups are more important than Deallocated ones
+  - Check for "health_status" != "Passed", this can incidate backup problems
+  - Calculate backup coverage percentage
+  - Identify business continuity risks
+  - Look for names like Prod, Test, PreProd, Lab etc. to evaluate backup priority (both in VM and Subscription names)
+- **Change Analysis:**
+  - Security-relevant changes: Flag IAM, network, storage security changes
+  - High-impact changes: Resource deletions, major config changes
+  - Especially focus on creations and deletions performed by Users.
+  - Noise vs signal: Filter routine operational changes
+  **Network Analysis:**
+  - Subnets not secured by NSG:s
+  - Disconnected Connections (Peerings, S2S, ER)
+  - Security issues found
 
-#### D) Data Quality Assessment
+#### D) RBAC Governance Analysis
+- **Privileged Access Patterns:**
+  - Owner/Contributor at subscription level: High risk (list these)
+  - Owner/Contributor at management group/root: CRITICAL risk
+  - Service principals with elevated roles: Assess risk
+- **Redundant Assignments:**
+  - Where multiple overlapping roles exist (explain why redundant)
+  - Audit complexity from over-assignment
+- **Access Review Needs:**
+  - Stale assignments (how many need review?)
+  - Guest users with privileged roles
+  - Service principals without owners
+
+#### E) Cross-Domain Analysis
+- Resources with issues across multiple domains (e.g., EOL + expensive + insecure)
+- Dependencies: What must be fixed first to enable other fixes?
+- Compounding risks: Multiple issues on same resource = higher priority
+
+#### F) Data Quality Assessment
 - What's missing from the data?
 - What assumptions are you making?
 - Where is there uncertainty?
@@ -41,22 +83,24 @@ Before making recommendations, document your critical thinking:
 
 ---
 
-### Stage 2: Recommendations (Final Output)
+### Stage 2: Recommendations (Final Output - All Domains)
 
 Now provide your analysis in the following structured format:
 
 ## EXECUTIVE SUMMARY
 
-**2-3 bullets maximum. Only include items that are:**
-- Critical risk OR high financial impact
-- Immediately actionable
-- Have clear business consequence
+**Maximum 5 bullets covering all four domains:**
+- Critical cost optimization opportunity
+- Most urgent security risk
+- Critical infrastructure issue (EOL, backup, or change)
+- Highest-risk RBAC finding
+- Overall tenant health assessment
 
 ## CRITICAL ACTIONS
 
-**Maximum 5 items. These are non-negotiable must-dos.**
+**Maximum 7 items across all four domains. These are non-negotiable must-dos.**
 
-For each action:
+For each action (label the domain: [COST], [SECURITY], [INFRA], [RBAC]):
 - Resource/Service and specific issue
 - WHY this matters (risk × impact analysis)
 - Recommended action (specific, not generic)
@@ -64,11 +108,13 @@ For each action:
 - Expected outcome (quantified if possible)
 - What happens if we DON'T do this
 
-**Prioritization logic: Why these 5 vs everything else in the data?**
+**Prioritization logic: Why these items vs everything else in the data?**
 
-## COST OPTIMIZATION
+## DOMAIN-SPECIFIC RECOMMENDATIONS
 
-### Best Opportunities (Deduplicated)
+### 1. COST OPTIMIZATION
+
+#### Best Opportunities (Deduplicated)
 For each opportunity:
 - Resource identification
 - Single best option (RI 1Y vs RI 3Y vs Savings Plan - pick ONE)
@@ -79,55 +125,144 @@ For each opportunity:
 
 **Total Potential Savings: [Deduplicated sum]**
 
-### Cost Optimization Notes
+#### Cost Optimization Notes
 - Explain any conflicting recommendations you resolved
 - Note any overlapping opportunities you combined
 - Highlight any uncertainty in savings estimates
 
-## SECURITY & COMPLIANCE
+---
 
-### Immediate Risks (This Week)
+### 2. SECURITY & COMPLIANCE
+
+#### Immediate Risks (This Week)
 - Only TRUE critical risks (internet exposure, data leakage, active attack vectors)
 - Explain WHY each is critical vs merely "high severity"
 
-### Important Improvements (This Month)
+#### Important Improvements (This Month)
 - High-impact security posture improvements
 - Compliance gaps with business impact
 
-### Lower Priority (This Quarter)
+#### Lower Priority (This Quarter)
 - Defense-in-depth enhancements
 - Compliance checkbox items
-- Informational findings
 
-**Note items you explicitly de-prioritized and why.**
+**Current Compliance Score: [X%]**  
+**Critical Findings: [N]** | **High Findings: [N]**
 
-## INFRASTRUCTURE HEALTH
+---
 
-### Urgent (30 days)
-- End-of-life items with retirement dates
-- Backup gaps for critical workloads
-- Immediate availability risks
+### 3. INFRASTRUCTURE OPERATIONS
 
-### Important (90 days)
-- Upcoming EOL items
-- RBAC hygiene
-- Technical debt
+#### A) End-of-Life Remediation
 
-## KEY INSIGHTS
+**Critical (<30 days):**
+- List resources retiring within 30 days with specific retirement dates
+- Business impact of each
 
-**3-5 bullets:**
-- Patterns observed in this tenant
-- Resources with multiple compounding issues
-- Architecture or governance recommendations
+**Important (<90 days):**
+- Count and categorize resources retiring within 90 days
+- Prioritized by business criticality
+
+**Planning (>90 days):**
+- Note count for future planning
+
+#### B) Backup Coverage
+
+**Current Status:**
+- Total VMs: [N]
+- Protected VMs: [N]
+- Backup Coverage: [X%]
+
+**Gaps Requiring Immediate Attention:**
+- Production VMs without backup
+- Business continuity risks
+
+**Recommended Actions:**
+- Enable backup for critical workloads
+- Define RPO/RTO requirements
+- Test restore procedures
+
+#### C) Change Analysis
+
+**Security-Relevant Changes:**
+- IAM changes: [count] - Flag any concerning patterns
+- Network changes: [count] - Note any exposure increases
+- Storage security changes: [count]
+
+**High-Impact Changes:**
+- Resource deletions: [count]
+- Major configuration changes
+
+**Change Management Notes:**
+- Patterns observed (good or concerning)
+- Recommendations for change approval process
+
+---
+
+### 4. RBAC GOVERNANCE
+
+#### Privileged Access Assessment
+
+**High-Risk Assignments:**
+- Owner/Contributor at subscription level: [N assignments]
+- List specific concerning assignments with risk explanation
+
+**Service Principal Risk:**
+- Elevated service principals: [N]
+- Assessment of necessity and risk
+
+**Guest User Access:**
+- Guest users with privileged roles: [N]
+- Compliance and security implications
+
+#### Redundant Assignments
+
+**Analysis:**
+- Total redundant assignments found: [N]
+- Explain why redundant (specific examples)
+- Audit complexity impact
+
+**Cleanup Recommendations:**
+- Specific assignments to remove/consolidate
+- Cleanup timeline and approach
+
+#### Access Review Needs
+
+**Current State:**
+- Assignments needing review: [N]
+- Last review date (if available): [date or "unknown"]
+
+**Recommended Actions:**
+- Implement access review cadence
+- Priority accounts for review
+- Process recommendations
+
+---
+
+## CROSS-DOMAIN INSIGHTS
+
+**Resources with Multiple Issues:**
+- Identify resources appearing in multiple domains (e.g., "VM-X is EOL, expensive, and insecure")
+- Explain compounding risk and priority
+
+**Tenant-Wide Patterns:**
+- 3-5 bullets on patterns observed across domains
+- Architectural or governance themes
 - Proactive improvements to prevent future issues
+
+**Quick Wins Across Domains:**
+- Low-effort, high-impact actions spanning multiple domains
+
+---
 
 ## RECOMMENDATIONS REJECTED OR DEPRIORITIZED
 
 **Document what you explicitly chose NOT to include and why:**
-- Low-value recommendations filtered out
+- Low-value recommendations filtered out (by domain)
 - Findings that are noise vs signal
 - Items blocked by other priorities
 - Uncertain or incomplete data points
+- Explain filtering decisions for transparency
 
 ---
 
@@ -137,9 +272,59 @@ For each opportunity:
 ---
 
 ## IMPORTANT REMINDERS:
+- Analyze ALL FOUR domains comprehensively (Cost, Security, Infrastructure, RBAC)
 - Reserved Instances and Savings Plans are MUTUALLY EXCLUSIVE - choose one, don't sum both
 - Multiple lookback period recommendations = one opportunity evaluated two ways
 - Not all "Critical" findings are equally critical - assess real risk
+- EOL <30 days = critical, <90 days = important
+- Backup gaps for production = critical risk
+- Privileged access at subscription/root = high risk
 - Be opinionated - make calls and explain trade-offs
-- Focus on signal over noise - less is more
-- Show your reasoning in Stage 1, then provide clean recommendations in Stage 2
+- Show your reasoning in Stage 1 for ALL domains, then provide clean recommendations in Stage 2
+- Balance attention across all four domains - don't overweight one area
+```
+
+---
+
+## Key Changes Made
+
+### 1. **Explicit Four-Domain Structure**
+```
+NEW: Four explicit domains with clear boundaries
+```
+
+### 2. **Reasoning Phase for ALL Domains**
+```
+A) Cost Analysis
+B) Security Filtering
+C) Infrastructure Operations Analysis  ← NEW
+D) RBAC Governance Analysis           ← NEW
+E) Cross-Domain Analysis              ← NEW
+```
+
+### 3. **Output Sections Match Domains**
+```
+Domain 1: Cost Optimization (existing, improved)
+Domain 2: Security & Compliance (existing, improved)
+Domain 3: Infrastructure Operations (NEW, detailed)
+  - EOL by urgency (<30d, <90d, >90d)
+  - Backup coverage with percentages
+  - Change analysis with security focus
+Domain 4: RBAC Governance (NEW, comprehensive)
+  - Privileged access risk assessment
+  - Redundancy analysis
+  - Access review recommendations
+```
+
+### 4. **Cross-Domain Insights Section**
+```
+- Resources with issues in multiple domains
+- Compounding risks
+- Quick wins across domains
+```
+
+### 5. **Balanced Prompting**
+```
+"Analyze ALL FOUR domains comprehensively"
+"Balance attention across all four domains"
+"Don't overweight one area"

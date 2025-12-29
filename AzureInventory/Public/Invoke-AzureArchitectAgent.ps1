@@ -139,6 +139,8 @@ function Invoke-AzureArchitectAgent {
         $inputTokens = $response.InputTokens
         $outputTokens = $response.OutputTokens
         $reasoningTokens = $response.ReasoningTokens
+        $inputCost = $response.InputCost
+        $outputCost = $response.OutputCost
         $actualCost = $response.EstimatedCost
         
         Write-Host "  AI Analysis Complete" -ForegroundColor Green
@@ -151,7 +153,22 @@ function Invoke-AzureArchitectAgent {
         } else {
             Write-Host "    Tokens: ~$inputTokens (estimated)" -ForegroundColor Gray
         }
-        Write-Host "    Cost: `$$($actualCost.ToString('F4'))" -ForegroundColor Gray
+        Write-Host "    Cost: `$$($actualCost.ToString('F4')) total" -ForegroundColor Gray
+        Write-Host "      Input: `$$($inputCost.ToString('F4')) ($inputTokens tokens)" -ForegroundColor Gray
+        if ($outputTokens) {
+            Write-Host "      Output: `$$($outputCost.ToString('F4')) ($outputTokens tokens)" -ForegroundColor Gray
+        } else {
+            Write-Host "      Output: `$$($outputCost.ToString('F4')) (estimated)" -ForegroundColor Gray
+        }
+        
+        # Check for truncation
+        if ($response.Truncated) {
+            Write-Warning "  ⚠️  Response was TRUNCATED due to max_output_tokens limit!"
+            Write-Warning "     Consider increasing OPENAI_MAX_OUTPUT_TOKENS to get the full analysis."
+        } elseif ($response.Incomplete) {
+            Write-Warning "  ⚠️  Response is INCOMPLETE: $($response.IncompleteReason)"
+            Write-Warning "     Consider increasing OPENAI_MAX_OUTPUT_TOKENS or reducing input size."
+        }
         
         # Save output if path provided
         if ($OutputPath) {
@@ -175,14 +192,32 @@ function Invoke-AzureArchitectAgent {
                 $tokenUsage.reasoning = $reasoningTokens
             }
             
-            @{
+            $costBreakdown = @{
+                total = $actualCost
+                input = $inputCost
+                output = $outputCost
+            }
+            
+            $metadataObj = @{
                 timestamp = $timestamp
                 model = $Model
                 duration_seconds = $duration.TotalSeconds
                 token_usage = $tokenUsage
-                cost = $actualCost
+                cost = $costBreakdown
                 finish_reason = if ($response.Raw -and $response.Raw.status) { $response.Raw.status } else { "completed" }
-            } | ConvertTo-Json | Out-File $metadataFile -Encoding UTF8
+            }
+            
+            # Add truncation/incomplete flags if present
+            if ($response.Truncated) {
+                $metadataObj.truncated = $true
+                $metadataObj.truncation_reason = "Response truncated due to max_output_tokens limit"
+            }
+            if ($response.Incomplete) {
+                $metadataObj.incomplete = $true
+                $metadataObj.incomplete_reason = $response.IncompleteReason
+            }
+            
+            $metadataObj | ConvertTo-Json | Out-File $metadataFile -Encoding UTF8
         }
         
         return @{
@@ -197,7 +232,15 @@ function Invoke-AzureArchitectAgent {
                     Reasoning = $reasoningTokens
                     Estimated = if ($outputTokens) { $false } else { $true }
                 }
-                EstimatedCost = $actualCost
+                Cost = @{
+                    Total = $actualCost
+                    Input = $inputCost
+                    Output = $outputCost
+                }
+                EstimatedCost = $actualCost  # Keep for backward compatibility
+                Truncated = if ($response.Truncated) { $true } else { $false }
+                Incomplete = if ($response.Incomplete) { $true } else { $false }
+                IncompleteReason = if ($response.IncompleteReason) { $response.IncompleteReason } else { $null }
                 Timestamp = Get-Date
             }
             RawResponse = $response

@@ -316,17 +316,51 @@ function Invoke-OpenAIAnalysis {
     
     # Recalculate actual cost with real token counts if available
     $actualCost = $costEstimate
-    if ($actualOutputTokens) {
-        $actualInputCost = [Math]::Round((($actualInputTokens/1000000.0)*$priceIn), 4)
-        $actualOutputCost = [Math]::Round((($actualOutputTokens/1000000.0)*$priceOut), 4)
-        $actualCost = [Math]::Round($actualInputCost + $actualOutputCost, 4)
+    $actualInputCost = [Math]::Round((($actualInputTokens/1000000.0)*$priceIn), 4)
+    $actualOutputCost = if ($actualOutputTokens) {
+        [Math]::Round((($actualOutputTokens/1000000.0)*$priceOut), 4)
+    } else {
+        # Estimate output cost based on max output tokens if actual not available
+        [Math]::Round((($effectiveMaxOutput/1000000.0)*$priceOut), 4)
+    }
+    $actualCost = [Math]::Round($actualInputCost + $actualOutputCost, 4)
+    
+    # Check for truncation indicators in output messages
+    $truncated = $false
+    $truncationReason = $null
+    if ($json.output) {
+        foreach ($outputItem in $json.output) {
+            if ($outputItem.type -eq 'message' -and $outputItem.finish_reason) {
+                # finish_reason can be: "completed", "length", "stop", "content_filter", etc.
+                # "length" means it was truncated due to max_output_tokens
+                if ($outputItem.finish_reason -eq 'length') {
+                    $truncated = $true
+                    $truncationReason = "Response truncated due to max_output_tokens limit"
+                    break
+                }
+            }
+        }
+    }
+    
+    # Warn if output tokens are close to the limit (within 5%)
+    if ($actualOutputTokens -and $effectiveMaxOutput -gt 0) {
+        $usagePercent = ($actualOutputTokens / $effectiveMaxOutput) * 100
+        if ($usagePercent -ge 95) {
+            Write-Warning "Output token usage is very high ($usagePercent% of max). Response may be truncated. Consider increasing OPENAI_MAX_OUTPUT_TOKENS."
+        }
     }
     
     # Check for incomplete response and handle appropriately
-    if ($json.status -eq 'incomplete') {
-        $incompleteReason = if ($json.incomplete_details) { $json.incomplete_details.reason } else { 'unknown' }
+    if ($json.status -eq 'incomplete' -or $truncated) {
+        $incompleteReason = if ($truncated) { 
+            $truncationReason 
+        } elseif ($json.incomplete_details) { 
+            $json.incomplete_details.reason 
+        } else { 
+            'unknown' 
+        }
         $actualMaxTokens = if ($json.max_output_tokens) { $json.max_output_tokens } else { 'unknown' }
-        Write-Warning "Response is incomplete (reason: $incompleteReason, max_output_tokens sent: $actualMaxTokens, requested: $effectiveMaxOutput)"
+        Write-Warning "Response is incomplete (reason: $incompleteReason, max_output_tokens sent: $actualMaxTokens, requested: $effectiveMaxOutput, actual output: $actualOutputTokens)"
         
         # For markdown format with incomplete response, try to extract any available text
         if ($OutputFormat -eq 'markdown') {
@@ -347,10 +381,13 @@ function Invoke-OpenAIAnalysis {
                 InputTokens = $actualInputTokens
                 OutputTokens = $actualOutputTokens
                 ReasoningTokens = $actualReasoningTokens
+                InputCost = $actualInputCost
+                OutputCost = $actualOutputCost
                 EstimatedCost = $actualCost
                 Model = $modelToUse
                 Incomplete = $true
                 IncompleteReason = $incompleteReason
+                Truncated = $truncated
             }
         } else {
             throw "Response incomplete (reason: $incompleteReason, max_output_tokens sent: $actualMaxTokens). Consider increasing OPENAI_MAX_OUTPUT_TOKENS."
@@ -367,8 +404,11 @@ function Invoke-OpenAIAnalysis {
             InputTokens = $actualInputTokens
             OutputTokens = $actualOutputTokens
             ReasoningTokens = $actualReasoningTokens
+            InputCost = $actualInputCost
+            OutputCost = $actualOutputCost
             EstimatedCost = $actualCost
             Model = $modelToUse
+            Truncated = $truncated
         }
     }
     
@@ -389,8 +429,11 @@ function Invoke-OpenAIAnalysis {
             InputTokens = $actualInputTokens
             OutputTokens = $actualOutputTokens
             ReasoningTokens = $actualReasoningTokens
+            InputCost = $actualInputCost
+            OutputCost = $actualOutputCost
             EstimatedCost = $actualCost
             Model = $modelToUse
+            Truncated = $truncated
         }
     } else {
         # Fallback to text extraction
@@ -402,8 +445,11 @@ function Invoke-OpenAIAnalysis {
             InputTokens = $actualInputTokens
             OutputTokens = $actualOutputTokens
             ReasoningTokens = $actualReasoningTokens
+            InputCost = $actualInputCost
+            OutputCost = $actualOutputCost
             EstimatedCost = $actualCost
             Model = $modelToUse
+            Truncated = $truncated
         }
     }
 }
