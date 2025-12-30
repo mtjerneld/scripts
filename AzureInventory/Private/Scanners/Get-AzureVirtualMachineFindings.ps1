@@ -83,7 +83,7 @@ function Get-AzureVirtualMachineFindings {
     }
     
     # Check if vms is null or empty array
-    if ($null -eq $vms -or ($vms -is [System.Array] -and $vms.Count -eq 0)) {
+    if (-not $vms -or @($vms).Count -eq 0) {
         Write-Verbose "No VMs found in subscription $SubscriptionName"
         return [PSCustomObject]@{
             Findings  = $findings

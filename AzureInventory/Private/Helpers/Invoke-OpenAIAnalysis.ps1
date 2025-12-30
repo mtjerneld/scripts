@@ -106,9 +106,9 @@ function Invoke-OpenAIAnalysis {
     $inputTokens = Get-EstimatedTokens -Text ($SystemPrompt + $UserPrompt)
     
     # Get pricing from environment or use defaults (per 1M tokens, matching OpenAI's pricing format)
-    $priceIn = [double]([double]$env:OPENAI_PRICE_INPUT_PER_1M_USD | ForEach-Object { if ($_ -gt 0) { $_ } else { 5.0 } })
-    $priceOut = [double]([double]$env:OPENAI_PRICE_OUTPUT_PER_1M_USD | ForEach-Object { if ($_ -gt 0) { $_ } else { 15.0 } })
-    $maxCost = [double]([double]$env:OPENAI_MAX_COST_USD_PER_RUN | ForEach-Object { if ($_ -gt 0) { $_ } else { $MaxCostPerRun } })
+    $priceIn = if ($env:OPENAI_PRICE_INPUT_PER_1M_USD) { [double]$env:OPENAI_PRICE_INPUT_PER_1M_USD } else { 5.0 }
+    $priceOut = if ($env:OPENAI_PRICE_OUTPUT_PER_1M_USD) { [double]$env:OPENAI_PRICE_OUTPUT_PER_1M_USD } else { 15.0 }
+    $maxCost = if ($env:OPENAI_MAX_COST_USD_PER_RUN) { [double]$env:OPENAI_MAX_COST_USD_PER_RUN } else { $MaxCostPerRun }
     
     # Calculate costs (convert tokens to millions for pricing)
     $inputCost = [Math]::Round((($inputTokens/1000000.0)*$priceIn), 4)

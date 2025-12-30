@@ -83,7 +83,7 @@ function Get-AzureStorageFindings {
     }
     
     # Check if storageAccounts is null or empty array
-    if ($null -eq $storageAccounts -or ($storageAccounts -is [System.Array] -and $storageAccounts.Count -eq 0)) {
+    if (-not $storageAccounts -or @($storageAccounts).Count -eq 0) {
         Write-Verbose "No storage accounts found in subscription $SubscriptionName"
         return @{
             Findings = $findings

@@ -372,27 +372,7 @@ function Invoke-AzureSecurityAudit {
     $complianceScores = Calculate-CisComplianceScore -Findings $allFindings -IncludeLevel2:$IncludeLevel2
     
     # Ensure EOLFindings is converted to array for proper serialization
-    $eolFindingsArray = @()
-    if ($allEOLFindings -and $allEOLFindings.Count -gt 0) {
-        if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
-            # Convert List to array by iterating
-            foreach ($finding in $allEOLFindings) {
-                if ($null -ne $finding) {
-                    $eolFindingsArray += $finding
-                }
-            }
-        } elseif ($allEOLFindings -is [System.Array]) {
-            $eolFindingsArray = $allEOLFindings
-        } elseif ($allEOLFindings -is [System.Collections.IEnumerable] -and $allEOLFindings -isnot [string]) {
-            foreach ($finding in $allEOLFindings) {
-                if ($null -ne $finding) {
-                    $eolFindingsArray += $finding
-                }
-            }
-        } else {
-            $eolFindingsArray = @($allEOLFindings)
-        }
-    }
+    $eolFindingsArray = @($allEOLFindings | Where-Object { $null -ne $_ })
     Write-Verbose "Converting EOLFindings: List count=$($allEOLFindings.Count), Array count=$($eolFindingsArray.Count)"
     
     # Debug: Log first finding if available
@@ -458,11 +438,13 @@ function Invoke-AzureSecurityAudit {
     try {
         Write-Host "`n=== Collecting Cost Data ===" -ForegroundColor Cyan
         $costTrackingData = Collect-CostData -Subscriptions $subscriptions -DaysToInclude 30 -Errors $errors
+        $result.CostTrackingData = $costTrackingData
         Write-Verbose "Updated result.CostTrackingData with cost data for $($costTrackingData.SubscriptionCount) subscriptions"
     }
     catch {
         Write-Warning "Failed to collect cost tracking data: $_"
         $costTrackingData = @{}
+        $result.CostTrackingData = $costTrackingData
     }
 
     # Collect RBAC Inventory
@@ -523,26 +505,7 @@ function Invoke-AzureSecurityAudit {
             }
             
             # Update result.EOLFindings AFTER EOL tracking completes (it was set to empty array earlier)
-            $eolFindingsArrayUpdated = @()
-            if ($allEOLFindings -and $allEOLFindings.Count -gt 0) {
-                if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
-                    foreach ($finding in $allEOLFindings) {
-                        if ($null -ne $finding) {
-                            $eolFindingsArrayUpdated += $finding
-                        }
-                    }
-                } elseif ($allEOLFindings -is [System.Array]) {
-                    $eolFindingsArrayUpdated = $allEOLFindings
-                } elseif ($allEOLFindings -is [System.Collections.IEnumerable] -and $allEOLFindings -isnot [string]) {
-                    foreach ($finding in $allEOLFindings) {
-                        if ($null -ne $finding) {
-                            $eolFindingsArrayUpdated += $finding
-                        }
-                    }
-                } else {
-                    $eolFindingsArrayUpdated = @($allEOLFindings)
-                }
-            }
+            $eolFindingsArrayUpdated = @($allEOLFindings | Where-Object { $null -ne $_ })
             $result.EOLFindings = $eolFindingsArrayUpdated
             Write-Verbose "EOLTracking: Updated result.EOLFindings with $($eolFindingsArrayUpdated.Count) findings"
         }

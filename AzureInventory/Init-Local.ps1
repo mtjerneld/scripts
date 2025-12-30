@@ -492,26 +492,7 @@ function Test-EOLTracking {
     }
 
     # Convert List to array for Export-EOLReport (same as Invoke-AzureSecurityAudit)
-    $eolFindingsArray = @()
-    if ($allEOLFindings -and $allEOLFindings.Count -gt 0) {
-        if ($allEOLFindings -is [System.Collections.Generic.List[PSObject]]) {
-            foreach ($finding in $allEOLFindings) {
-                if ($null -ne $finding) {
-                    $eolFindingsArray += $finding
-                }
-            }
-        } elseif ($allEOLFindings -is [System.Array]) {
-            $eolFindingsArray = $allEOLFindings
-        } elseif ($allEOLFindings -is [System.Collections.IEnumerable] -and $allEOLFindings -isnot [string]) {
-            foreach ($finding in $allEOLFindings) {
-                if ($null -ne $finding) {
-                    $eolFindingsArray += $finding
-                }
-            }
-        } else {
-            $eolFindingsArray = @($allEOLFindings)
-        }
-    }
+    $eolFindingsArray = @($allEOLFindings | Where-Object { $null -ne $_ })
     
     Write-Host "`nTotal EOL findings to export: $($eolFindingsArray.Count)" -ForegroundColor Cyan
 

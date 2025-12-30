@@ -183,22 +183,7 @@ function Generate-AuditReports {
         if ($AuditResult.EOLFindings) {
             Write-Verbose "Generate-AuditReports: EOLFindings type = $($AuditResult.EOLFindings.GetType().FullName), Count = $($AuditResult.EOLFindings.Count)"
             
-            # If it's a List, convert to array
-            if ($AuditResult.EOLFindings -is [System.Collections.Generic.List[PSObject]]) {
-                $eolFindings = @($AuditResult.EOLFindings)
-            }
-            # If it's already an array
-            elseif ($AuditResult.EOLFindings -is [System.Array]) {
-                $eolFindings = $AuditResult.EOLFindings
-            }
-            # If it's IEnumerable (but not string)
-            elseif ($AuditResult.EOLFindings -is [System.Collections.IEnumerable] -and $AuditResult.EOLFindings -isnot [string]) {
-                $eolFindings = @($AuditResult.EOLFindings)
-            }
-            # Single object
-            else {
-                $eolFindings = @($AuditResult.EOLFindings)
-            }
+            $eolFindings = @($AuditResult.EOLFindings | Where-Object { $null -ne $_ })
             
             Write-Verbose "Generate-AuditReports: Normalized EOLFindings count = $($eolFindings.Count)"
         } else {

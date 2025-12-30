@@ -87,5 +87,8 @@ AZURE_CLIENT_ID=...
 AZURE_CLIENT_SECRET=...
 ```
 
+### Key rules
+We never write or change anything in the Azure- or EntraID tenants. We only ever read. It is fundamentally important that this tool never make any changes in the audit environment. 
+
 ## Testing
 Tests use Pester framework. Test files in `Tests/` directory follow `*.Tests.ps1` naming. Tests import functions directly via dot-sourcing rather than importing the full module.

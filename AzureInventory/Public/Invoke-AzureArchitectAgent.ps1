@@ -47,7 +47,7 @@ function Invoke-AzureArchitectAgent {
     # Try to find module root by looking for AzureSecurityAudit.psm1 (more robust)
     $moduleRoot = $null
     $currentPath = $PSScriptRoot
-    while ($currentPath -and -not $moduleRoot) {
+    while ($currentPath) {
         if (Test-Path (Join-Path $currentPath "AzureSecurityAudit.psm1")) {
             $moduleRoot = $currentPath
             break

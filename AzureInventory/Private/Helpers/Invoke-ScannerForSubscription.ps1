@@ -201,25 +201,12 @@ function Invoke-ScannerForSubscription {
                 $findings = @()
             }
             
-            # Add findings to collection
+            # Add findings to collection - @() ensures array even for single objects
             $findingsAdded = 0
-            if ($findings -is [System.Array]) {
-                foreach ($finding in $findings) {
-                    if ($null -ne $finding) {
-                        $AllFindings.Add($finding)
-                        $findingsAdded++
-                    }
-                }
-            } elseif ($findings -is [System.Collections.Generic.List[PSObject]]) {
-                $findingsAdded = $findings.Count
-                $AllFindings.AddRange($findings)
-            } else {
-                # Fallback: try to enumerate
-                foreach ($finding in $findings) {
-                    if ($null -ne $finding) {
-                        $AllFindings.Add($finding)
-                        $findingsAdded++
-                    }
+            foreach ($finding in @($findings)) {
+                if ($null -ne $finding) {
+                    $AllFindings.Add($finding)
+                    $findingsAdded++
                 }
             }
             
@@ -228,12 +215,10 @@ function Invoke-ScannerForSubscription {
             # Handle EOL findings if present
             if ($null -ne $eolFindings) {
                 $eolFindingsAdded = 0
-                if ($eolFindings -is [System.Array] -or $eolFindings -is [System.Collections.Generic.List[PSObject]]) {
-                    foreach ($eolFinding in $eolFindings) {
-                        if ($null -ne $eolFinding) {
-                            $AllEOLFindings.Add($eolFinding)
-                            $eolFindingsAdded++
-                        }
+                foreach ($eolFinding in @($eolFindings)) {
+                    if ($null -ne $eolFinding) {
+                        $AllEOLFindings.Add($eolFinding)
+                        $eolFindingsAdded++
                     }
                 }
                 Write-Verbose "Added $eolFindingsAdded EOL findings from $category scan. Total EOL findings in collection: $($AllEOLFindings.Count)"

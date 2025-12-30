@@ -78,7 +78,7 @@ function Get-AzureKeyVaultFindings {
         }
     }
     
-    if ($null -eq $vaults -or ($vaults -is [System.Array] -and $vaults.Count -eq 0)) {
+    if (-not $vaults -or @($vaults).Count -eq 0) {
         Write-Verbose "No Key Vaults found in subscription $SubscriptionName"
         return @{
             Findings = $findings
