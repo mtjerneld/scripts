@@ -9,8 +9,14 @@
 
 param(
     [switch]$UseRealAPI,
-    [string]$OutputPath = "$PSScriptRoot\..\TestOutputs"
+    [string]$OutputPath
 )
+
+# Define default test output directory (project root/test-output)
+if (-not $OutputPath) {
+    $moduleRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $OutputPath = Join-Path $moduleRoot "test-output"
+}
 
 Describe "AI Analysis Integration Tests" {
     BeforeAll {

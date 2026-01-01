@@ -1,0 +1,479 @@
+/* Section Box - Standard container for all report sections */
+.section-box {
+    margin: 2rem 0;
+    padding: 1.5rem;
+    background-color: var(--bg-surface);
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+}
+
+.section-box h2,
+.section-box h3 {
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    font-size: 1.2rem;
+    color: var(--text);
+    font-weight: 600;
+    /* Ensure titles are always visible, even when followed by tables */
+    display: block;
+    visibility: visible;
+}
+
+.section-box h4 {
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+    font-size: 1rem;
+    color: var(--text-secondary);
+}
+
+/* Compact h4 variant for subsections */
+h4[style*="margin:5px 0"],
+.peering-section h4,
+.expandable h4 {
+    margin: 5px 0 !important;
+}
+
+/* Expandable Section Component Styles - Consolidated .expandable with BEM naming */
+.expandable {
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 16px;
+    background: var(--bg-surface);
+}
+
+/* Compact spacing variant */
+.expandable[style*="margin-bottom: 15px"] {
+    margin-bottom: 15px;
+}
+
+.expandable__header {
+    padding: 14px 20px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-secondary);
+    transition: background 0.2s ease;
+}
+
+.expandable__header:hover {
+    background: var(--bg-hover);
+}
+
+.expandable__content {
+    padding: 1rem;
+}
+
+.expandable--collapsed .expandable__content {
+    display: none;
+}
+
+.expandable__title {
+    font-weight: 600;
+    font-size: 1.1rem;
+    text-align: left;
+    flex: 1;
+    display: flex;
+    align-items: center;
+}
+
+/* Ensure h2/h3 titles inside expandable headers are always visible */
+.expandable__title h2,
+.expandable__title h3 {
+    display: block;
+    visibility: visible;
+    opacity: 1;
+    margin: 0;
+    flex: 1;
+}
+
+/* SVG icons in expandable titles */
+.expandable__title svg {
+    vertical-align: middle;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+
+.expandable__badges {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.expandable__icon {
+    width: 0;
+    height: 0;
+    border-left: 5px solid var(--text-muted);
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    transition: transform 0.2s;
+    margin-right: 8px;
+}
+
+.expandable:not(.expandable--collapsed) .expandable__icon,
+.expandable__header:not(.collapsed) .expandable__icon {
+    transform: rotate(90deg);
+}
+
+/* Size variants */
+.expandable--small .expandable__header {
+    padding: 10px 16px;
+}
+
+.expandable--small .expandable__title {
+    font-size: 0.95rem;
+}
+
+/* Legacy support for backward compatibility */
+.subscription-section,
+.category-section,
+.subscription-box,
+.category-box {
+    background: var(--bg-surface);
+    border-radius: 12px;
+    margin-bottom: 20px;
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+}
+
+.subscription-header,
+.category-header {
+    background: var(--bg-secondary);
+    padding: 16px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.subscription-header:hover,
+.category-header:hover {
+    background: var(--bg-hover);
+}
+
+.subscription-title,
+.category-title {
+    font-weight: 600;
+    font-size: 1.1rem;
+    flex: 1;
+    text-align: left;
+}
+
+.subscription-color-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-right: 10px;
+}
+
+.subscription-stats {
+    display: flex;
+    gap: 20px;
+    font-size: 0.85rem;
+}
+
+.subscription-stats .stat {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.subscription-stats .stat.protected {
+    color: var(--accent-green);
+}
+
+.subscription-stats .stat.unprotected {
+    color: var(--accent-red);
+}
+
+.subscription-stats .stat.running {
+    color: var(--accent-blue);
+}
+
+.subscription-content,
+.category-content {
+    padding: 0;
+}
+
+.category-header.collapsed + .category-content {
+    display: none;
+}
+
+.category-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    font-weight: 700;
+    margin-right: 8px;
+}
+
+.category-icon.cost {
+    background: rgba(0, 210, 106, 0.2);
+    color: var(--accent-green);
+}
+
+.category-icon.security {
+    background: rgba(255, 107, 107, 0.2);
+    color: var(--accent-red);
+}
+
+.category-icon.reliability {
+    background: rgba(255, 159, 67, 0.2);
+    color: var(--accent-orange);
+}
+
+.category-icon.operational {
+    background: rgba(84, 160, 255, 0.2);
+    color: var(--accent-blue);
+}
+
+.category-icon.performance {
+    background: rgba(155, 89, 182, 0.2);
+    color: var(--accent-purple);
+}
+
+.category-stats {
+    display: flex;
+    gap: 12px;
+    font-size: 0.8rem;
+}
+
+.expand-icon {
+    width: 0;
+    height: 0;
+    border-left: 6px solid var(--text-muted);
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-right: none;
+    display: inline-block;
+    transition: transform 0.2s;
+    margin-right: 0.5rem;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+
+.subscription-header:not(.collapsed) .expand-icon,
+.category-header:not(.collapsed) .expand-icon,
+.expandable:not(.expandable--collapsed) .expand-icon {
+    transform: rotate(90deg);
+}
+
+/* Recommendation card styles */
+.rec-card {
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.2s;
+}
+
+.rec-card:last-child {
+    border-bottom: none;
+}
+
+.rec-header {
+    padding: 16px 20px;
+    cursor: pointer;
+    display: grid;
+    grid-template-columns: 24px 1fr auto;
+    gap: 12px;
+    align-items: start;
+}
+
+.rec-header:hover {
+    background: var(--bg-hover);
+}
+
+.rec-expand {
+    width: 0;
+    height: 0;
+    border-left: 5px solid var(--text-muted);
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    transition: transform 0.2s;
+    margin-top: 6px;
+}
+
+.rec-card.expanded .rec-expand {
+    transform: rotate(90deg);
+}
+
+.rec-main {
+    min-width: 0;
+}
+
+.rec-problem {
+    font-weight: 500;
+    margin-bottom: 4px;
+    color: var(--text-primary);
+}
+
+.rec-meta {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.rec-meta-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rec-stats {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.resource-count {
+    background: var(--bg-primary);
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.savings-badge {
+    color: var(--accent-green);
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.rec-details {
+    display: none;
+    background: var(--bg-hover);
+    padding: 0 20px 20px 56px;
+}
+
+.rec-card.expanded .rec-details {
+    display: block;
+}
+
+.detail-section {
+    margin-bottom: 20px;
+}
+
+.detail-section:last-child {
+    margin-bottom: 0;
+}
+
+.detail-title {
+    color: var(--accent-blue);
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 8px;
+}
+
+.detail-content {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+.detail-content a {
+    color: var(--accent-blue);
+    text-decoration: none;
+}
+
+.detail-content a:hover {
+    text-decoration: underline;
+}
+
+/* Table layout: show rec-details when detail row is visible */
+.rec-detail-row .rec-details {
+    display: block;
+}
+
+/* Resources section */
+.resources-section {
+    margin-top: 20px;
+    background: var(--bg-resource);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.resources-header {
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.resources-header:hover {
+    background: var(--bg-hover);
+}
+
+.resources-title {
+    font-weight: 500;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.resources-table-wrapper {
+    display: none;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.resources-section.expanded .resources-table-wrapper {
+    display: block;
+}
+
+/* Subscription box / Category box (Security report) */
+.subscription-box,
+.category-box {
+    margin-bottom: 1.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background-color: var(--surface);
+    overflow: hidden;
+}
+
+.subscription-box .subscription-header h3,
+.category-box .category-header h3 {
+    margin: 0;
+    flex: 1;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+    /* Ensure title is always visible, even when table headers are present */
+    display: block;
+}
+
+.subscription-box .subscription-content,
+.category-box .category-content {
+    padding: 1rem;
+}
+
+/* Ensure box titles are visible even when tables are directly inside */
+.subscription-box .subscription-content > table:first-child,
+.category-box .category-content > table:first-child,
+.expandable__content > table:first-child,
+.section-box > table:first-child {
+    margin-top: 0;
+}
+
+/* Ensure titles in boxes remain visible and prominent */
+.section-box > h2:first-child,
+.section-box > h3:first-child,
+.subscription-box .subscription-header h3,
+.category-box .category-header h3,
+.expandable__title h2,
+.expandable__title h3 {
+    /* Ensure titles are always visible, even when followed by tables */
+    display: block;
+    visibility: visible;
+    opacity: 1;
+}

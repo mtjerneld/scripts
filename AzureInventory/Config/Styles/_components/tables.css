@@ -1,0 +1,137 @@
+/* Table Component Styles - Consolidated .data-table */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.data-table thead {
+    background-color: var(--bg-hover);
+}
+
+.data-table th {
+    background: var(--bg-hover);
+    padding: 12px 16px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.data-table td {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.9rem;
+    word-wrap: break-word;
+    word-break: break-word;
+    overflow-wrap: break-word;
+}
+
+.data-table tr:last-child td {
+    border-bottom: none;
+}
+
+.data-table tr:hover td {
+    background: var(--bg-hover);
+}
+
+.data-table tr.hidden {
+    display: none;
+}
+
+/* Status colors for table cells */
+.data-table .status-connected,
+.data-table td.status-connected {
+    color: #2ecc71;
+}
+
+.data-table .status-disconnected,
+.data-table td.status-disconnected {
+    color: #e74c3c;
+}
+
+/* Sticky header modifier */
+.data-table--sticky-header thead {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.data-table--sticky-header th {
+    background-color: var(--bg);
+    border-bottom: 2px solid var(--border);
+}
+
+/* Compact modifier */
+.data-table--compact th,
+.data-table--compact td {
+    padding: 8px;
+    font-size: 0.9rem;
+}
+
+.data-table--compact th {
+    font-size: 0.8rem;
+    padding: 8px;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+/* Extra compact modifier for Network Inventory tables (like risk tables) */
+.data-table--extra-compact th,
+.data-table--extra-compact td {
+    padding: 6px 8px;
+    font-size: 0.85rem;
+}
+
+.data-table--extra-compact th {
+    font-size: 0.75rem;
+    padding: 6px 8px;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+/* Matrix table modifier (for RBAC) */
+.data-table--matrix {
+    /* Additional styles if needed for matrix layout */
+}
+
+/* Row states */
+.data-table .row-hidden {
+    display: none;
+}
+
+.data-table tr:hover {
+    background-color: var(--bg-hover);
+}
+
+/* Resource name styling */
+.resource-name {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+/* No data state */
+.no-data {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+}
+
+.no-data h2 {
+    color: var(--accent-green);
+    margin-bottom: 10px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .data-table {
+        font-size: 0.85rem;
+    }
+    
+    .data-table th,
+    .data-table td {
+        padding: 0.5rem;
+    }
+}

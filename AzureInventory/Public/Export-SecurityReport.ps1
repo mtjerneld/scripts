@@ -90,7 +90,7 @@ function Export-SecurityReport {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Security Audit</title>
     <style type="text/css">
-$(Get-ReportStylesheet -IncludeReportSpecific)
+$(Get-ReportStylesheet)
     </style>
 </head>
 <body>
@@ -98,7 +98,7 @@ $(Get-ReportNavigation -ActivePage "Security")
     
     <div class="container">
         <div class="page-header">
-            <h1>Security Audit</h1>
+            <h1>&#128737; Security Audit</h1>
             <div class="metadata">
                 <p><strong>Tenant:</strong> $($AuditResult.TenantId)</p>
                 <p><strong>Scanned:</strong> $($AuditResult.ScanStartTime.ToString('yyyy-MM-dd HH:mm:ss'))</p>
@@ -107,61 +107,181 @@ $(Get-ReportNavigation -ActivePage "Security")
                 <p><strong>Total Findings:</strong> $totalFindings</p>
             </div>
         </div>
-        
-        <h2>Executive Summary</h2>
-        <div class="summary-grid">
-            <div class="summary-card critical" id="summaryCritical" data-severity="Critical" style="cursor: pointer;">
-                <div class="summary-card-label">Critical</div>
-                <div class="summary-card-value">$criticalValue</div>
-            </div>
-            <div class="summary-card high" id="summaryHigh" data-severity="High" style="cursor: pointer;">
-                <div class="summary-card-label">High</div>
-                <div class="summary-card-value">$highValue</div>
-            </div>
-            <div class="summary-card medium" id="summaryMedium" data-severity="Medium" style="cursor: pointer;">
-                <div class="summary-card-label">Medium</div>
-                <div class="summary-card-value">$mediumValue</div>
-            </div>
-            <div class="summary-card low" id="summaryLow" data-severity="Low" style="cursor: pointer;">
-                <div class="summary-card-label">Low</div>
-                <div class="summary-card-value">$lowValue</div>
-            </div>
-        </div>
 "@
         
-        # Compliance Scores Section
+        # Compliance Scores Section - Always show, calculate from data if ComplianceScores missing
+        # Always calculate OverallScore from findings to ensure consistency
+        $totalChecks = $findings.Count
+        $passedChecks = @($findings | Where-Object { $_.Status -eq 'PASS' }).Count
+        $overallScore = if ($totalChecks -gt 0) { [math]::Round(($passedChecks / $totalChecks) * 100, 1) } else { 0 }
+        
+        # Always calculate L1 and L2 scores from findings for consistency
+        $l1Findings = $findings | Where-Object { $_.CisLevel -eq "L1" }
+        $l1Total = $l1Findings.Count
+        $l1Passed = @($l1Findings | Where-Object { $_.Status -eq 'PASS' }).Count
+        $l1Score = if ($l1Total -gt 0) { [math]::Round(($l1Passed / $l1Total) * 100, 1) } else { $null }
+        
+        $l2Findings = $findings | Where-Object { $_.CisLevel -eq "L2" }
+        $l2Total = $l2Findings.Count
+        $l2Passed = @($l2Findings | Where-Object { $_.Status -eq 'PASS' }).Count
+        $l2Score = if ($l2Total -gt 0) { [math]::Round(($l2Passed / $l2Total) * 100, 1) } else { $null }
+        
         if ($AuditResult.ComplianceScores) {
-            $overallScore = $AuditResult.ComplianceScores.OverallScore
-            $l1Score = $AuditResult.ComplianceScores.L1Score
-            $l2Score = $AuditResult.ComplianceScores.L2Score
+            # Use category scores from ComplianceScores if available
             $scoresByCategory = $AuditResult.ComplianceScores.ScoresByCategory
-            $passedChecks = $AuditResult.ComplianceScores.PassedChecks
-            $totalChecks = $AuditResult.ComplianceScores.TotalChecks
+        } else {
+            # Fallback: Calculate scores by category from findings if ComplianceScores not available
+            Write-Verbose "ComplianceScores not found in AuditResult, calculating category scores from findings..."
             
-            # Get subscription names for score cards
-            $allSubscriptionNames = ($findings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
-            $l1SubscriptionNames = ($findings | Where-Object { $_.CisLevel -eq "L1" } | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
-            $l2SubscriptionNames = ($findings | Where-Object { $_.CisLevel -eq "L2" } | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+            # Calculate scores by category
+            $scoresByCategory = @{}
+            $categories = $findings | Select-Object -ExpandProperty Category -Unique
+            foreach ($cat in $categories) {
+                $catFindings = $findings | Where-Object { $_.Category -eq $cat }
+                $catTotal = $catFindings.Count
+                $catPassed = @($catFindings | Where-Object { $_.Status -eq 'PASS' }).Count
+                $catScore = if ($catTotal -gt 0) { [math]::Round(($catPassed / $catTotal) * 100, 1) } else { 0 }
+                $scoresByCategory[$cat] = $catScore
+            }
+        }
+        
+        # Always calculate these values (used for both ComplianceScores and fallback cases)
+        # Get subscription names for score cards
+        $allSubscriptionNames = ($findings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+        $l1SubscriptionNames = ($l1Findings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+        $l2SubscriptionNames = ($l2Findings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+        
+        # Calculate ASB findings (findings that have ASB in their Frameworks array)
+        $asbFindings = $findings | Where-Object { 
+            $_.Frameworks -and ($_.Frameworks -contains "ASB" -or $_.Frameworks -contains "asb")
+        }
+        $asbTotal = $asbFindings.Count
+        $asbPassed = @($asbFindings | Where-Object { $_.Status -eq 'PASS' }).Count
+        $asbScore = if ($asbTotal -gt 0) { [math]::Round(($asbPassed / $asbTotal) * 100, 1) } else { $null }
+        $asbSubscriptionNames = ($asbFindings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+        
+        # Calculate subscription-specific severity counts for dynamic updates
+        $subscriptionSeverityCounts = @{}
+        foreach ($subName in ($findings | Select-Object -ExpandProperty SubscriptionName -Unique)) {
+            $subFailedFindings = $failedFindings | Where-Object { $_.SubscriptionName -eq $subName }
+            $subscriptionSeverityCounts[$subName] = @{
+                Critical = @($subFailedFindings | Where-Object { $_.Severity -eq 'Critical' }).Count
+                High = @($subFailedFindings | Where-Object { $_.Severity -eq 'High' }).Count
+                Medium = @($subFailedFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
+                Low = @($subFailedFindings | Where-Object { $_.Severity -eq 'Low' }).Count
+            }
+        }
+        
+        # Convert subscription severity counts to JSON for JavaScript
+        $subscriptionSeverityCountsJson = ($subscriptionSeverityCounts | ConvertTo-Json -Compress)
+        
+        # Calculate subscription-specific scores for dynamic updates
+        $subscriptionScores = @{}
+        foreach ($subName in ($findings | Select-Object -ExpandProperty SubscriptionName -Unique)) {
+            $subFindings = $findings | Where-Object { $_.SubscriptionName -eq $subName }
+            $subL1Findings = $subFindings | Where-Object { $_.CisLevel -eq "L1" }
+            $subL2Findings = $subFindings | Where-Object { $_.CisLevel -eq "L2" }
+            $subAsbFindings = $subFindings | Where-Object { 
+                $_.Frameworks -and ($_.Frameworks -contains "ASB" -or $_.Frameworks -contains "asb")
+            }
             
-            # Determine score color
-            $scoreColor = if ($overallScore -ge 90) { "score-excellent" } 
-                         elseif ($overallScore -ge 75) { "score-good" } 
-                         elseif ($overallScore -ge 50) { "score-fair" } 
-                         else { "score-poor" }
+            $subTotal = $subFindings.Count
+            $subPassed = @($subFindings | Where-Object { $_.Status -eq 'PASS' }).Count
+            $subScore = if ($subTotal -gt 0) { [math]::Round(($subPassed / $subTotal) * 100, 1) } else { 0 }
             
-            $html += @"
-        <div class="compliance-scores-section">
+            $subL1Total = $subL1Findings.Count
+            $subL1Passed = @($subL1Findings | Where-Object { $_.Status -eq 'PASS' }).Count
+            $subL1Score = if ($subL1Total -gt 0) { [math]::Round(($subL1Passed / $subL1Total) * 100, 1) } else { 0 }
+            
+            $subL2Total = $subL2Findings.Count
+            $subL2Passed = @($subL2Findings | Where-Object { $_.Status -eq 'PASS' }).Count
+            $subL2Score = if ($subL2Total -gt 0) { [math]::Round(($subL2Passed / $subL2Total) * 100, 1) } else { 0 }
+            
+            $subAsbTotal = $subAsbFindings.Count
+            $subAsbPassed = @($subAsbFindings | Where-Object { $_.Status -eq 'PASS' }).Count
+            $subAsbScore = if ($subAsbTotal -gt 0) { [math]::Round(($subAsbPassed / $subAsbTotal) * 100, 1) } else { 0 }
+            
+            $subscriptionScores[$subName] = @{
+                Total = $subTotal
+                Passed = $subPassed
+                Score = $subScore
+                L1Total = $subL1Total
+                L1Passed = $subL1Passed
+                L1Score = $subL1Score
+                L2Total = $subL2Total
+                L2Passed = $subL2Passed
+                L2Score = $subL2Score
+                AsbTotal = $subAsbTotal
+                AsbPassed = $subAsbPassed
+                AsbScore = $subAsbScore
+            }
+        }
+        
+        # Convert subscription scores to JSON for JavaScript
+        $subscriptionScoresJson = ($subscriptionScores | ConvertTo-Json -Compress)
+        
+        # Determine score colors
+        $scoreColor = if ($overallScore -ge 90) { "score-excellent" } 
+                     elseif ($overallScore -ge 75) { "score-good" } 
+                     elseif ($overallScore -ge 50) { "score-fair" } 
+                     else { "score-poor" }
+        
+        $l1ScoreColor = if ($l1Score -ge 90) { "score-excellent" } 
+                        elseif ($l1Score -ge 75) { "score-good" } 
+                        elseif ($l1Score -ge 50) { "score-fair" } 
+                        else { "score-poor" }
+        
+        # Build searchable text for overall score card
+        $allSearchableText = "all controls $allSubscriptionNames".ToLower()
+        
+        # Build searchable text for L1 score card
+        $l1SearchableText = "cis v.4.0.0 mandatory controls l1 $l1SubscriptionNames".ToLower()
+        
+        # Build searchable text for L2 score card
+        $l2SearchableText = "cis v.4.0.0 enhanced controls l2 $l2SubscriptionNames".ToLower()
+        
+        # Build searchable text for ASB score card
+        $asbSearchableText = "azure security benchmark asb $asbSubscriptionNames".ToLower()
+        
+        $html += @"
+        <script>
+            // Subscription-specific scores for dynamic updates
+            const subscriptionScores = $subscriptionScoresJson;
+            // Subscription-specific severity counts for dynamic updates
+            const subscriptionSeverityCounts = $subscriptionSeverityCountsJson;
+        </script>
+        <div class="section-box compliance-scores-section">
             <h3>Security Compliance Score</h3>
             <div class="score-grid">
-                <div class="score-card overall-score $scoreColor" data-subscription="$allSubscriptionNames">
+                <div class="score-card overall-score $scoreColor" 
+                     data-subscription="$allSubscriptionNames"
+                     data-category="all"
+                     data-category-lower="all"
+                     data-severity="all"
+                     data-severity-lower="all"
+                     data-frameworks="all"
+                     data-searchable="$allSearchableText"
+                     data-total-checks="$totalChecks"
+                     data-passed-checks="$passedChecks"
+                     data-overall-score="$overallScore">
                     <div class="score-label">All Controls</div>
                     <div class="score-value">$overallScore%</div>
                     <div class="score-details">$passedChecks / $totalChecks checks passed</div>
                 </div>
-                <div class="score-card l1-score" data-subscription="$l1SubscriptionNames">
-                    <div class="score-label">CIS Level 1 (L1) Controls</div>
+                <div class="score-card l1-score $l1ScoreColor" 
+                     data-subscription="$l1SubscriptionNames"
+                     data-category="all"
+                     data-category-lower="all"
+                     data-severity="all"
+                     data-severity-lower="all"
+                     data-frameworks="cis"
+                     data-searchable="$l1SearchableText"
+                     data-total-checks="$l1Total"
+                     data-passed-checks="$l1Passed"
+                     data-overall-score="$l1Score">
+                    <div class="score-label">CIS v.4.0.0 MANDATORY CONTROLS (L1)</div>
                     <div class="score-value">$l1Score%</div>
-                    <div class="score-details">CIS v4.0.0 Mandatory controls</div>
+                    <div class="score-details">$l1Passed / $l1Total checks passed</div>
                 </div>
 "@
             if ($null -ne $l2Score) {
@@ -170,41 +290,117 @@ $(Get-ReportNavigation -ActivePage "Security")
                                elseif ($l2Score -ge 50) { "score-fair" } 
                                else { "score-poor" }
                 $html += @"
-                <div class="score-card l2-score $l2ScoreColor" data-subscription="$l2SubscriptionNames">
-                    <div class="score-label">Level 2 (L2)</div>
+                <div class="score-card l2-score $l2ScoreColor" 
+                     data-subscription="$l2SubscriptionNames"
+                     data-category="all"
+                     data-category-lower="all"
+                     data-severity="all"
+                     data-severity-lower="all"
+                     data-frameworks="cis"
+                     data-searchable="$l2SearchableText"
+                     data-total-checks="$l2Total"
+                     data-passed-checks="$l2Passed"
+                     data-overall-score="$l2Score">
+                    <div class="score-label">CIS v.4.0.0 ENHANCED CONTROLS (L2)</div>
                     <div class="score-value">$l2Score%</div>
-                    <div class="score-details">Enhanced controls</div>
+                    <div class="score-details">$l2Passed / $l2Total checks passed</div>
                 </div>
 "@
             }
-            $html += @"
+            if ($null -ne $asbScore) {
+                $asbScoreColor = if ($asbScore -ge 90) { "score-excellent" } 
+                               elseif ($asbScore -ge 75) { "score-good" } 
+                               elseif ($asbScore -ge 50) { "score-fair" } 
+                               else { "score-poor" }
+                $html += @"
+                <div class="score-card asb-score $asbScoreColor" 
+                     data-subscription="$asbSubscriptionNames"
+                     data-category="all"
+                     data-category-lower="all"
+                     data-severity="all"
+                     data-severity-lower="all"
+                     data-frameworks="asb"
+                     data-searchable="$asbSearchableText"
+                     data-total-checks="$asbTotal"
+                     data-passed-checks="$asbPassed"
+                     data-overall-score="$asbScore">
+                    <div class="score-label">AZURE SECURITY BENCHMARK (ASB)</div>
+                    <div class="score-value">$asbScore%</div>
+                    <div class="score-details">$asbPassed / $asbTotal checks passed</div>
+                </div>
+"@
+            }
+        $html += @"
             </div>
             
-            <h4 style="margin-top: 2rem; margin-bottom: 1rem;">Scores by Category</h4>
+            <h4>Failed Controls by Severity</h4>
+            <div class="summary-grid">
+                <div class="summary-card critical" id="summaryCritical" data-severity="Critical" data-subscription="$allSubscriptionNames" data-original-value="$criticalValue">
+                    <div class="summary-card-label">Critical</div>
+                    <div class="summary-card-value">$criticalValue</div>
+                </div>
+                <div class="summary-card high" id="summaryHigh" data-severity="High" data-subscription="$allSubscriptionNames" data-original-value="$highValue">
+                    <div class="summary-card-label">High</div>
+                    <div class="summary-card-value">$highValue</div>
+                </div>
+                <div class="summary-card medium" id="summaryMedium" data-severity="Medium" data-subscription="$allSubscriptionNames" data-original-value="$mediumValue">
+                    <div class="summary-card-label">Medium</div>
+                    <div class="summary-card-value">$mediumValue</div>
+                </div>
+                <div class="summary-card low" id="summaryLow" data-severity="Low" data-subscription="$allSubscriptionNames" data-original-value="$lowValue">
+                    <div class="summary-card-label">Low</div>
+                    <div class="summary-card-value">$lowValue</div>
+                </div>
+            </div>
+            
+            <h4>Scores by Category</h4>
             <div class="category-scores-grid">
 "@
-            if ($scoresByCategory -and $scoresByCategory.Count -gt 0) {
-                foreach ($category in ($scoresByCategory.Keys | Sort-Object)) {
-                    $catScore = $scoresByCategory[$category]
-                    $catScoreColor = if ($catScore -ge 90) { "score-excellent" } 
-                                    elseif ($catScore -ge 75) { "score-good" } 
-                                    elseif ($catScore -ge 50) { "score-fair" } 
-                                    else { "score-poor" }
-                    # Get subscription names for this category
-                    $categorySubscriptionNames = ($findings | Where-Object { $_.Category -eq $category } | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
-                    $html += @"
-                <div class="category-score-card $catScoreColor" data-subscription="$categorySubscriptionNames">
+        if ($scoresByCategory -and $scoresByCategory.Count -gt 0) {
+            foreach ($category in ($scoresByCategory.Keys | Sort-Object)) {
+                $catScore = $scoresByCategory[$category]
+                $catScoreColor = if ($catScore -ge 90) { "score-excellent" } 
+                                elseif ($catScore -ge 75) { "score-good" } 
+                                elseif ($catScore -ge 50) { "score-fair" } 
+                                else { "score-poor" }
+                # Get subscription names for this category
+                $categoryFindings = $findings | Where-Object { $_.Category -eq $category }
+                $categorySubscriptionNames = ($categoryFindings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+                
+                # Get highest severity for this category
+                $categorySeverities = $categoryFindings | Select-Object -ExpandProperty Severity
+                $categoryHighestSeverity = "Low"
+                if ($categorySeverities -contains "Critical") { $categoryHighestSeverity = "Critical" }
+                elseif ($categorySeverities -contains "High") { $categoryHighestSeverity = "High" }
+                elseif ($categorySeverities -contains "Medium") { $categoryHighestSeverity = "Medium" }
+                $categorySeverityLower = $categoryHighestSeverity.ToLower()
+                
+                # Get frameworks for this category
+                $categoryFrameworks = ($categoryFindings | Where-Object { $_.Frameworks } | ForEach-Object { $_.Frameworks } | Select-Object -Unique | Sort-Object) -join ", "
+                $categoryFrameworksLower = $categoryFrameworks.ToLower()
+                
+                # Build searchable text
+                $categorySearchableText = "$category $categoryHighestSeverity $categorySubscriptionNames $categoryFrameworks".ToLower()
+                
+                $html += @"
+                <div class="category-score-card $catScoreColor" 
+                     data-subscription="$categorySubscriptionNames"
+                     data-category="$(Encode-Html $category)"
+                     data-category-lower="$($category.ToLower())"
+                     data-severity="$(Encode-Html $categoryHighestSeverity)"
+                     data-severity-lower="$categorySeverityLower"
+                     data-frameworks="$categoryFrameworksLower"
+                     data-searchable="$categorySearchableText">
                     <div class="category-score-label">$(Encode-Html $category)</div>
                     <div class="category-score-value">$catScore%</div>
                 </div>
 "@
-                }
             }
-            $html += @"
+        }
+        $html += @"
             </div>
         </div>
 "@
-        }
         
         # Get unique categories for filter dropdowns
         # Use all findings, not just failed ones, to populate category filter
@@ -223,8 +419,9 @@ $(Get-ReportNavigation -ActivePage "Security")
         
         # Filters Section
         $html += @"
-        <h2>Filters</h2>
-        <div class="filter-controls">
+        <div class="section-box">
+            <h2>Filters</h2>
+            <div class="filter-controls">
             <div class="filter-group">
                 <label for="searchFilter">Search:</label>
                 <input type="text" id="searchFilter" class="filter-input" placeholder="Search resources, controls...">
@@ -276,8 +473,9 @@ $(Get-ReportNavigation -ActivePage "Security")
             <div class="filter-group">
                 <button id="clearFilters" class="btn-clear">Clear All</button>
             </div>
-            <div class="filter-group">
-                <span id="resultCount" class="result-count">Showing $totalItems items</span>
+            </div>
+            <div class="filter-stats">
+                <span id="resultCount">Showing <span id="visibleCount">$totalItems</span> of <span id="totalCount">$totalItems</span> items</span>
             </div>
         </div>
 "@
@@ -301,7 +499,8 @@ $(Get-ReportNavigation -ActivePage "Security")
         
         if ($controlGroups.Count -gt 0) {
             $html += @"
-        <h2>Failed Controls by Category</h2>
+        <div class="section-box">
+            <h2>Failed Controls by Category</h2>
 "@
             # Group controls by Category first
             # Extract category from each control group's first finding
@@ -356,15 +555,16 @@ $(Get-ReportNavigation -ActivePage "Security")
             data-category-lower="$categoryLower"
             data-severity-lower="$categorySeverityLower"
             data-searchable="$categorySearchableText">
-            <div class="subscription-header category-header collapsed" data-category-id="$categoryId" style="cursor: pointer;">
+            <div class="subscription-header category-header collapsed" data-category-id="$categoryId">
                 <span class="expand-icon"></span>
                 <h3>$(Encode-Html $category)</h3>
                 <span class="header-severity-summary">$catSeverityDisplay</span>
             </div>
-            <div class="subscription-content category-content" id="$categoryId" style="display: none;">
-                <table id="controlsTable" class="controls-table">
+            <div class="subscription-content category-content" id="$categoryId">
+                <table class="data-table data-table--sticky-header controls-table">
                     <thead>
                         <tr>
+                            <th>Framework</th>
                             <th>Control ID</th>
                             <th>Control Name</th>
                             <th>Severity</th>
@@ -397,17 +597,36 @@ $(Get-ReportNavigation -ActivePage "Security")
                 $controlName = $firstFinding.ControlName
                 # Include ControlName in controlKey to differentiate controls with same ControlId
                 $controlKey = "$category|$controlId|$controlName"
-                $controlFrameworks = if ($firstFinding.Frameworks) { $firstFinding.Frameworks -join " " } else { "CIS" }
+                
+                # Get all unique frameworks for this control (from all findings)
+                # A control can have findings from multiple frameworks (e.g., both CIS and ASB)
+                $allControlFrameworks = @()
+                foreach ($finding in $controlFindings) {
+                    if ($finding.Frameworks) {
+                        foreach ($fw in $finding.Frameworks) {
+                            if ($fw -and $fw -notin $allControlFrameworks) {
+                                $allControlFrameworks += $fw
+                            }
+                        }
+                    }
+                }
+                # Sort frameworks for consistent display (CIS before ASB)
+                $allControlFrameworks = $allControlFrameworks | Sort-Object
+                $controlFrameworks = if ($allControlFrameworks.Count -gt 0) { 
+                    ($allControlFrameworks -join ", ") 
+                } else { 
+                    if ($firstFinding.Frameworks) { ($firstFinding.Frameworks -join ", ") } else { "CIS" }
+                }
                 $controlFrameworksLower = $controlFrameworks.ToLower()
                 
                 # Get highest severity (already calculated in sort)
                 $highestSeverity = $controlGroup.HighestSeverity
                 
                 $severityClass = switch ($highestSeverity) {
-                    "Critical" { "status-badge critical" }
-                    "High" { "status-badge high" }
-                    "Medium" { "status-badge medium" }
-                    "Low" { "status-badge low" }
+                    "Critical" { "badge badge--critical" }
+                    "High" { "badge badge--high" }
+                    "Medium" { "badge badge--medium" }
+                    "Low" { "badge badge--low" }
                     default { "" }
                 }
                 
@@ -444,18 +663,19 @@ $(Get-ReportNavigation -ActivePage "Security")
                     data-category-lower="$categoryLower"
                     data-severity-lower="$severityLower"
                     data-searchable="$searchableText"
-                    data-control-key="$(Encode-Html $controlKey)"
-                    style="cursor: pointer;">
+                    data-control-key="$(Encode-Html $controlKey)">
+                    <td>$(Encode-Html $controlFrameworks)</td>
                     <td>$(Encode-Html $controlId)</td>
                     <td>$(Encode-Html $controlName)</td>
                     <td>$ctrlSeverityDisplay</td>
                     <td>$failedCount</td>
                 </tr>
                 <tr class="control-resources-row hidden" data-control-key="$(Encode-Html $controlKey)">
-                    <td colspan="4">
-                        <table class="control-resources-table">
+                    <td colspan="5">
+                        <table class="data-table">
                             <thead>
                                 <tr>
+                                    <th>Framework</th>
                                     <th>Subscription</th>
                                     <th>Resource Group</th>
                                     <th>Resource</th>
@@ -483,6 +703,7 @@ $(Get-ReportNavigation -ActivePage "Security")
                     $note = if ($finding.Note) { Encode-Html $finding.Note } else { "" }
                     $cisLevel = if ($finding.CisLevel) { Encode-Html $finding.CisLevel } else { "N/A" }
                     $resourceDetailKey = "$($finding.ResourceName)|$($finding.ResourceGroup)|$($finding.ControlId)"
+                    $findingFrameworks = if ($finding.Frameworks) { ($finding.Frameworks -join ", ") } else { "CIS" }
                     
                     # Build searchable string for this resource row
                     $resourceRowSearchable = @(
@@ -496,8 +717,8 @@ $(Get-ReportNavigation -ActivePage "Security")
                     $html += @"
                                 <tr class="resource-detail-control-row" 
                                     data-resource-detail-key="$(Encode-Html $resourceDetailKey)" 
-                                    data-searchable="$resourceRowSearchable"
-                                    style="cursor: pointer;">
+                                    data-searchable="$resourceRowSearchable">
+                                    <td>$(Encode-Html $findingFrameworks)</td>
                                     <td>$(Encode-Html $finding.SubscriptionName)</td>
                                     <td>$(Encode-Html $finding.ResourceGroup)</td>
                                     <td>$(Encode-Html $finding.ResourceName)</td>
@@ -505,7 +726,7 @@ $(Get-ReportNavigation -ActivePage "Security")
                                     <td>$(Encode-Html $finding.ExpectedValue)</td>
                                 </tr>
                                 <tr class="remediation-row hidden" data-parent-resource-detail-key="$(Encode-Html $resourceDetailKey)">
-                                    <td colspan="5">
+                                    <td colspan="6">
                                         <div class="remediation-content">
                                             <div class="remediation-section">
                                                 <h4>Description</h4>
@@ -575,41 +796,137 @@ $(Get-ReportNavigation -ActivePage "Security")
         </div>
 "@
             }
+            $html += @"
+        </div>
+"@
         }
         
         # Failed Controls by Subscription
-        if ($AuditResult.SubscriptionsScanned.Count -gt 0) {
+        # Handle both array and single value, and ensure we have subscriptions to show
+        $subscriptionsToShow = @()
+        if ($AuditResult.SubscriptionsScanned) {
+            if ($AuditResult.SubscriptionsScanned -is [array]) {
+                $subscriptionsToShow = $AuditResult.SubscriptionsScanned
+            } else {
+                $subscriptionsToShow = @($AuditResult.SubscriptionsScanned)
+            }
+        } elseif ($findings.Count -gt 0) {
+            # Fallback: Get subscriptions from findings if SubscriptionsScanned is missing
+            Write-Verbose "SubscriptionsScanned not found, extracting from findings..."
+            $subscriptionsToShow = $findings | Select-Object -ExpandProperty SubscriptionId -Unique | Where-Object { $null -ne $_ }
+        }
+        
+        if ($subscriptionsToShow.Count -gt 0) {
             $html += @"
-        <h2>Failed Controls by Subscription</h2>
+        <div class="section-box">
+            <h2>Failed Controls by Subscription</h2>
 "@
-            foreach ($subId in $AuditResult.SubscriptionsScanned) {
-                # Get all findings for this subscription (both PASS and FAIL)
-                $subAllFindings = $findings | Where-Object { $_.SubscriptionId -eq $subId }
-                $subFailedFindings = $failedFindings | Where-Object { $_.SubscriptionId -eq $subId }
-                
-                # Get subscription name from SubscriptionNames mapping (preferred) or from findings
+            foreach ($subItem in $subscriptionsToShow) {
+                # Handle both string IDs and objects with Id/Name properties
+                $subId = $null
                 $subName = $null
                 
-                # Debug: Check if SubscriptionNames exists and has this key
-                Write-Verbose "Looking up name for subscription: $subId"
-                Write-Verbose "  SubscriptionNames exists: $($null -ne $AuditResult.SubscriptionNames)"
-                if ($AuditResult.SubscriptionNames) {
-                    Write-Verbose "  SubscriptionNames type: $($AuditResult.SubscriptionNames.GetType().Name)"
-                    Write-Verbose "  SubscriptionNames count: $($AuditResult.SubscriptionNames.Count)"
-                    Write-Verbose "  Has key '$subId': $($AuditResult.SubscriptionNames.ContainsKey($subId))"
-                    if ($AuditResult.SubscriptionNames.ContainsKey($subId)) {
-                        $subName = $AuditResult.SubscriptionNames[$subId]
-                        Write-Verbose "  Found name: '$subName'"
+                if ($subItem -is [string]) {
+                    # Simple string ID
+                    $subId = $subItem
+                } elseif ($subItem -is [PSCustomObject] -or $subItem -is [Hashtable]) {
+                    # Object with Id and/or Name properties
+                    if ($subItem.Id) {
+                        $subId = $subItem.Id
+                    } elseif ($subItem.SubscriptionId) {
+                        $subId = $subItem.SubscriptionId
+                    } elseif ($subItem -is [string]) {
+                        $subId = $subItem
+                    } else {
+                        # Try to convert to string
+                        $subId = $subItem.ToString()
+                    }
+                    
+                    if ($subItem.Name) {
+                        $subName = $subItem.Name
+                    } elseif ($subItem.SubscriptionName) {
+                        $subName = $subItem.SubscriptionName
+                    }
+                } else {
+                    # Fallback: convert to string
+                    $subId = $subItem.ToString()
+                }
+                
+                # Get subscription name from SubscriptionNames mapping (preferred) or from findings
+                if (-not $subName) {
+                    Write-Verbose "Looking up name for subscription: $subId"
+                    Write-Verbose "  SubscriptionNames exists: $($null -ne $AuditResult.SubscriptionNames)"
+                    if ($AuditResult.SubscriptionNames) {
+                        Write-Verbose "  SubscriptionNames type: $($AuditResult.SubscriptionNames.GetType().Name)"
+                        Write-Verbose "  SubscriptionNames count: $($AuditResult.SubscriptionNames.Count)"
+                        Write-Verbose "  Has key '$subId': $($AuditResult.SubscriptionNames.ContainsKey($subId))"
+                        if ($AuditResult.SubscriptionNames.ContainsKey($subId)) {
+                            $subName = $AuditResult.SubscriptionNames[$subId]
+                            Write-Verbose "  Found name: '$subName'"
+                        }
+                    }
+                    
+                    # Try to get subscription name from findings if not found in mapping
+                    if (-not $subName) {
+                        $subName = ($findings | Where-Object { $_.SubscriptionId -eq $subId } | Select-Object -First 1 -ExpandProperty SubscriptionName)
+                        if ($subName) {
+                            Write-Verbose "  Found name from findings: '$subName'"
+                        }
+                    }
+                    
+                    # If still no name, use the ID as name
+                    if (-not $subName) {
+                        $subName = $subId
+                        Write-Verbose "  Using ID as name: '$subName'"
                     }
                 }
-                if (-not $subName) {
-                    $subName = ($subAllFindings | Select-Object -First 1 -ExpandProperty SubscriptionName)
-                    Write-Verbose "  Fallback to findings name: '$subName'"
+                
+                # Get all findings for this subscription - try both ID and name matching
+                # Normalize IDs to strings for comparison
+                $subIdString = $subId.ToString().Trim()
+                $subNameString = if ($subName) { $subName.ToString().Trim() } else { $null }
+                
+                # First try by SubscriptionId (case-insensitive string comparison)
+                $subAllFindings = $findings | Where-Object { 
+                    $findingSubId = if ($_.SubscriptionId) { $_.SubscriptionId.ToString().Trim() } else { $null }
+                    $findingSubId -and $findingSubId -eq $subIdString
                 }
-                if (-not $subName) {
-                    $subName = $subId
-                    Write-Verbose "  Fallback to ID: '$subName'"
+                $subFailedFindings = $failedFindings | Where-Object { 
+                    $findingSubId = if ($_.SubscriptionId) { $_.SubscriptionId.ToString().Trim() } else { $null }
+                    $findingSubId -and $findingSubId -eq $subIdString
                 }
+                
+                # If no findings found by ID, try by name (case-insensitive)
+                if ($subAllFindings.Count -eq 0 -and $subNameString -and $subNameString -ne $subIdString) {
+                    Write-Verbose "  No findings found by SubscriptionId '$subIdString', trying SubscriptionName: '$subNameString'"
+                    $subAllFindings = $findings | Where-Object { 
+                        $findingSubName = if ($_.SubscriptionName) { $_.SubscriptionName.ToString().Trim() } else { $null }
+                        $findingSubName -and $findingSubName -eq $subNameString
+                    }
+                    $subFailedFindings = $failedFindings | Where-Object { 
+                        $findingSubName = if ($_.SubscriptionName) { $_.SubscriptionName.ToString().Trim() } else { $null }
+                        $findingSubName -and $findingSubName -eq $subNameString
+                    }
+                }
+                
+                # If still no findings, try case-insensitive partial matching
+                if ($subAllFindings.Count -eq 0) {
+                    Write-Verbose "  No exact match found, trying case-insensitive matching..."
+                    $subAllFindings = $findings | Where-Object { 
+                        $findingSubId = if ($_.SubscriptionId) { $_.SubscriptionId.ToString().Trim() } else { $null }
+                        $findingSubName = if ($_.SubscriptionName) { $_.SubscriptionName.ToString().Trim() } else { $null }
+                        ($findingSubId -and $findingSubId -ieq $subIdString) -or 
+                        ($subNameString -and $findingSubName -and $findingSubName -ieq $subNameString)
+                    }
+                    $subFailedFindings = $failedFindings | Where-Object { 
+                        $findingSubId = if ($_.SubscriptionId) { $_.SubscriptionId.ToString().Trim() } else { $null }
+                        $findingSubName = if ($_.SubscriptionName) { $_.SubscriptionName.ToString().Trim() } else { $null }
+                        ($findingSubId -and $findingSubId -ieq $subIdString) -or 
+                        ($subNameString -and $findingSubName -and $findingSubName -ieq $subNameString)
+                    }
+                }
+                
+                Write-Verbose "  Found $($subAllFindings.Count) total findings, $($subFailedFindings.Count) failed findings for subscription '$subName'"
                 
                 # Group findings by resource (ResourceName + ResourceGroup)
                 # Use only FAIL findings for grouping, sort by severity
@@ -665,18 +982,19 @@ $(Get-ReportNavigation -ActivePage "Security")
             data-subscription-lower="$subscriptionLower"
             data-severity-lower="$subSeverityLower"
             data-searchable="$subSearchableText">
-            <div class="subscription-header collapsed" data-subscription-id="sub-$(Encode-Html $subId)" style="cursor: pointer;">
+            <div class="subscription-header collapsed" data-subscription-id="sub-$(Encode-Html $subId)">
                 <span class="expand-icon"></span>
                 <h3>$(Encode-Html $subName)</h3>
                 <span class="header-severity-summary">$subSeverityDisplay</span>
             </div>
-            <div class="subscription-content" id="sub-$(Encode-Html $subId)" style="display: none;">
+            <div class="subscription-content" id="sub-$(Encode-Html $subId)">
 "@
                 if ($subFailedFindings.Count -gt 0) {
                     $html += @"
-                <table class="resource-summary-table">
+                <table class="data-table data-table--sticky-header">
                     <thead>
                         <tr>
+                            <th>Framework</th>
                             <th>Resource Group</th>
                             <th>Resource</th>
                             <th>Category</th>
@@ -722,6 +1040,26 @@ $(Get-ReportNavigation -ActivePage "Security")
                         $controlIdsDisplay = if ($uniqueControlIds.Count -gt 0) { ($uniqueControlIds -join ', ') } else { "N/A" }
                         $uniqueControlNames = ($failedResourceFindings | Select-Object -ExpandProperty ControlName -Unique) -join " "
                         
+                        # Get all unique frameworks for this resource (from all findings)
+                        # A resource can have findings from multiple frameworks (e.g., both CIS and ASB)
+                        $allResourceFrameworks = @()
+                        foreach ($finding in $failedResourceFindings) {
+                            if ($finding.Frameworks) {
+                                foreach ($fw in $finding.Frameworks) {
+                                    if ($fw -and $fw -notin $allResourceFrameworks) {
+                                        $allResourceFrameworks += $fw
+                                    }
+                                }
+                            }
+                        }
+                        # Sort frameworks for consistent display (CIS before ASB)
+                        $allResourceFrameworks = $allResourceFrameworks | Sort-Object
+                        $resourceFrameworks = if ($allResourceFrameworks.Count -gt 0) { 
+                            ($allResourceFrameworks -join ", ") 
+                        } else { 
+                            if ($firstFinding.Frameworks) { ($firstFinding.Frameworks -join ", ") } else { "CIS" }
+                        }
+                        
                         $categoryLower = ($primaryCategory -replace '\s+', '-').ToLower()
                         $severityLower = $highestSeverity.ToLower()
                         $subscriptionLower = $subName.ToLower()
@@ -736,8 +1074,8 @@ $(Get-ReportNavigation -ActivePage "Security")
                             data-category-lower="$categoryLower"
                             data-severity-lower="$severityLower"
                             data-subscription-lower="$subscriptionLower"
-                            data-searchable="$searchableText"
-                            style="cursor: pointer;">
+                            data-searchable="$searchableText">
+                            <td>$(Encode-Html $resourceFrameworks)</td>
                             <td>$(Encode-Html $resourceGroupName)</td>
                             <td>$(Encode-Html $resourceName)</td>
                             <td>$(Encode-Html $primaryCategory)</td>
@@ -746,10 +1084,11 @@ $(Get-ReportNavigation -ActivePage "Security")
                             <td><span class="$severityClass">$(Encode-Html $highestSeverity)</span></td>
                         </tr>
                         <tr class="resource-detail-row hidden" data-resource-key="$(Encode-Html $resourceKey)">
-                            <td colspan="6">
-                                <table class="resource-issues-table">
+                            <td colspan="7">
+                                <table class="data-table">
                                     <thead>
                                         <tr>
+                                            <th>Framework</th>
                                             <th>Control ID</th>
                                             <th>Control</th>
                                             <th>Severity</th>
@@ -779,7 +1118,7 @@ $(Get-ReportNavigation -ActivePage "Security")
                             $note = if ($finding.Note) { Encode-Html $finding.Note } else { "" }
                             $cisLevel = if ($finding.CisLevel) { Encode-Html $finding.CisLevel } else { "N/A" }
                             $controlDetailKey = "$resourceKey|$($finding.ControlId)"
-                            $findingFrameworks = if ($finding.Frameworks) { $finding.Frameworks -join " " } else { "CIS" }
+                            $findingFrameworks = if ($finding.Frameworks) { $finding.Frameworks -join ", " } else { "CIS" }
                             
                             $findingSeverityLower = $finding.Severity.ToLower()
                             $findingCategoryLower = $finding.Category.ToLower()
@@ -792,8 +1131,8 @@ $(Get-ReportNavigation -ActivePage "Security")
                                             data-severity-lower="$findingSeverityLower"
                                             data-category-lower="$findingCategoryLower"
                                             data-frameworks="$findingFrameworksLower"
-                                            data-searchable="$findingSearchable"
-                                            style="cursor: pointer;">
+                                            data-searchable="$findingSearchable">
+                                            <td>$(Encode-Html $findingFrameworks)</td>
                                             <td>$(Encode-Html $finding.ControlId)</td>
                                             <td>$(Encode-Html $finding.ControlName)</td>
                                             <td><span class="$findingSeverityClass">$(Encode-Html $finding.Severity)</span></td>
@@ -801,7 +1140,7 @@ $(Get-ReportNavigation -ActivePage "Security")
                                             <td>$(Encode-Html $finding.ExpectedValue)</td>
                                         </tr>
                                         <tr class="remediation-row hidden" data-parent-control-detail-key="$(Encode-Html $controlDetailKey)">
-                                            <td colspan="5">
+                                            <td colspan="6">
                                                 <div class="remediation-content">
                                                     <div class="remediation-section">
                                                         <h4>Description</h4>
@@ -879,6 +1218,9 @@ $(Get-ReportNavigation -ActivePage "Security")
         </div>
 "@
             }
+            $html += @"
+        </div>
+"@
         }
         
         # Footer - Close main HTML string before adding script

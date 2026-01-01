@@ -15,11 +15,6 @@ Get-ChildItem -Path "$ModuleRoot\Private\Scanners\*.ps1" -ErrorAction SilentlyCo
     . $_.FullName
 }
 
-# Dot-source all config functions
-Get-ChildItem -Path "$ModuleRoot\Private\Config\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object {
-    . $_.FullName
-}
-
 # Dot-source all collector functions
 Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object {
     try {
@@ -41,6 +36,7 @@ Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | F
 
 # Export module members
 Export-ModuleMember -Function (Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | ForEach-Object { [System.IO.Path]::GetFileNameWithoutExtension($_.Name) })
+
 
 
 

@@ -45,9 +45,15 @@ function Export-NetworkInventoryReport {
     function Format-JsString {
         [CmdletBinding()]
         param(
-            [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
+            [Parameter(Mandatory=$false, ValueFromPipeline=$true)]
+            [AllowNull()]
+            [AllowEmptyString()]
             [string]$Text
         )
+        # Handle null or empty strings
+        if ([string]::IsNullOrEmpty($Text)) {
+            return ""
+        }
         # Escape backslashes, quotes, and convert actual newlines to \n escape sequence
         # PowerShell uses `n for newlines, but JavaScript strings require \n escape sequences
         # The CSS white-space: pre-line will render \n as line breaks in the browser
@@ -213,6 +219,10 @@ function Export-NetworkInventoryReport {
         $subscriptions = [System.Collections.Generic.Dictionary[string, PSObject]]::new()
         $allRisks = [System.Collections.Generic.List[PSObject]]::new()
         
+        # Collect disconnected connections and subnets without NSG for Issues section
+        $disconnectedConnectionsList = [System.Collections.Generic.List[PSObject]]::new()
+        $subnetsWithoutNSGList = [System.Collections.Generic.List[PSObject]]::new()
+        
         # Count unique peerings (each peering relationship appears twice - once from each VNet)
         $uniquePeerings = [System.Collections.Generic.HashSet[string]]::new()
         
@@ -226,6 +236,19 @@ function Export-NetworkInventoryReport {
                 $vnetPair = @($vnet.Name, $peering.RemoteVnetName) | Sort-Object
                 $peeringKey = "$($vnetPair[0])|$($vnetPair[1])"
                 [void]$uniquePeerings.Add($peeringKey)
+                
+                # Collect disconnected peerings
+                if ($peering.State -and $peering.State -ne "Connected") {
+                    $disconnectedConnectionsList.Add([PSCustomObject]@{
+                        Type = "Peering"
+                        Name = "Peering: $($vnet.Name) <-> $($peering.RemoteVnetName)"
+                        VNetName = $vnet.Name
+                        SubscriptionName = $vnet.SubscriptionName
+                        Status = $peering.State
+                        RemoteNetworkName = $peering.RemoteVnetName
+                        GatewayName = "N/A"
+                    })
+                }
             }
             
             # Count gateway connections (S2S and ER)
@@ -244,6 +267,15 @@ function Export-NetworkInventoryReport {
                         # Check connection status
                         if ($conn.ConnectionStatus -and $conn.ConnectionStatus -ne "Connected") {
                             $disconnectedConnections++
+                            $disconnectedConnectionsList.Add([PSCustomObject]@{
+                                Type = "S2S VPN"
+                                Name = $conn.Name
+                                VNetName = $vnet.Name
+                                SubscriptionName = $vnet.SubscriptionName
+                                Status = $conn.ConnectionStatus
+                                RemoteNetworkName = $conn.RemoteNetworkName
+                                GatewayName = $gateway.Name
+                            })
                         }
                     }
                 }
@@ -282,6 +314,16 @@ function Export-NetworkInventoryReport {
                     # Only count as missing NSG if it's not an exception subnet
                     if (-not $isExceptionSubnet) {
                         $subnetsMissingNSG++
+                        # Format NSG status the same way as in subnet header
+                        $nsgStatus = "No NSG"
+                        $subnetsWithoutNSGList.Add([PSCustomObject]@{
+                            VNetName = $vnet.Name
+                            SubnetName = $subnet.Name
+                            SubscriptionName = $vnet.SubscriptionName
+                            AddressPrefix = $subnet.AddressPrefix
+                            NsgStatus = $nsgStatus
+                            DeviceCount = $subnet.ConnectedDevices.Count
+                        })
                     }
                 }
                 
@@ -338,6 +380,15 @@ function Export-NetworkInventoryReport {
                     $totalERConnections++
                     if ($erConn.ConnectionStatus -and $erConn.ConnectionStatus -ne "Connected") {
                         $disconnectedConnections++
+                        $disconnectedConnectionsList.Add([PSCustomObject]@{
+                            Type = "ExpressRoute"
+                            Name = $erConn.Name
+                            VNetName = $hub.Name
+                            SubscriptionName = $hub.SubscriptionName
+                            Status = $erConn.ConnectionStatus
+                            RemoteNetworkName = if ($erConn.ExpressRouteCircuitName) { $erConn.ExpressRouteCircuitName } else { "Unknown Circuit" }
+                            GatewayName = "Virtual WAN Hub"
+                        })
                     }
                 }
             }
@@ -348,6 +399,15 @@ function Export-NetworkInventoryReport {
                     $totalS2SConnections++
                     if ($vpnConn.ConnectionStatus -and $vpnConn.ConnectionStatus -ne "Connected") {
                         $disconnectedConnections++
+                        $disconnectedConnectionsList.Add([PSCustomObject]@{
+                            Type = "S2S VPN"
+                            Name = $vpnConn.Name
+                            VNetName = $hub.Name
+                            SubscriptionName = $hub.SubscriptionName
+                            Status = $vpnConn.ConnectionStatus
+                            RemoteNetworkName = if ($vpnConn.RemoteSiteName) { $vpnConn.RemoteSiteName } else { "Unknown Site" }
+                            GatewayName = "Virtual WAN Hub"
+                        })
                     }
                 }
             }
@@ -357,6 +417,19 @@ function Export-NetworkInventoryReport {
                 foreach ($peering in $hub.Peerings) {
                     $peeringKey = "$($peering.VNetName)|$($hub.Name)"
                     [void]$uniquePeerings.Add($peeringKey)
+                    
+                    # Collect disconnected peerings from hubs
+                    if ($peering.State -and $peering.State -ne "Connected") {
+                        $disconnectedConnectionsList.Add([PSCustomObject]@{
+                            Type = "Peering"
+                            Name = "Peering: $($peering.VNetName) <-> $($hub.Name)"
+                            VNetName = $hub.Name
+                            SubscriptionName = $hub.SubscriptionName
+                            Status = $peering.State
+                            RemoteNetworkName = $peering.VNetName
+                            GatewayName = "Virtual WAN Hub"
+                        })
+                    }
                 }
             }
         }
@@ -388,528 +461,7 @@ function Export-NetworkInventoryReport {
     <title>Azure Network Inventory</title>
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <style type="text/css">
-$(Get-ReportStylesheet -IncludeReportSpecific)
-
-        /* Network Specific Styles - Additional Color Variables */
-        :root {
-            --network-blue: #3498db;
-            --network-red: #e74c3c;
-            --network-green: #2ecc71;
-            --network-yellow: #f1c40f;
-            --network-purple: #9b59b6;
-            --network-teal: #16a085;
-            --network-orange: #f39c12;
-            --network-gray: #95a5a6;
-        }
-        
-        .network-diagram-container {
-            background: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            margin-bottom: 30px;
-            overflow: hidden;
-        }
-        
-        .diagram-header {
-            padding: 15px 20px;
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .diagram-header h2 {
-            margin: 0;
-            font-size: 1.2em;
-        }
-        
-        .diagram-legend {
-            display: flex;
-            gap: 20px;
-            font-size: 0.85em;
-            flex-wrap: wrap;
-        }
-        
-        .diagram-controls {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-        
-        .diagram-btn {
-            padding: 6px 12px;
-            background: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            color: var(--text-primary);
-            cursor: pointer;
-            font-size: 0.85em;
-            transition: all 0.2s;
-        }
-        
-        .diagram-btn:hover {
-            background: var(--bg-hover);
-            border-color: var(--accent-blue);
-        }
-        
-        .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        
-        .legend-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-        }
-        
-        .legend-diamond {
-            width: 10px;
-            height: 10px;
-            background: var(--network-purple);
-            transform: rotate(45deg);
-        }
-        
-        .legend-line {
-            width: 30px;
-            height: 2px;
-            flex-shrink: 0;
-        }
-        
-        .legend-line.peering {
-            background: var(--network-green);
-            height: 2px;
-        }
-        
-        .legend-line.s2s {
-            background: repeating-linear-gradient(
-                to right,
-                var(--network-teal) 0px,
-                var(--network-teal) 4px,
-                transparent 4px,
-                transparent 8px
-            );
-            height: 3px;
-        }
-        
-        #network-diagram {
-            height: 500px;
-            width: 100%;
-        }
-        
-        /* Fix tooltip line breaks - render \n as line breaks */
-        .vis-tooltip {
-            white-space: pre-line !important;
-            max-width: 300px;
-        }
-        
-        /* Summary card border color classes */
-        .summary-card.blue-border { border-top: 3px solid var(--network-blue); }
-        .summary-card.green-border { border-top: 3px solid var(--network-green); }
-        .summary-card.yellow-border { border-top: 3px solid var(--network-yellow); }
-        .summary-card.purple-border { border-top: 3px solid var(--network-purple); }
-        .summary-card.teal-border { border-top: 3px solid var(--network-teal); }
-        .summary-card.red-border { border-top: 3px solid var(--network-red); }
-        .summary-card.gray-border { border-top: 3px solid var(--network-gray); }
-        .summary-card.orange-border { border-top: 3px solid var(--network-orange); }
-        
-        /* Summary card value color classes */
-        .summary-card-value.blue { color: var(--network-blue); }
-        .summary-card-value.green { color: var(--network-green); }
-        .summary-card-value.red { color: var(--network-red); }
-        .summary-card-value.white { color: var(--text-primary); }
-        
-        /* Badge color classes */
-        .badge-firewall {
-            background-color: rgba(231, 76, 60, 0.2);
-            color: var(--network-red);
-        }
-        
-        .badge-endpoint {
-            background-color: rgba(52, 152, 219, 0.2);
-            color: var(--network-blue);
-        }
-        
-        /* Fullscreen overlay */
-        .diagram-fullscreen {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            background: var(--bg-primary);
-            z-index: 10000;
-            flex-direction: column;
-        }
-        
-        .diagram-fullscreen.active {
-            display: flex;
-        }
-        
-        .diagram-fullscreen-header {
-            padding: 15px 20px;
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .diagram-fullscreen-header h2 {
-            margin: 0;
-            font-size: 1.2em;
-        }
-        
-        .diagram-fullscreen-content {
-            flex: 1;
-            overflow: hidden;
-            position: relative;
-        }
-        
-        #network-diagram-fullscreen {
-            width: 100%;
-            height: 100%;
-        }
-        
-        .diagram-fullscreen-close {
-            padding: 8px 16px;
-            background: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            color: var(--text-primary);
-            cursor: pointer;
-            font-size: 0.9em;
-            transition: all 0.2s;
-        }
-        
-        .diagram-fullscreen-close:hover {
-            background: var(--bg-hover);
-            border-color: var(--accent-blue);
-        }
-        
-        .topology-tree {
-            margin-top: 20px;
-        }
-        
-        .subscription-section {
-            margin-bottom: 25px;
-        }
-        
-        .subscription-header {
-            padding: 12px 20px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px 8px 0 0;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            cursor: pointer;
-        }
-        
-        .subscription-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .subscription-color-dot {
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
-        
-        .subscription-title {
-            font-weight: 600;
-            font-size: 1.1em;
-            flex: 1;
-        }
-        
-        .subscription-stats {
-            font-size: 0.85em;
-            color: var(--text-secondary);
-        }
-        
-        .subscription-content {
-            border: 1px solid var(--border-color);
-            border-top: none;
-            border-radius: 0 0 8px 8px;
-            padding: 15px;
-        }
-        
-        .vnet-box {
-            background-color: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            margin-bottom: 15px;
-            overflow: hidden;
-        }
-        
-        .vnet-header {
-            padding: 15px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            background-color: rgba(52, 152, 219, 0.1);
-            border-bottom: 1px solid var(--border-color);
-            cursor: pointer;
-        }
-        
-        .vnet-title {
-            font-size: 1.1em;
-            font-weight: 600;
-            color: var(--text-primary);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .vnet-meta {
-            font-size: 0.9em;
-            color: var(--text-secondary);
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-        
-        .vnet-content {
-            padding: 15px;
-            display: none;
-        }
-        
-        .subnet-box {
-            margin-left: 20px;
-            margin-bottom: 10px;
-            border-left: 2px solid var(--border-color);
-            padding-left: 15px;
-        }
-        
-        .subnet-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 12px;
-            background-color: var(--bg-secondary);
-            border-radius: 4px;
-            margin-bottom: 5px;
-            cursor: pointer;
-        }
-
-        .subnet-title {
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        .subnet-content {
-            display: none;
-            padding: 10px;
-        }
-        
-        .device-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9em;
-            margin-top: 5px;
-        }
-        
-        .device-table th, .device-table td {
-            text-align: left;
-            padding: 8px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .device-table th {
-            color: var(--text-secondary);
-            font-weight: 600;
-        }
-
-        .badge-nsg {
-            background-color: rgba(46, 204, 113, 0.2);
-            color: var(--network-green);
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.8em;
-        }
-
-        .badge-gw {
-            background-color: rgba(155, 89, 182, 0.2);
-            color: var(--network-purple);
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 0.8em;
-        }
-
-        .peering-section {
-            margin-top: 15px;
-            padding: 10px;
-            background-color: rgba(0, 0, 0, 0.2);
-            border-radius: 4px;
-        }
-
-        .expand-icon {
-            display: inline-block;
-            width: 0;
-            height: 0;
-            border-top: 5px solid transparent;
-            border-bottom: 5px solid transparent;
-            border-left: 6px solid var(--text-secondary);
-            margin-right: 8px;
-            transition: transform 0.2s;
-        }
-
-        .expanded .expand-icon {
-            transform: rotate(90deg);
-        }
-        
-        /* Risk Badges */
-        .risk-badge {
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.75em;
-            font-weight: 600;
-            margin-left: 8px;
-        }
-        
-        .risk-badge.critical {
-            background-color: rgba(231, 76, 60, 0.2);
-            color: var(--network-red);
-        }
-        
-        .risk-badge.high {
-            background-color: rgba(230, 126, 34, 0.2);
-            color: #e67e22;
-        }
-        
-        .risk-badge.medium {
-            background-color: rgba(241, 196, 15, 0.2);
-            color: var(--network-yellow);
-        }
-        
-        .no-nsg-badge {
-            background-color: rgba(231, 76, 60, 0.15);
-            color: var(--network-red);
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.8em;
-        }
-        
-        /* Security Risks Section */
-        .security-risks-section {
-            margin-top: 10px;
-            padding: 10px;
-            background-color: rgba(231, 76, 60, 0.05);
-            border: 1px solid rgba(231, 76, 60, 0.2);
-            border-radius: 4px;
-        }
-        
-        .security-risks-header {
-            font-weight: 600;
-            color: var(--network-red);
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .risk-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.85em;
-        }
-        
-        .risk-table th {
-            text-align: left;
-            padding: 6px 8px;
-            color: var(--text-secondary);
-            font-weight: 600;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .risk-table td {
-            padding: 6px 8px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .risk-row.critical td { background-color: rgba(231, 76, 60, 0.05); }
-        .risk-row.high td { background-color: rgba(230, 126, 34, 0.05); }
-        .risk-row.medium td { background-color: rgba(241, 196, 15, 0.05); }
-        
-        /* Expandable Risk Summary */
-        .risk-summary-section {
-            background: rgba(231, 76, 60, 0.1);
-            border: 1px solid rgba(231, 76, 60, 0.3);
-            border-radius: 8px;
-            margin-bottom: 20px;
-            overflow: hidden;
-        }
-        
-        .risk-summary-header {
-            padding: 15px 20px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        
-        .risk-summary-header:hover {
-            background: rgba(231, 76, 60, 0.15);
-        }
-        
-        .risk-summary-title {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            font-weight: 600;
-            color: var(--network-red);
-        }
-        
-        .risk-summary-badges {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        
-        .risk-summary-content {
-            display: none;
-            padding: 0 20px 20px 20px;
-        }
-        
-        .risk-summary-section.expanded .risk-summary-content {
-            display: block;
-        }
-        
-        .risk-summary-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9em;
-            margin-top: 15px;
-        }
-        
-        .risk-summary-table th {
-            text-align: left;
-            padding: 10px 12px;
-            background: var(--bg-secondary);
-            color: var(--text-secondary);
-            font-weight: 600;
-            border-bottom: 2px solid var(--border-color);
-            position: sticky;
-            top: 0;
-        }
-        
-        .risk-summary-table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .risk-summary-table tr:hover td {
-            background: var(--bg-hover);
-        }
-        
-        .risk-summary-table .risk-row.critical td { background-color: rgba(231, 76, 60, 0.08); }
-        .risk-summary-table .risk-row.high td { background-color: rgba(230, 126, 34, 0.08); }
-        .risk-summary-table .risk-row.medium td { background-color: rgba(241, 196, 15, 0.08); }
+$(Get-ReportStylesheet)
 
     </style>
 </head>
@@ -918,7 +470,7 @@ $(Get-ReportNavigation -ActivePage "Network")
     
     <div class="container">
         <div class="page-header">
-            <h1>Network Inventory</h1>
+            <h1>&#127760; Network Inventory</h1>
             <div class="metadata">
                 <p><strong>Tenant:</strong> $TenantId</p>
                 <p><strong>Scanned:</strong> $timestamp</p>
@@ -928,120 +480,232 @@ $(Get-ReportNavigation -ActivePage "Network")
             </div>
         </div>
         
-        <div class="summary-grid">
-            <div class="summary-card blue-border">
-                <div class="summary-card-label">VNets</div>
-                <div class="summary-card-value">$($totalVnets)</div>
+        <div class="section-box">
+            <h2>Network Overview</h2>
+            <div class="summary-grid">
+                <div class="summary-card blue-border">
+                    <div class="summary-card-value">$totalVnets</div>
+                    <div class="summary-card-label">VNets</div>
+                </div>
+                <div class="summary-card green-border">
+                    <div class="summary-card-value">$totalSubnets</div>
+                    <div class="summary-card-label">Subnets</div>
+                </div>
+                <div class="summary-card purple-border">
+                    <div class="summary-card-value">$totalGateways</div>
+                    <div class="summary-card-label">Gateways</div>
+                </div>
+                <div class="summary-card teal-border">
+                    <div class="summary-card-value">$totalPeerings</div>
+                    <div class="summary-card-label">Peerings</div>
+                </div>
+                <div class="summary-card gray-border">
+                    <div class="summary-card-value">$totalDevices</div>
+                    <div class="summary-card-label">Devices</div>
+                </div>
+                $(if ($subnetsWithServiceEndpoints -gt 0) {
+                    "<div class='summary-card blue-border'><div class='summary-card-value'>$subnetsWithServiceEndpoints</div><div class='summary-card-label'>Subnets with Service Endpoints</div></div>"
+                })
+                $(if ($totalVirtualWANHubs -gt 0) {
+                    "<div class='summary-card orange-border'><div class='summary-card-value'>$totalVirtualWANHubs</div><div class='summary-card-label'>Virtual WAN Hubs</div></div>"
+                })
+                $(if ($totalAzureFirewalls -gt 0) {
+                    "<div class='summary-card red-border'><div class='summary-card-value'>$totalAzureFirewalls</div><div class='summary-card-label'>Azure Firewalls</div></div>"
+                })
             </div>
-            <div class="summary-card green-border">
-                <div class="summary-card-label">Subnets</div>
-                <div class="summary-card-value">$totalSubnets</div>
-            </div>
-            <div class="summary-card yellow-border">
-                <div class="summary-card-label">NSGs</div>
-                <div class="summary-card-value">$totalNsgs</div>
-            </div>
-            <div class="summary-card purple-border">
-                <div class="summary-card-label">Gateways</div>
-                <div class="summary-card-value">$totalGateways</div>
-            </div>
-            <div class="summary-card teal-border">
-                <div class="summary-card-label">Peerings</div>
-                <div class="summary-card-value">$totalPeerings</div>
-            </div>
-            <div class="summary-card gray-border">
-                <div class="summary-card-label">Devices</div>
-                <div class="summary-card-value">$totalDevices</div>
-            </div>
-            <div class="summary-card red-border">
-                <div class="summary-card-label">Security Risks</div>
-                <div class="summary-card-value $(if ($totalRisks -gt 0) { 'red' } else { 'white' })">$totalRisks</div>
-            </div>
-            $(if ($subnetsWithServiceEndpoints -gt 0) {
-                "<div class='summary-card blue-border'><div class='summary-card-label'>Subnets with Service Endpoints</div><div class='summary-card-value blue'>$subnetsWithServiceEndpoints</div></div>"
-            })
-            $(if ($totalVirtualWANHubs -gt 0) {
-                "<div class='summary-card orange-border'><div class='summary-card-label'>Virtual WAN Hubs</div><div class='summary-card-value' style='color: var(--network-orange);'>$totalVirtualWANHubs</div></div>"
-            })
-            $(if ($totalAzureFirewalls -gt 0) {
-                "<div class='summary-card red-border'><div class='summary-card-label'>Azure Firewalls</div><div class='summary-card-value red'>$totalAzureFirewalls</div></div>"
-            })
         </div>
 "@
 
-        # Add expandable risk summary if there are risks
-        if ($totalRisks -gt 0) {
+        # Calculate total issues count
+        $totalIssues = $totalRisks + $disconnectedConnectionsList.Count + $subnetsMissingNSG
+        
+        # Only show Issues section if there are any issues
+        if ($totalIssues -gt 0) {
             # Sort risks by severity, then by subscription for better grouping
             $severityOrder = @{ "Critical" = 1; "High" = 2; "Medium" = 3 }
             $sortedAllRisks = $allRisks | Sort-Object { $severityOrder[$_.Severity] }, SubscriptionName, VNetName, SubnetName, Priority
             
             $html += @"
-        <div class="risk-summary-section" id="risk-summary">
-            <div class="risk-summary-header" onclick="toggleRiskSummary()">
-                <div class="risk-summary-title">
-                    <span class="expand-icon" id="icon-risk-summary" style="transform: rotate(0deg);"></span>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
-                    </svg>
-                    <span>NSG Security Risks Found: $totalRisks</span>
+        <div class="section-box">
+            <h2>Issues found</h2>
+"@
+            
+            # Security Risks Found - expandable section
+            if ($totalRisks -gt 0) {
+                $securityRisksId = "issues-security-risks"
+                $html += @"
+            <div class="expandable expandable--collapsed">
+                <div class="expandable__header" onclick="toggleL4Section('$securityRisksId')">
+                    <span class="expand-icon" id="icon-$securityRisksId"></span>
+                    <div class="expandable__title">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <span>Security Risks Found: $totalRisks</span>
+                    </div>
+                    <div class="expandable__badges">
+                        $(if ($totalCriticalRisks -gt 0) { "<span class='badge badge--danger'>$totalCriticalRisks Critical</span>" })
+                        $(if ($totalHighRisks -gt 0) { "<span class='badge badge--warning-high'>$totalHighRisks High</span>" })
+                        $(if ($totalMediumRisks -gt 0) { "<span class='badge badge--warning'>$totalMediumRisks Medium</span>" })
+                    </div>
                 </div>
-                <div class="risk-summary-badges">
-                    $(if ($totalCriticalRisks -gt 0) { "<span class='risk-badge critical'>$totalCriticalRisks Critical</span>" })
-                    $(if ($totalHighRisks -gt 0) { "<span class='risk-badge high'>$totalHighRisks High</span>" })
-                    $(if ($totalMediumRisks -gt 0) { "<span class='risk-badge medium'>$totalMediumRisks Medium</span>" })
+                <div class="expandable__content" id="$securityRisksId" style="display: none;">
+                    <table class="data-table data-table--sticky-header data-table--compact">
+                        <thead>
+                            <tr>
+                                <th>Severity</th>
+                                <th>Subscription</th>
+                                <th>NSG</th>
+                                <th>VNet</th>
+                                <th>Subnet</th>
+                                <th>Rule</th>
+                                <th>Port</th>
+                                <th>Source</th>
+                                <th>Destination</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"@
+                foreach ($risk in $sortedAllRisks) {
+                    $severityLower = $risk.Severity.ToLower()
+                    # Cache HTML-encoded values for risk properties
+                    $riskSeverityHtml = Encode-Html $risk.Severity
+                    $riskNsgNameHtml = Encode-Html $risk.NsgName
+                    $riskVNetNameHtml = Encode-Html $risk.VNetName
+                    $riskSubnetNameHtml = Encode-Html $risk.SubnetName
+                    $riskRuleNameHtml = Encode-Html $risk.RuleName
+                    $riskPortHtml = Encode-Html $risk.Port
+                    $riskPortNameHtml = Encode-Html $risk.PortName
+                    $riskSourceHtml = Encode-Html $risk.Source
+                    $riskDescriptionHtml = Encode-Html $risk.Description
+                    $destination = if ($risk.Destination) { Encode-Html $risk.Destination } else { "<span style='color:var(--text-muted);'>Any</span>" }
+                    $subscriptionName = if ($risk.SubscriptionName) { Encode-Html $risk.SubscriptionName } else { "<span style='color:var(--text-muted);'>Unknown</span>" }
+                    $html += @"
+                            <tr class="risk-row $severityLower">
+                                <td><span class="badge badge--$(if ($severityLower -eq 'critical') { 'danger' } elseif ($severityLower -eq 'high') { 'high' } elseif ($severityLower -eq 'medium') { 'warning' } else { 'info' })">$riskSeverityHtml</span></td>
+                                <td>$subscriptionName</td>
+                                <td>$riskNsgNameHtml</td>
+                                <td>$riskVNetNameHtml</td>
+                                <td>$riskSubnetNameHtml</td>
+                                <td>$riskRuleNameHtml</td>
+                                <td>$riskPortHtml ($riskPortNameHtml)</td>
+                                <td>$riskSourceHtml</td>
+                                <td>$destination</td>
+                                <td>$riskDescriptionHtml</td>
+                            </tr>
+"@
+                }
+                $html += @"
+                        </tbody>
+                    </table>
                 </div>
             </div>
-            <div class="risk-summary-content">
-                <table class="risk-summary-table">
-                    <thead>
-                        <tr>
-                            <th>Severity</th>
-                            <th>Subscription</th>
-                            <th>NSG</th>
-                            <th>VNet</th>
-                            <th>Subnet</th>
-                            <th>Rule</th>
-                            <th>Port</th>
-                            <th>Source</th>
-                            <th>Destination</th>
-                            <th>Description</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-"@
-            foreach ($risk in $sortedAllRisks) {
-                $severityLower = $risk.Severity.ToLower()
-                # Cache HTML-encoded values for risk properties
-                $riskSeverityHtml = Encode-Html $risk.Severity
-                $riskNsgNameHtml = Encode-Html $risk.NsgName
-                $riskVNetNameHtml = Encode-Html $risk.VNetName
-                $riskSubnetNameHtml = Encode-Html $risk.SubnetName
-                $riskRuleNameHtml = Encode-Html $risk.RuleName
-                $riskPortHtml = Encode-Html $risk.Port
-                $riskPortNameHtml = Encode-Html $risk.PortName
-                $riskSourceHtml = Encode-Html $risk.Source
-                $riskDescriptionHtml = Encode-Html $risk.Description
-                $destination = if ($risk.Destination) { Encode-Html $risk.Destination } else { "<span style='color:var(--text-muted);'>Any</span>" }
-                $subscriptionName = if ($risk.SubscriptionName) { Encode-Html $risk.SubscriptionName } else { "<span style='color:var(--text-muted);'>Unknown</span>" }
-                $html += @"
-                        <tr class="risk-row $severityLower">
-                            <td><span class="risk-badge $severityLower">$riskSeverityHtml</span></td>
-                            <td>$subscriptionName</td>
-                            <td>$riskNsgNameHtml</td>
-                            <td>$riskVNetNameHtml</td>
-                            <td>$riskSubnetNameHtml</td>
-                            <td>$riskRuleNameHtml</td>
-                            <td>$riskPortHtml ($riskPortNameHtml)</td>
-                            <td>$riskSourceHtml</td>
-                            <td>$destination</td>
-                            <td>$riskDescriptionHtml</td>
-                        </tr>
 "@
             }
-            $html += @"
-                    </tbody>
-                </table>
+            
+            # Disconnected Connections - expandable section
+            if ($disconnectedConnectionsList.Count -gt 0) {
+                $disconnectedId = "issues-disconnected"
+                $html += @"
+            <div class="expandable expandable--collapsed">
+                <div class="expandable__header" onclick="toggleL4Section('$disconnectedId')">
+                    <span class="expand-icon" id="icon-$disconnectedId"></span>
+                    <div class="expandable__title">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <span>Links Down: $($disconnectedConnectionsList.Count)</span>
+                    </div>
+                </div>
+                <div class="expandable__content" id="$disconnectedId" style="display: none;">
+                    <table class="data-table data-table--sticky-header data-table--compact">
+                        <thead>
+                            <tr>
+                                <th>Type</th>
+                                <th>Connection Name</th>
+                                <th>Subscription</th>
+                                <th>VNet/Hub</th>
+                                <th>Remote Network</th>
+                                <th>Gateway</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"@
+                foreach ($conn in $disconnectedConnectionsList) {
+                    $statusClass = if ($conn.Status -eq "Connected") { "status-connected" } else { "status-disconnected" }
+                    $html += @"
+                            <tr>
+                                <td>$(Encode-Html $conn.Type)</td>
+                                <td>$(Encode-Html $conn.Name)</td>
+                                <td>$(Encode-Html $conn.SubscriptionName)</td>
+                                <td>$(Encode-Html $conn.VNetName)</td>
+                                <td>$(Encode-Html $conn.RemoteNetworkName)</td>
+                                <td>$(Encode-Html $conn.GatewayName)</td>
+                                <td class="$statusClass">$(Encode-Html $conn.Status)</td>
+                            </tr>
+"@
+                }
+                $html += @"
+                        </tbody>
+                    </table>
+                </div>
             </div>
+"@
+            }
+            
+            # Subnets without NSG - expandable section
+            if ($subnetsWithoutNSGList.Count -gt 0) {
+                $noNsgId = "issues-no-nsg"
+                $html += @"
+            <div class="expandable expandable--collapsed">
+                <div class="expandable__header" onclick="toggleL4Section('$noNsgId')">
+                    <span class="expand-icon" id="icon-$noNsgId"></span>
+                    <div class="expandable__title">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <span>Subnets without NSG: $($subnetsWithoutNSGList.Count)</span>
+                    </div>
+                </div>
+                <div class="expandable__content" id="$noNsgId" style="display: none;">
+                    <table class="data-table data-table--sticky-header data-table--compact">
+                        <thead>
+                            <tr>
+                                <th>Subscription</th>
+                                <th>VNet</th>
+                                <th>Subnet</th>
+                                <th>Address Prefix</th>
+                                <th>NSG Status</th>
+                                <th>Devices</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"@
+                foreach ($subnet in $subnetsWithoutNSGList) {
+                    # Format NSG status with same styling as subnet header
+                    $nsgStatusHtml = "<span class='no-nsg-badge'>$(Encode-Html $subnet.NsgStatus)</span>"
+                    $html += @"
+                            <tr>
+                                <td>$(Encode-Html $subnet.SubscriptionName)</td>
+                                <td>$(Encode-Html $subnet.VNetName)</td>
+                                <td>$(Encode-Html $subnet.SubnetName)</td>
+                                <td>$(Encode-Html $subnet.AddressPrefix)</td>
+                                <td>$nsgStatusHtml</td>
+                                <td>$($subnet.DeviceCount)</td>
+                            </tr>
+"@
+                }
+                $html += @"
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+"@
+            }
+            
+            $html += @"
         </div>
 "@
         }
@@ -1049,27 +713,28 @@ $(Get-ReportNavigation -ActivePage "Network")
         # Virtual WAN Hubs Section
         if ($virtualWANHubs -and $virtualWANHubs.Count -gt 0) {
             $html += @"
-        <h2 style="margin-top: 2rem; margin-bottom: 1rem;">Virtual WAN Hubs</h2>
+        <div class="section-box">
+            <h2>Virtual WAN Hubs</h2>
 "@
             foreach ($hub in ($virtualWANHubs | Sort-Object SubscriptionName, Name)) {
                 $hubId = "hub-" + [Guid]::NewGuid().ToString()
                 $hubSearchText = "$($hub.Name) $($hub.Location) $($hub.AddressPrefix) $($hub.SubscriptionName)".ToLower()
                 
                 $html += @"
-        <div class="subscription-box vwan-hub-box" 
+        <div class="subscription-box" 
             data-subscription="$(Encode-Html $hub.SubscriptionName)"
             data-searchable="$hubSearchText">
-            <div class="subscription-header vwan-hub-header collapsed" data-hub-id="$hubId" style="cursor: pointer;">
-                <span class="expand-icon"></span>
+            <div class="subscription-header collapsed" data-hub-id="$hubId" onclick="toggleSubscription('$hubId')" style="cursor: pointer;">
+                <span class="expand-icon" id="icon-$hubId"></span>
                 <h3>$(Encode-Html $hub.Name)</h3>
                 <span class="header-severity-summary">
-                    $(if ($hub.ExpressRouteConnections.Count -gt 0) { "<span class='badge'>$($hub.ExpressRouteConnections.Count) ER</span>" })
-                    $(if ($hub.VpnConnections.Count -gt 0) { "<span class='badge'>$($hub.VpnConnections.Count) S2S</span>" })
-                    $(if ($hub.Peerings.Count -gt 0) { "<span class='badge'>$($hub.Peerings.Count) Peerings</span>" })
-                    $(if ($hub.Firewalls -and $hub.Firewalls.Count -gt 0) { "<span class='badge badge-firewall'>$($hub.Firewalls.Count) Firewall$(if ($hub.Firewalls.Count -ne 1) { 's' })</span>" })
+                    $(if ($hub.ExpressRouteConnections.Count -gt 0) { "<span class='badge badge--info'>$($hub.ExpressRouteConnections.Count) ER</span>" })
+                    $(if ($hub.VpnConnections.Count -gt 0) { "<span class='badge badge--info'>$($hub.VpnConnections.Count) S2S</span>" })
+                    $(if ($hub.Peerings.Count -gt 0) { "<span class='badge badge--info'>$($hub.Peerings.Count) Peerings</span>" })
+                    $(if ($hub.Firewalls -and $hub.Firewalls.Count -gt 0) { "<span class='badge badge--info'>$($hub.Firewalls.Count) Firewall$(if ($hub.Firewalls.Count -ne 1) { 's' })</span>" })
                 </span>
             </div>
-            <div class="subscription-content vwan-hub-content" id="$hubId" style="display: none;">
+            <div class="subscription-content" id="$hubId" style="display: none;">
                 <div class="vnet-meta-info">
                     <p><strong>Location:</strong> $(Encode-Html $hub.Location)</p>
                     <p><strong>Address Prefix:</strong> $(Encode-Html $hub.AddressPrefix)</p>
@@ -1082,7 +747,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     $html += @"
                 <div class="peering-section">
                     <h4 style="margin:5px 0;">ExpressRoute Connections</h4>
-                    <table class="device-table">
+                    <table class="data-table data-table--sticky-header data-table--compact">
                         <thead>
                             <tr>
                                 <th>Connection Name</th>
@@ -1098,7 +763,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         <tbody>
 "@
                     foreach ($erConn in $hub.ExpressRouteConnections) {
-                        $statusColor = if ($erConn.ConnectionStatus -eq "Connected") { "#2ecc71" } else { "#e74c3c" }
+                        $statusClass = if ($erConn.ConnectionStatus -eq "Connected") { "status-connected" } else { "status-disconnected" }
                         # Get circuit name from multiple possible sources
                         # Priority: 1) Circuit object Name, 2) ExpressRouteCircuitName (if not Unknown), 3) Extract from CircuitId, 4) Unknown
                         $circuit = $erConn.ExpressRouteCircuit
@@ -1120,7 +785,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         $html += @"
                             <tr>
                                 <td>$(Encode-Html $erConn.Name)</td>
-                                <td style="color: $statusColor;">$(Encode-Html $erConn.ConnectionStatus)</td>
+                                <td class="$statusClass">$(Encode-Html $erConn.ConnectionStatus)</td>
                                 <td>$(Encode-Html $circuitName)</td>
                                 <td>$(Encode-Html $serviceProvider)</td>
                                 <td>$(Encode-Html $peeringLocation)</td>
@@ -1142,7 +807,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     $html += @"
                 <div class="peering-section">
                     <h4 style="margin:5px 0;">S2S VPN Connections</h4>
-                    <table class="device-table">
+                    <table class="data-table data-table--sticky-header data-table--compact">
                         <thead>
                             <tr>
                                 <th>Connection Name</th>
@@ -1154,11 +819,11 @@ $(Get-ReportNavigation -ActivePage "Network")
                         <tbody>
 "@
                     foreach ($vpnConn in $hub.VpnConnections) {
-                        $statusColor = if ($vpnConn.ConnectionStatus -eq "Connected") { "#2ecc71" } else { "#e74c3c" }
+                        $statusClass = if ($vpnConn.ConnectionStatus -eq "Connected") { "status-connected" } else { "status-disconnected" }
                         $html += @"
                             <tr>
                                 <td>$(Encode-Html $vpnConn.Name)</td>
-                                <td style="color: $statusColor;">$(Encode-Html $vpnConn.ConnectionStatus)</td>
+                                <td class="$statusClass">$(Encode-Html $vpnConn.ConnectionStatus)</td>
                                 <td>$(Encode-Html $vpnConn.RemoteSiteName)</td>
                                 <td>$(Encode-Html $vpnConn.RemoteSiteAddressSpace)</td>
                             </tr>
@@ -1176,7 +841,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     $html += @"
                 <div class="peering-section">
                     <h4 style="margin:5px 0;">Azure Firewalls</h4>
-                    <table class="device-table">
+                    <table class="data-table data-table--sticky-header data-table--compact">
                         <thead>
                             <tr>
                                 <th>Firewall Name</th>
@@ -1211,7 +876,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     $html += @"
                 <div class="peering-section">
                     <h4 style="margin:5px 0;">VNets Peered to Hub</h4>
-                    <table class="device-table">
+                    <table class="data-table data-table--sticky-header data-table--compact">
                         <thead>
                             <tr>
                                 <th>VNet Name</th>
@@ -1223,12 +888,12 @@ $(Get-ReportNavigation -ActivePage "Network")
                         <tbody>
 "@
                     foreach ($peering in $hub.Peerings) {
-                        $stateColor = if ($peering.State -eq "Connected") { "#2ecc71" } else { "#e74c3c" }
+                        $stateClass = if ($peering.State -eq "Connected") { "status-connected" } else { "status-disconnected" }
                         
                         # Build gateway direction indicator for Virtual WAN Hub peerings
                         # UseRemoteGateways = true means VNet uses the Hub's gateway
                         $gatewayDirection = if ($peering.UseRemoteGateways) {
-                            "<span style='color:white;' title='VNet uses Hub Gateway'>Uses Hub Gateway</span>"
+                            "<span title='VNet uses Hub Gateway'>Uses Hub Gateway</span>"
                         } else {
                             "None"
                         }
@@ -1236,7 +901,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         $html += @"
                             <tr>
                                 <td>$(Encode-Html $peering.VNetName)</td>
-                                <td style="color: $stateColor;">$(Encode-Html $peering.State)</td>
+                                <td class="$stateClass">$(Encode-Html $peering.State)</td>
                                 <td>$($peering.AllowForwardedTraffic)</td>
                                 <td style="text-align:center;">$gatewayDirection</td>
                             </tr>
@@ -1254,40 +919,44 @@ $(Get-ReportNavigation -ActivePage "Network")
         </div>
 "@
             }
+            $html += @"
+        </div>
+"@
         }
 
         # Network Diagram Section
         $html += @"
-
-        <div class="network-diagram-container">
-            <div class="diagram-header">
-                <h2>Network Topology</h2>
-                <div style="display: flex; align-items: center; gap: 20px;">
-                    <div class="diagram-legend">
-                        <div class="legend-item" id="legend-vnet"><div class="legend-dot" style="background: var(--network-blue);"></div> VNet - color by subscription</div>
-                        <div class="legend-item" id="legend-gateway"><div class="legend-diamond"></div> Gateway</div>
-                        <div class="legend-item" id="legend-hub"><div class="legend-hexagon" style="background: var(--network-orange); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
-                        <div class="legend-item" id="legend-firewall"><div class="legend-box" style="background: var(--network-red); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
-                        <div class="legend-item" id="legend-onprem"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
-                        <div class="legend-item" id="legend-peering"><div class="legend-line peering"></div> Peering</div>
-                        <div class="legend-item" id="legend-s2s"><div class="legend-line s2s"></div> S2S Tunnel / ExpressRoute</div>
-                    </div>
-                    <div class="diagram-controls">
-                        <button class="diagram-btn" id="resetLayout">Reset Layout</button>
-                        <button class="diagram-btn" id="togglePhysics">Disable Physics</button>
-                        <button class="diagram-btn" id="toggleLayout">Hierarchical Layout</button>
-                        <button class="diagram-btn" id="openFullscreen">Fullscreen</button>
+        <div class="section-box">
+            <h2>Network Topology</h2>
+            <div class="network-diagram-container">
+                <div class="diagram-header">
+                    <div>
+                        <div class="diagram-legend">
+                            <div class="legend-item" id="legend-vnet"><div class="legend-dot" style="background: var(--network-blue);"></div> VNet - color by subscription</div>
+                            <div class="legend-item" id="legend-gateway"><div class="legend-diamond"></div> Gateway</div>
+                            <div class="legend-item" id="legend-hub"><div class="legend-hexagon" style="background: var(--network-orange); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Virtual WAN Hub</div>
+                            <div class="legend-item" id="legend-firewall"><div class="legend-box" style="background: var(--network-red); width: 12px; height: 12px; display: inline-block; margin-right: 6px;"></div> Azure Firewall</div>
+                            <div class="legend-item" id="legend-onprem"><div class="legend-dot" style="background: #34495e; border-radius: 0;"></div> On-Premises</div>
+                            <div class="legend-item" id="legend-peering"><div class="legend-line peering"></div> Peering</div>
+                            <div class="legend-item" id="legend-s2s"><div class="legend-line s2s"></div> S2S Tunnel / ExpressRoute</div>
+                        </div>
+                        <div class="diagram-controls">
+                            <button class="diagram-btn" id="resetLayout">Reset Layout</button>
+                            <button class="diagram-btn" id="togglePhysics">Disable Physics</button>
+                            <button class="diagram-btn" id="toggleLayout">Hierarchical Layout</button>
+                            <button class="diagram-btn" id="openFullscreen">Fullscreen</button>
+                        </div>
                     </div>
                 </div>
+                <div id="network-diagram"></div>
             </div>
-            <div id="network-diagram"></div>
         </div>
         
         <!-- Fullscreen diagram overlay -->
         <div class="diagram-fullscreen" id="diagram-fullscreen">
             <div class="diagram-fullscreen-header">
                 <h2>Network Topology - Fullscreen</h2>
-                <div style="display: flex; align-items: center; gap: 15px;">
+                <div>
                     <div class="diagram-legend">
                         <div class="legend-item" id="legend-vnet-fullscreen"><div class="legend-dot" style="background: var(--network-blue);"></div> VNet - color by subscription</div>
                         <div class="legend-item" id="legend-gateway-fullscreen"><div class="legend-diamond"></div> Gateway</div>
@@ -1335,6 +1004,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                 <button id="collapseAll" class="btn-clear">Collapse All</button>
             </div>
         </div>
+        <div class="filter-stats">
+            Showing <span id="visibleCount">$totalVnets</span> of <span id="totalCount">$totalVnets</span> VNets
+        </div>
 
         <div class="topology-tree">
 "@
@@ -1381,6 +1053,12 @@ $(Get-ReportNavigation -ActivePage "Network")
         }
 
         # Generate VNets grouped by subscription
+        if ($subscriptions.Count -gt 0) {
+            $html += @"
+        <div class="section-box">
+            <h2>Network Inventory by Subscription</h2>
+"@
+        }
         foreach ($subId in $subscriptions.Keys) {
             $sub = $subscriptions[$subId]
             $subColor = $subColorMap[$subId]
@@ -1398,17 +1076,17 @@ $(Get-ReportNavigation -ActivePage "Network")
             if ($subCriticalRisks -gt 0 -or $subHighRisks -gt 0 -or $subMediumRisks -gt 0) {
                 if ($subCriticalRisks -gt 0) { 
                     $subRiskBadgesHtml += @"
-<span class='risk-badge critical'>$subCriticalRisks</span>
+<span class='badge badge--danger'>$subCriticalRisks</span>
 "@
                 }
                 if ($subHighRisks -gt 0) { 
                     $subRiskBadgesHtml += @"
-<span class='risk-badge high'>$subHighRisks</span>
+<span class='badge badge--warning-high'>$subHighRisks</span>
 "@
                 }
                 if ($subMediumRisks -gt 0) { 
                     $subRiskBadgesHtml += @"
-<span class='risk-badge medium'>$subMediumRisks</span>
+<span class='badge badge--warning'>$subMediumRisks</span>
 "@
                 }
             }
@@ -1419,7 +1097,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     <span class="expand-icon" id="icon-sub-$subId"></span>
                     <div class="subscription-color-dot" style="background-color: $subColor;"></div>
                     <span class="subscription-title">$(Encode-Html $sub.Name)</span>
-                    <span class="subscription-stats">$subRiskBadgesHtml $subVnetCount VNets &#124; $subDeviceCount Devices</span>
+                    <span class="subscription-stats"> $subVnetCount VNets &#124; $subDeviceCount Devices</span>
                 </div>
                 <div class="subscription-content" id="sub-$subId" style="display: none;">
 "@
@@ -1451,35 +1129,9 @@ $(Get-ReportNavigation -ActivePage "Network")
                             <span>$vnetLocationHtml</span>
                             <span>Subnets: $($vnet.Subnets.Count)</span>
                             <span>Peerings: $($vnet.Peerings.Count)</span>
-"@
-                if ($vnetCritical -gt 0 -or $vnetHigh -gt 0 -or $vnetMedium -gt 0) {
-                    $html += @"
-                            <span>
-"@
-                    if ($vnetCritical -gt 0) { 
-                        $html += @"
-<span class='risk-badge critical'>$vnetCritical</span>
-"@
-                    }
-                    if ($vnetHigh -gt 0) { 
-                        $html += @"
-<span class='risk-badge high'>$vnetHigh</span>
-"@
-                    }
-                    if ($vnetMedium -gt 0) { 
-                        $html += @"
-<span class='risk-badge medium'>$vnetMedium</span>
-"@
-                    }
-                    $html += @"
-</span>
-"@
-                }
-                $html += @"
-
                         </div>
                     </div>
-                    <div class="vnet-content" id="$vnetId">
+                    <div class="vnet-content" id="$vnetId" style="display: none;">
 "@
                 # Gateways
                 if ($vnet.Gateways.Count -gt 0) {
@@ -1490,7 +1142,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     foreach ($gw in $vnet.Gateways) {
                         $html += @"
                             <div style="padding:8px 12px; background:rgba(155, 89, 182, 0.1); border-radius:4px; margin-bottom:5px;">
-                                <strong>$(Encode-Html $gw.Name)</strong> <span class="badge-gw">$(Encode-Html $gw.Type)</span>
+                                <strong>$(Encode-Html $gw.Name)</strong> <span class="badge badge--neutral badge--small">$(Encode-Html $gw.Type)</span>
                                 <span style="margin-left:10px; font-size:0.9em; color:var(--text-secondary);">SKU: $(Encode-Html $gw.Sku) | VPN: $(Encode-Html $gw.VpnType)</span>
 "@
 
@@ -1619,7 +1271,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         $threatIntelColor = if ($fw.ThreatIntelMode -in @("Alert", "Deny")) { "#2ecc71" } else { "#e74c3c" }
                         $html += @"
                             <div style="padding:8px 12px; background:rgba(231, 76, 60, 0.1); border-radius:4px; margin-bottom:5px;">
-                                <strong>$(Encode-Html $fw.Name)</strong> <span class="badge badge-firewall">Firewall</span>
+                                <strong>$(Encode-Html $fw.Name)</strong> <span class="badge badge--info">Firewall</span>
                                 <div style="margin-top:6px; font-size:0.85em; color:var(--text-secondary);">
                                     <div>SKU: $(Encode-Html $fw.SkuTier) | Threat Intel: <span style="color: $threatIntelColor;">$(Encode-Html $fw.ThreatIntelMode)</span></div>
                                     $(if ($fw.PrivateIP) { "<div>Private IP: $(Encode-Html $fw.PrivateIP)</div>" })
@@ -1640,13 +1292,13 @@ $(Get-ReportNavigation -ActivePage "Network")
                 foreach ($subnet in $vnet.Subnets) {
                     $subnetId = "subnet-" + [Guid]::NewGuid().ToString()
                     
-                    # NSG badge with risk indicators
-                    $nsgBadgeHtml = ""
+                    # NSG status: show NSG name or "No NSG" badge
+                    $nsgStatusHtml = ""
                     if ($subnet.NsgName) {
-                        $nsgBadgeHtml = @"
+                        # Show NSG name with same styling as "No NSG (GW subnet)"
+                        $nsgStatusHtml = @"
 <span class='badge-nsg'>NSG: $(Encode-Html $subnet.NsgName)</span>
 "@
-                        
                         # Add risk badges if present
                         if ($subnet.NsgRisks -and $subnet.NsgRisks.Count -gt 0) {
                             $subnetCritical = @($subnet.NsgRisks | Where-Object { $_.Severity -eq "Critical" }).Count
@@ -1654,38 +1306,38 @@ $(Get-ReportNavigation -ActivePage "Network")
                             $subnetMedium = @($subnet.NsgRisks | Where-Object { $_.Severity -eq "Medium" }).Count
                             
                             if ($subnetCritical -gt 0) { 
-                                $nsgBadgeHtml += @"
-<span class='risk-badge critical'>$subnetCritical</span>
+                                $nsgStatusHtml += @"
+ <span class='badge badge--danger'>$subnetCritical</span>
 "@
                             }
                             if ($subnetHigh -gt 0) { 
-                                $nsgBadgeHtml += @"
-<span class='risk-badge high'>$subnetHigh</span>
+                                $nsgStatusHtml += @"
+ <span class='badge badge--warning-high'>$subnetHigh</span>
 "@
                             }
                             if ($subnetMedium -gt 0) { 
-                                $nsgBadgeHtml += @"
-<span class='risk-badge medium'>$subnetMedium</span>
+                                $nsgStatusHtml += @"
+ <span class='badge badge--warning'>$subnetMedium</span>
 "@
                             }
                         }
                     } else {
-                        # Check for legitimate exception subnets - show in green with note, using same CSS as NSG badges
+                        # Check for legitimate exception subnets - show in green with note
                         $subnetName = $subnet.Name
                         if ($subnetName -eq "GatewaySubnet") {
-                            $nsgBadgeHtml = @"
+                            $nsgStatusHtml = @"
 <span class='badge-nsg'>No NSG (GW subnet)</span>
 "@
                         } elseif ($subnetName -eq "AzureBastionSubnet") {
-                            $nsgBadgeHtml = @"
+                            $nsgStatusHtml = @"
 <span class='badge-nsg'>No NSG (Bastion subnet)</span>
 "@
                         } elseif ($subnetName -eq "AzureFirewallSubnet") {
-                            $nsgBadgeHtml = @"
+                            $nsgStatusHtml = @"
 <span class='badge-nsg'>No NSG (Firewall subnet)</span>
 "@
                         } else {
-                            $nsgBadgeHtml = @"
+                            $nsgStatusHtml = @"
 <span class='no-nsg-badge'>No NSG</span>
 "@
                         }
@@ -1700,13 +1352,13 @@ $(Get-ReportNavigation -ActivePage "Network")
                                     <span style="margin-left:10px; color:var(--text-secondary);">$(Encode-Html $subnet.AddressPrefix)</span>
                                 </div>
                                 <div>
-                                    $nsgBadgeHtml
+                                    $nsgStatusHtml
                                     <span style="font-size:0.9em; margin-left:10px;">Devices: $($subnet.ConnectedDevices.Count)</span>
                                 </div>
                             </div>
                             <div class="subnet-content" id="$subnetId">
 "@
-                    # Connected Devices
+                    # Connected Devices Table (old format with device-table class)
                     if ($subnet.ConnectedDevices.Count -gt 0) {
                         $html += @"
                                 <table class="device-table">
@@ -1833,7 +1485,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                     $html += @"
                         <div class="peering-section">
                             <h4 style="margin:5px 0;">Peerings</h4>
-                            <table class="device-table">
+                            <table class="data-table data-table--sticky-header data-table--compact">
                                 <thead>
                                     <tr>
                                         <th>Remote VNet</th>
@@ -1851,7 +1503,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         $remoteHub = if ($peering.IsVirtualWANHub) { $virtualWANHubs | Where-Object { $_.Name -eq $peering.RemoteVnetName } | Select-Object -First 1 } else { $null }
                         $remoteSubscription = if ($remoteVnet) { $remoteVnet.SubscriptionName } elseif ($remoteHub) { $remoteHub.SubscriptionName } else { "Unknown" }
                         
-                        $stateColor = if ($peering.State -eq "Connected") { "#2ecc71" } else { "#e74c3c" }
+                        $stateClass = if ($peering.State -eq "Connected") { "status-connected" } else { "status-disconnected" }
                         $remoteType = if ($peering.IsVirtualWANHub) { "Virtual WAN Hub" } else { "VNet" }
                         
                         # Build gateway direction indicators
@@ -1868,7 +1520,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         }
                         
                         $gatewayDisplay = if ($gatewayDirection) { 
-                            "<span style='color:white;' title='Gateway Transit: $gatewayDirection'>$gatewayDirection</span>" 
+                            "<span title='Gateway Transit: $gatewayDirection'>$gatewayDirection</span>" 
                         } else { 
                             "None" 
                         }
@@ -1877,7 +1529,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                                     <tr>
                                         <td>$(Encode-Html $peering.RemoteVnetName) <span style="color:var(--text-muted); font-size:0.85em;">($remoteType)</span></td>
                                         <td>$(Encode-Html $remoteSubscription)</td>
-                                        <td style="color: $stateColor;">$(Encode-Html $peering.State)</td>
+                                        <td class="$stateClass">$(Encode-Html $peering.State)</td>
                                         <td>Fwd: $($peering.AllowForwardedTraffic)</td>
                                         <td style="text-align:center;">$gatewayDisplay</td>
                                     </tr>
@@ -1899,6 +1551,11 @@ $(Get-ReportNavigation -ActivePage "Network")
             $html += @"
                 </div>
             </div>
+"@
+        }
+        if ($subscriptions.Count -gt 0) {
+            $html += @"
+        </div>
 "@
         }
 
@@ -2527,13 +2184,14 @@ $(Get-ReportNavigation -ActivePage "Network")
             # S2S VPN connections
             if ($hub.VpnConnections) {
                 foreach ($vpnConn in $hub.VpnConnections) {
-                    $remoteSiteName = $vpnConn.RemoteSiteName
+                    $remoteSiteName = if ($vpnConn.RemoteSiteName) { $vpnConn.RemoteSiteName } else { "Unknown Site" }
                     $onPremKey = "onprem-s2s-$remoteSiteName"
                     
                     if (-not $nodeIdMap.ContainsKey($onPremKey)) {
                         $onPremNodeId = $nodeCounter++
                         $nodeIdMap[$onPremKey] = $onPremNodeId
-                        $onPremTooltip = "On-Premises Site`n$remoteSiteName`nAddress Space: $($vpnConn.RemoteSiteAddressSpace)"
+                        $remoteSiteAddressSpace = if ($vpnConn.RemoteSiteAddressSpace) { $vpnConn.RemoteSiteAddressSpace } else { "Unknown" }
+                        $onPremTooltip = "On-Premises Site`n$remoteSiteName`nAddress Space: $remoteSiteAddressSpace"
                         $onPremTooltipEscaped = Format-JsString $onPremTooltip
                         $remoteSiteNameEscaped = Format-JsString $remoteSiteName
                         # VPN Sites are at level 0 (on-premises level)
@@ -2652,12 +2310,13 @@ $(Get-ReportNavigation -ActivePage "Network")
                         enabled: false,
                         direction: 'DU',
                         sortMethod: 'directed',
-                        levelSeparation: 200,
-                        nodeSpacing: 200,
-                        treeSpacing: 200,
+                        levelSeparation: 150,
+                        nodeSpacing: 120,
+                        treeSpacing: 150,
                         blockShifting: true,
                         edgeMinimization: true,
-                        parentCentralization: true
+                        parentCentralization: true,
+                        shakeTowards: 'leaves'
                     }
                 },
                 physics: {
@@ -2836,16 +2495,18 @@ $(Get-ReportNavigation -ActivePage "Network")
                     this.textContent = hierarchicalEnabled ? 'Free Layout' : 'Hierarchical Layout';
 
                     if (hierarchicalEnabled) {
-                        // Enable hierarchical layout (tree style)
+                        // Enable hierarchical layout (tree style) with optimized settings for better balance
                         options.layout.hierarchical.enabled = true;
                         options.layout.hierarchical.direction = 'DU';
                         options.layout.hierarchical.sortMethod = 'directed';
-                        options.layout.hierarchical.levelSeparation = 200;
-                        options.layout.hierarchical.nodeSpacing = 200;
-                        options.layout.hierarchical.treeSpacing = 200;
+                        options.layout.hierarchical.levelSeparation = 150;
+                        options.layout.hierarchical.nodeSpacing = 120;
+                        options.layout.hierarchical.treeSpacing = 150;
                         options.layout.hierarchical.blockShifting = true;
                         options.layout.hierarchical.edgeMinimization = true;
                         options.layout.hierarchical.parentCentralization = true;
+                        // Allow some flexibility for better visual balance
+                        options.layout.hierarchical.shakeTowards = 'leaves';
                         network.setOptions(options);
                         // Force vis-network to re-apply hierarchical layout
                         network.setData({ nodes: nodes, edges: edges });
@@ -3123,15 +2784,17 @@ $(Get-ReportNavigation -ActivePage "Network")
                     this.textContent = hierarchicalEnabledFullscreen ? 'Free Layout' : 'Hierarchical Layout';
 
                     if (hierarchicalEnabledFullscreen) {
+                        // Enable hierarchical layout (tree style) with optimized settings for better balance
                         optionsFullscreen.layout.hierarchical.enabled = true;
                         optionsFullscreen.layout.hierarchical.direction = 'DU';
                         optionsFullscreen.layout.hierarchical.sortMethod = 'directed';
-                        optionsFullscreen.layout.hierarchical.levelSeparation = 200;
-                        optionsFullscreen.layout.hierarchical.nodeSpacing = 200;
-                        optionsFullscreen.layout.hierarchical.treeSpacing = 200;
+                        optionsFullscreen.layout.hierarchical.levelSeparation = 150;
+                        optionsFullscreen.layout.hierarchical.nodeSpacing = 120;
+                        optionsFullscreen.layout.hierarchical.treeSpacing = 150;
                         optionsFullscreen.layout.hierarchical.blockShifting = true;
                         optionsFullscreen.layout.hierarchical.edgeMinimization = true;
                         optionsFullscreen.layout.hierarchical.parentCentralization = true;
+                        optionsFullscreen.layout.hierarchical.shakeTowards = 'leaves';
                         networkFullscreen.setOptions(optionsFullscreen);
                         // Force vis-network to re-apply hierarchical layout in fullscreen
                         networkFullscreen.setData({ nodes: nodes, edges: edges });
@@ -3224,11 +2887,13 @@ $(Get-ReportNavigation -ActivePage "Network")
                             if (vnetBox) {
                                 vnetBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
                                 // Expand the VNet
-                                var vnetContent = vnetBox.querySelector('.vnet-content');
-                                var vnetHeader = vnetBox.querySelector('.vnet-header');
+                                var vnetContent = vnetBox.querySelector('.expandable__content');
+                                var expandable = vnetBox.closest('.expandable') || vnetBox;
                                 if (vnetContent && vnetContent.style.display !== 'block') {
+                                    expandable.classList.remove('expandable--collapsed');
                                     vnetContent.style.display = 'block';
-                                    vnetHeader.classList.add('expanded');
+                                    const icon = expandable.querySelector('.expand-icon');
+                                    if (icon) icon.style.transform = 'rotate(90deg)';
                                 }
                             }
                         }
@@ -3241,15 +2906,17 @@ $(Get-ReportNavigation -ActivePage "Network")
 
         function toggleRiskSummary() {
             const section = document.getElementById('risk-summary');
-            const content = section.querySelector('.risk-summary-content');
+            const content = section.querySelector('.expandable__content');
             const icon = document.getElementById('icon-risk-summary');
             
-            if (section.classList.contains('expanded')) {
-                section.classList.remove('expanded');
-                if (icon) icon.style.transform = 'rotate(0deg)';
-            } else {
-                section.classList.add('expanded');
+            if (section.classList.contains('expandable--collapsed')) {
+                section.classList.remove('expandable--collapsed');
+                if (content) content.style.display = 'block';
                 if (icon) icon.style.transform = 'rotate(90deg)';
+            } else {
+                section.classList.add('expandable--collapsed');
+                if (content) content.style.display = 'none';
+                if (icon) icon.style.transform = 'rotate(0deg)';
             }
         }
 
@@ -3296,14 +2963,46 @@ $(Get-ReportNavigation -ActivePage "Network")
             }
         }
 
+        function toggleL4Section(id) {
+            const content = document.getElementById(id);
+            const expandable = content.closest('.expandable');
+            const icon = document.getElementById('icon-' + id);
+             
+            if (event) event.stopPropagation();
+
+            if (expandable.classList.contains('expandable--collapsed')) {
+                expandable.classList.remove('expandable--collapsed');
+                if (content) content.style.display = 'block';
+                if (icon) icon.style.transform = 'rotate(90deg)';
+            } else {
+                expandable.classList.add('expandable--collapsed');
+                if (content) content.style.display = 'none';
+                if (icon) icon.style.transform = 'rotate(0deg)';
+            }
+        }
+
         document.getElementById('expandAll').addEventListener('click', function() {
-            document.querySelectorAll('.vnet-content, .subnet-content, .subscription-content').forEach(el => el.style.display = 'block');
-            document.querySelectorAll('.vnet-header, .subnet-header, .subscription-header').forEach(el => el.classList.add('expanded'));
+            document.querySelectorAll('.expandable').forEach(el => {
+                el.classList.remove('expandable--collapsed');
+                const content = el.querySelector('.expandable__content');
+                if (content) content.style.display = 'block';
+                const icon = el.querySelector('.expand-icon');
+                if (icon) icon.style.transform = 'rotate(90deg)';
+            });
+            document.querySelectorAll('.subscription-content').forEach(el => el.style.display = 'block');
+            document.querySelectorAll('.subscription-header').forEach(el => el.classList.remove('collapsed'));
         });
 
         document.getElementById('collapseAll').addEventListener('click', function() {
-            document.querySelectorAll('.vnet-content, .subnet-content, .subscription-content').forEach(el => el.style.display = 'none');
-            document.querySelectorAll('.vnet-header, .subnet-header, .subscription-header').forEach(el => el.classList.remove('expanded'));
+            document.querySelectorAll('.expandable').forEach(el => {
+                el.classList.add('expandable--collapsed');
+                const content = el.querySelector('.expandable__content');
+                if (content) content.style.display = 'none';
+                const icon = el.querySelector('.expand-icon');
+                if (icon) icon.style.transform = 'rotate(0deg)';
+            });
+            document.querySelectorAll('.subscription-content').forEach(el => el.style.display = 'none');
+            document.querySelectorAll('.subscription-header').forEach(el => el.classList.add('collapsed'));
         });
         
         // Collapse all subscription tables on page load
@@ -3315,7 +3014,7 @@ $(Get-ReportNavigation -ActivePage "Network")
         // Subscription filter
         document.getElementById('subscriptionFilter').addEventListener('change', function() {
             const selectedSub = this.value;
-            const sections = document.querySelectorAll('.subscription-section');
+            const sections = document.querySelectorAll('.subscription-box');
             
             sections.forEach(section => {
                 if (!selectedSub || section.getAttribute('data-subscription-id') === selectedSub) {
@@ -3329,7 +3028,7 @@ $(Get-ReportNavigation -ActivePage "Network")
         // Search functionality
         document.getElementById('searchFilter').addEventListener('keyup', function() {
             const filter = this.value.toLowerCase();
-            const vnets = document.querySelectorAll('.vnet-box');
+            const vnets = document.querySelectorAll('.expandable[data-vnet-name]');
             
             vnets.forEach(vnet => {
                 const searchable = vnet.getAttribute('data-searchable');
@@ -3338,7 +3037,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                 if (searchable.includes(filter) || content.includes(filter)) {
                     vnet.style.display = '';
                     // Show parent subscription section
-                    const subSection = vnet.closest('.subscription-section');
+                    const subSection = vnet.closest('.subscription-box');
                     if (subSection) subSection.style.display = '';
                 } else {
                     vnet.style.display = 'none';
@@ -3388,3 +3087,4 @@ $(Get-ReportNavigation -ActivePage "Network")
         throw
     }
 }
+

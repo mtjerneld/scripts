@@ -12,7 +12,7 @@ function Get-ControlDefinitions {
     [CmdletBinding()]
     param()
     
-    $moduleRoot = $PSScriptRoot -replace '\\Private\\Config$', ''
+    $moduleRoot = $PSScriptRoot -replace '\\Private\\Helpers$', ''
     $controlDefPath = Join-Path $moduleRoot "Config\ControlDefinitions.json"
     
     $result = @{
@@ -117,5 +117,6 @@ function Get-ControlDescriptionAndReferences {
         References = $references
     }
 }
+
 
 

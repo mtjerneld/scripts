@@ -1,0 +1,61 @@
+/* Security Report Specific Styles */
+
+/* Clickable elements - all interactive cards and rows should have pointer cursor */
+.summary-card[data-severity],
+.summary-card[data-subscription] {
+    cursor: pointer;
+}
+
+.category-score-card[data-category] {
+    cursor: pointer;
+}
+
+.control-row,
+.resource-detail-control-row,
+.control-detail-row,
+.resource-row {
+    cursor: pointer;
+}
+
+/* Control resources row - expandable table rows for control details */
+/* Base hidden class from _base.css handles display: none !important */
+/* We just need to ensure it displays as table-row when not hidden */
+.control-resources-row:not(.hidden) {
+    display: table-row !important;
+}
+
+/* Also ensure it works within data-table */
+.data-table .control-resources-row:not(.hidden) {
+    display: table-row !important;
+}
+
+/* Override any other display rules that might interfere */
+tr.control-resources-row:not(.hidden) {
+    display: table-row !important;
+}
+
+/* Also handle resource-detail-row and remediation-row */
+.resource-detail-row.hidden,
+.remediation-row.hidden {
+    display: none !important;
+}
+
+.resource-detail-row:not(.hidden),
+.remediation-row:not(.hidden) {
+    display: table-row;
+}
+
+/* Collapsed content - subscription-content should be hidden when header is collapsed */
+.subscription-header.collapsed + .subscription-content {
+    display: none;
+}
+
+/* Category content - ensure it can be shown when not collapsed */
+.category-header:not(.collapsed) + .category-content {
+    display: block !important;
+}
+
+/* Note: subscription-header and category-header already have cursor: pointer in sections.css */
+/* Note: h4 margin styles are already defined in sections.css for .section-box h4 */
+/* Note: category-header.collapsed + .category-content display: none is already in sections.css */
+

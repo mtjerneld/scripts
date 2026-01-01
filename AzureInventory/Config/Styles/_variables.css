@@ -1,0 +1,41 @@
+/* CSS Variables - Dark Mode Theme */
+:root {
+    --bg-primary: #0f0f1a;
+    --bg-secondary: #1a1a2e;
+    --surface: #252542;
+    --bg: #1f1f35;
+    --bg-hover: #2d2d4a;
+    --text: #e8e8e8;
+    --text-secondary: #b8b8b8;
+    --text-muted: #888;
+    --border: #3d3d5c;
+    --pri-600: #54a0ff;
+    --pri-700: #2e86de;
+    --info: #54a0ff;
+    --success: #00d26a;
+    --warning: #feca57;
+    --danger: #ff6b6b;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --background: #1a1a2e;
+    --bg-surface: #252542;
+    --bg-resource: #1e1e36;
+    --accent-green: #00d26a;
+    --accent-red: #ff6b6b;
+    --accent-yellow: #feca57;
+    --accent-blue: #54a0ff;
+    --accent-purple: #9b59b6;
+    --accent-orange: #ff9f43;
+    --accent-cyan: #06b6d4;
+    --border-color: #3d3d5c;
+    --text-primary: #e8e8e8;
+    
+    /* Network diagram colors */
+    --network-blue: #54a0ff;
+    --network-orange: #ff9f43;
+    --network-red: #ff6b6b;
+    --network-purple: #9b59b6;
+}

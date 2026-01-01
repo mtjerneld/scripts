@@ -1,0 +1,171 @@
+/* Filter Component Styles - Consolidated .filter-section */
+.filter-section {
+    background: var(--bg-surface);
+    padding: 16px 20px;
+    border-radius: 10px;
+    margin-bottom: 24px;
+    border: 1px solid var(--border-color);
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.filter-section__row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-end;
+}
+
+.filter-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.filter-group label {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.filter-group input,
+.filter-group select,
+.filter-input,
+.filter-select {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+.filter-group input,
+.filter-input {
+    width: 200px;
+    cursor: text;
+}
+
+.filter-group select,
+.filter-select {
+    min-width: 150px;
+    cursor: pointer;
+}
+
+.filter-group input:hover,
+.filter-group select:hover,
+.filter-input:hover,
+.filter-select:hover {
+    border-color: var(--accent-blue);
+}
+
+.filter-group input:focus,
+.filter-group select:focus,
+.filter-input:focus,
+.filter-select:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 3px rgba(84, 160, 255, 0.1);
+}
+
+.filter-section__stats,
+.filter-stats,
+.result-count {
+    margin-top: 12px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    text-align: right;
+}
+
+.filter-section__actions {
+    display: flex;
+    gap: 8px;
+}
+
+/* State for filtered items */
+.is-filtered-out,
+.filtered-out {
+    display: none !important;
+}
+
+/* Modifiers */
+.filter-section--collapsible .filter-section__content {
+    display: none;
+}
+
+.filter-section--collapsible.is-expanded .filter-section__content {
+    display: block;
+}
+
+.filter-section--inline {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+}
+
+/* Legacy support */
+.filter-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background-color: var(--bg);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+
+.result-count {
+    font-weight: 500;
+    color: var(--text-muted);
+    padding: 0.5rem 1rem;
+    background-color: var(--surface);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+
+/* Filter stats - default styling for result counts below filters */
+.filter-section__stats,
+.filter-stats,
+.result-count {
+    margin-top: 12px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    text-align: right;
+}
+
+/* Override result-count if it's inside filter-stats */
+.filter-stats .result-count {
+    padding: 0;
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
+    margin-top: 0;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .filter-section,
+    .filter-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .filter-group {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .filter-group input,
+    .filter-group select,
+    .filter-input,
+    .filter-select {
+        width: 100%;
+    }
+}

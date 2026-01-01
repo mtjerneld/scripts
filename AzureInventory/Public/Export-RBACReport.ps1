@@ -41,11 +41,11 @@ function Export-RBACReport {
     function Get-RiskBadgeClass {
         param([string]$Risk)
         switch ($Risk) {
-            'Critical' { return 'badge-critical' }
-            'High' { return 'badge-high' }
-            'Medium' { return 'badge-medium' }
-            'Low' { return 'badge-low' }
-            default { return 'badge-low' }
+            'Critical' { return 'badge badge--critical' }
+            'High' { return 'badge badge--high' }
+            'Medium' { return 'badge badge--medium' }
+            'Low' { return 'badge badge--low' }
+            default { return 'badge badge--low' }
         }
     }
 
@@ -146,36 +146,36 @@ function Export-RBACReport {
             default { '&#10067;' }
         }
         
-        # Border color
-        $borderColor = if ($Principal.IsOrphaned) { 
-            'var(--accent-purple)' 
+        # Border color class
+        $borderClass = if ($Principal.IsOrphaned) { 
+            'border-purple' 
         } elseif ($Principal.IsExternal) { 
-            'var(--accent-orange)' 
+            'border-orange' 
         } else { 
-            'var(--accent-blue)' 
+            'border-blue' 
         }
         
         # Display name and subtitle
-        $displayName = [System.Web.HttpUtility]::HtmlEncode($Principal.PrincipalDisplayName)
+        $displayName = Encode-Html -Text $Principal.PrincipalDisplayName
         $subtitle = if ($Principal.PrincipalUPN) {
-            "<div class='principal-view-subtitle'>$([System.Web.HttpUtility]::HtmlEncode($Principal.PrincipalUPN))</div>"
+            "<div class='principal-view-subtitle'>$(Encode-Html -Text $Principal.PrincipalUPN)</div>"
         } elseif ($Principal.AppId) {
             "<div class='principal-view-subtitle'>AppId: $($Principal.AppId.Substring(0,8))...</div>"
         } else { "" }
         
         # Badges
         $badges = ""
-        if ($Principal.IsOrphaned) { $badges += '<span class="badge badge-orphaned">Orphaned</span>' }
-        if ($Principal.IsExternal) { $badges += '<span class="badge badge-external">External</span>' }
-        $badges += "<span class='badge badge-type'>$($Principal.PrincipalType)</span>"
-        if ($Principal.HasPrivilegedRoles) { $badges += '<span class="badge badge-critical">Privileged</span>' }
+        if ($Principal.IsOrphaned) { $badges += '<span class="badge badge--orphaned">Orphaned</span>' }
+        if ($Principal.IsExternal) { $badges += '<span class="badge badge--external">External</span>' }
+        $badges += "<span class='badge badge--neutral'>$($Principal.PrincipalType)</span>"
+        if ($Principal.HasPrivilegedRoles) { $badges += '<span class="badge badge--critical">Privileged</span>' }
         
-        # Stats line
+        # Stats line - formatted with spans for better spacing
         $statsLine = @(
-            "&#128193; $($Principal.AssignmentCount) assignments",
-            "&#127894; $($Principal.RoleCount) roles",
-            "&#128273; $($Principal.SubscriptionCount) subscriptions"
-        ) -join ' | '
+            "<span>&#128193; $($Principal.AssignmentCount) assignments</span>",
+            "<span>&#127894; $($Principal.RoleCount) roles</span>",
+            "<span>&#128273; $($Principal.SubscriptionCount) subscriptions</span>"
+        ) -join ''
         
         # Build assignments table rows
         $tableRows = foreach ($a in $Principal.Assignments) {
@@ -191,7 +191,7 @@ function Export-RBACReport {
             $subsHtml = Format-AffectedSubscriptions -Subscriptions $a.Subscriptions -Count $a.SubscriptionCount
             $redundantHtml = if ($a.IsRedundant) {
                 if ($a.RedundantReason) {
-                    $reasonEncoded = [System.Web.HttpUtility]::HtmlEncode($a.RedundantReason)
+                    $reasonEncoded = Encode-Html -Text $a.RedundantReason
                     "<span class='redundant-yes' title='$reasonEncoded'>Yes &#9432;</span>"
                 } else {
                     '<span class="redundant-yes">Yes</span>'
@@ -201,16 +201,16 @@ function Export-RBACReport {
             }
             
             $privilegedHtml = if ($a.IsPrivileged) {
-                '<span class="badge badge-critical">Privileged</span>'
+                '<span class="badge badge--critical">Privileged</span>'
             } else {
                 '-'
             }
             
             @"
         <tr>
-            <td>$([System.Web.HttpUtility]::HtmlEncode($a.Role))</td>
-            <td>$scopeIcon $([System.Web.HttpUtility]::HtmlEncode($a.ScopeType))</td>
-            <td>$([System.Web.HttpUtility]::HtmlEncode($a.ScopeName))</td>
+            <td>$(Encode-Html -Text $a.Role)</td>
+            <td>$scopeIcon $(Encode-Html -Text $a.ScopeType)</td>
+            <td>$(Encode-Html -Text $a.ScopeName)</td>
             <td>$subsHtml</td>
             <td>$privilegedHtml</td>
             <td>$redundantHtml</td>
@@ -232,7 +232,7 @@ function Export-RBACReport {
         # Build card
         $principalId = $Principal.PrincipalId -replace '[^a-zA-Z0-9-]', '-'
         return @"
-<div class="principal-view-row" 
+<div class="principal-view-row $borderClass" 
      id="principal-$principalId"
      data-type="$($Principal.PrincipalType)"
      data-orphaned="$($Principal.IsOrphaned)"
@@ -240,8 +240,7 @@ function Export-RBACReport {
      data-privileged="$($Principal.HasPrivilegedRoles)"
      data-roles="$($Principal.UniqueRoles -join ',')"
      data-scopes="$($uniqueScopeTypes -join ',')"
-     data-search="$($searchData.ToLower())"
-     style="border-left-color: $borderColor;">
+     data-search="$($searchData.ToLower())">
     <div class="principal-view-header" onclick="togglePrincipalDetails(this)">
         <div class="principal-view-info">
             <div class="principal-view-name">
@@ -254,7 +253,7 @@ function Export-RBACReport {
     </div>
     <div class="principal-view-details">
         <div class="table-container">
-            <table>
+            <table class="data-table data-table--compact">
                 <thead>
                     <tr>
                         <th>Role</th>
@@ -302,1141 +301,7 @@ function Export-RBACReport {
         $sortKey
     }
 
-    # Get base stylesheet and add RBAC-specific styles
-    $rbacSpecificStyles = @"
-        /* RBAC-specific styles */
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-bottom: 30px;
-        }
-        
-        .summary-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 20px;
-            border: 1px solid var(--border-color);
-        }
-        
-        .summary-card .card-value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: var(--text-primary);
-        }
-        
-        .summary-card .card-label {
-            font-size: 0.9rem;
-            color: var(--text-secondary);
-            margin-top: 5px;
-        }
-        
-        .summary-card .card-sublabel {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            margin-top: 3px;
-        }
-        
-        .summary-card.card-critical .card-value { color: var(--accent-red); }
-        .summary-card.card-warning .card-value { color: var(--accent-yellow); }
-        
-        /* Filters */
-        .filters {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            margin-bottom: 16px;
-            border: 1px solid var(--border-color);
-            overflow: hidden;
-        }
-        
-        .filters-header {
-            padding: 12px 16px;
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border-color);
-            font-weight: 600;
-            font-size: 0.95rem;
-            color: var(--text-primary);
-        }
-        
-        .filters-content {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: center;
-            padding: 12px 16px;
-        }
-
-        .filter-group {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-shrink: 0;
-        }
-
-        .filter-group input[type="text"] {
-            padding: 6px 10px;
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            width: 180px;
-            font-size: 0.9rem;
-        }
-
-        .filter-group select {
-            padding: 6px 10px;
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            font-size: 0.9rem;
-            max-width: 180px;
-        }
-
-        .filter-group label {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            cursor: pointer;
-            font-size: 0.85rem;
-            white-space: nowrap;
-        }
-
-        .filter-group input[type="checkbox"] {
-            margin: 0;
-            padding: 0;
-            width: 14px;
-            height: 14px;
-            cursor: pointer;
-            flex-shrink: 0;
-        }
-
-        .filter-stats {
-            margin-left: auto;
-            color: var(--text-muted);
-            font-size: 0.85rem;
-            white-space: nowrap;
-        }
-        
-        /* Tier Checkboxes */
-        .tier-checkboxes {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: center;
-        }
-        
-        .checkbox-label {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            cursor: pointer;
-            user-select: none;
-            font-size: 0.85rem;
-        }
-        
-        .checkbox-label input[type="checkbox"] {
-            cursor: pointer;
-            width: 16px;
-            height: 16px;
-            margin: 0;
-            accent-color: var(--accent-blue);
-            flex-shrink: 0;
-        }
-        
-        .checkbox-label span:not(.badge) {
-            color: var(--text-primary);
-        }
-        
-        .tier-badge {
-            font-size: 0.75rem;
-            padding: 2px 8px;
-            pointer-events: none;
-            border-radius: 10px;
-            font-weight: 600;
-        }
-        
-        .tier-badge.tier-red {
-            color: var(--accent-red);
-        }
-        
-        .tier-badge.tier-orange {
-            color: var(--accent-orange);
-        }
-        
-        .tier-badge.tier-yellow {
-            color: var(--accent-yellow);
-        }
-        
-        .tier-badge.tier-purple {
-            color: var(--accent-purple);
-        }
-        
-        .tier-badge.tier-blue {
-            color: var(--accent-blue);
-        }
-        
-        .tier-badge.tier-green {
-            color: var(--accent-green);
-        }
-        
-        /* Risk badges */
-        .risk-badge {
-            display: inline-block;
-            width: 24px;
-            text-align: center;
-        }
-
-        .risk-red { color: #ff6b6b; }
-        .risk-yellow { color: #feca57; }
-        .risk-green { color: #1dd1a1; }
-
-        /* Type badges */
-        .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 500;
-            background: var(--bg-hover);
-        }
-
-        .badge-user { background: #3498db22; color: #3498db; }
-        .badge-group { background: #9b59b622; color: #9b59b6; }
-        .badge-sp { background: #e67e2222; color: #e67e22; }
-        .badge-mi { background: #1abc9c22; color: #1abc9c; }
-
-        /* Redundant indicator */
-        .redundant-yes {
-            color: #feca57;
-            font-weight: 500;
-        }
-
-        /* Affects dropdown */
-        .affects-expandable {
-            position: relative;
-            cursor: pointer;
-        }
-
-        .affects-summary {
-            color: var(--accent-blue);
-            text-decoration: underline dotted;
-        }
-
-        .expand-arrow {
-            font-size: 0.7rem;
-            transition: transform 0.2s;
-        }
-
-        .affects-expandable.expanded .expand-arrow {
-            transform: rotate(180deg);
-        }
-
-        .affects-dropdown {
-            display: none;
-            position: absolute;
-            left: 0;
-            top: 100%;
-            background: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            padding: 8px 12px;
-            margin-top: 4px;
-            list-style: none;
-            z-index: 100;
-            min-width: 180px;
-            max-height: 200px;
-            overflow-y: auto;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        }
-
-        .affects-expandable.expanded .affects-dropdown {
-            display: block;
-        }
-
-        .affects-dropdown li {
-            padding: 4px 0;
-            font-size: 0.85rem;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .affects-dropdown li:last-child {
-            border-bottom: none;
-        }
-
-        /* Matrix table */
-        .matrix-table td:not(:first-child) {
-            text-align: center;
-            font-weight: 500;
-        }
-        
-        /* Sections */
-        .section {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            margin-bottom: 20px;
-            border: 1px solid var(--border-color);
-            overflow: hidden;
-        }
-        
-        .section h2 {
-            padding: 15px 20px;
-            margin: 0;
-            font-size: 1.2rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .section-header {
-            padding: 15px 20px;
-            background: var(--bg-secondary);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-            user-select: none;
-        }
-        
-        .section-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .section-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .section-count {
-            background: var(--accent-blue);
-            color: white;
-            padding: 2px 10px;
-            border-radius: 12px;
-            font-size: 0.8rem;
-            font-weight: 500;
-        }
-        
-        .section-count.critical { background: var(--accent-red); }
-        .section-count.warning { background: var(--accent-yellow); color: var(--bg-primary); }
-        
-        .section-toggle {
-            font-size: 1.2rem;
-            transition: transform 0.2s;
-        }
-        
-        .section.collapsed .section-toggle {
-            transform: rotate(-90deg);
-        }
-        
-        .section.collapsed .section-content {
-            display: none;
-        }
-        
-        .section-content {
-            padding: 20px;
-        }
-        
-        /* Tables */
-        .table-container {
-            overflow-x: auto;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9rem;
-            table-layout: fixed;
-        }
-        
-        th {
-            text-align: left;
-            padding: 12px 15px;
-            background: var(--bg-secondary);
-            color: var(--text-secondary);
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 0.75rem;
-            letter-spacing: 0.5px;
-            border-bottom: 2px solid var(--border-color);
-            white-space: nowrap;
-        }
-        
-        td {
-            padding: 12px 15px;
-            border-bottom: 1px solid var(--border-color);
-            vertical-align: top;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-        }
-        
-        tr:hover td {
-            background: var(--bg-hover);
-        }
-        
-        tr.filtered-out {
-            display: none;
-        }
-        
-        /* Badges */
-        .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 0.7rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            line-height: 1.3;
-        }
-        
-        .tier-indicator {
-            font-size: 0.85rem;
-            font-weight: 600;
-        }
-        
-        .badge-critical {
-            background: rgba(255, 107, 107, 0.2);
-            color: var(--accent-red);
-            border: 1px solid var(--accent-red);
-        }
-        
-        .badge-high {
-            background: rgba(254, 202, 87, 0.2);
-            color: var(--accent-yellow);
-            border: 1px solid var(--accent-yellow);
-        }
-        
-        .badge-medium {
-            background: rgba(84, 160, 255, 0.2);
-            color: var(--accent-blue);
-            border: 1px solid var(--accent-blue);
-        }
-        
-        .badge-low {
-            background: rgba(0, 210, 106, 0.2);
-            color: var(--accent-green);
-            border: 1px solid var(--accent-green);
-        }
-        
-        .badge-orphaned {
-            background: rgba(155, 89, 182, 0.2);
-            color: var(--accent-purple);
-            border: 1px solid var(--accent-purple);
-        }
-        
-        .badge-external {
-            background: rgba(6, 182, 212, 0.2);
-            color: var(--accent-cyan);
-            border: 1px solid var(--accent-cyan);
-        }
-        
-        .badge-type {
-            background: var(--bg-secondary);
-            color: var(--text-secondary);
-            border: 1px solid var(--border-color);
-        }
-        
-        /* Principal/Scope display */
-        .principal-cell {
-            display: flex;
-            flex-direction: column;
-            gap: 3px;
-        }
-        
-        .principal-name {
-            font-weight: 500;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .principal-upn {
-            font-size: 0.8rem;
-            color: var(--text-muted);
-        }
-        
-        .scope-cell {
-            max-width: 400px;
-        }
-        
-        .scope-path {
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            word-break: break-all;
-        }
-        
-        /* Distribution bar */
-        .distribution-bar {
-            display: flex;
-            height: 8px;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-top: 10px;
-            background: var(--bg-secondary);
-        }
-        
-        .distribution-segment {
-            height: 100%;
-            transition: width 0.3s;
-        }
-        
-        .segment-critical { background: var(--accent-red); }
-        .segment-high { background: var(--accent-yellow); }
-        .segment-medium { background: var(--accent-blue); }
-        .segment-low { background: var(--accent-green); }
-        
-        /* Role usage chart */
-        .role-bar {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 8px;
-        }
-        
-        .role-name {
-            width: 200px;
-            font-size: 0.85rem;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        
-        .role-bar-fill {
-            height: 20px;
-            background: var(--accent-blue);
-            border-radius: 4px;
-            min-width: 2px;
-        }
-        
-        .role-count {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            min-width: 40px;
-        }
-        
-        /* Cross-sub analysis */
-        .cross-sub-card {
-            background: var(--bg-secondary);
-            border-radius: var(--radius-sm);
-            padding: 15px;
-            margin-bottom: 10px;
-            border-left: 4px solid var(--accent-purple);
-        }
-        
-        .cross-sub-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        
-        .cross-sub-principal {
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .cross-sub-stats {
-            display: flex;
-            gap: 15px;
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-        }
-        
-        .cross-sub-subs {
-            font-size: 0.85rem;
-            color: var(--text-muted);
-        }
-        
-        .cross-sub-subs span {
-            display: inline-block;
-            background: var(--bg-surface);
-            padding: 2px 8px;
-            border-radius: 4px;
-            margin: 2px;
-        }
-        
-        /* Principal Card (new unified view) */
-        .principal-card {
-            background: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-md);
-            margin-bottom: 12px;
-            overflow: hidden;
-        }
-        
-        /* Access Tier Colors */
-        .tier-red { color: var(--accent-red); }
-        .tier-orange { color: var(--accent-orange); }
-        .tier-yellow { color: var(--accent-yellow); }
-        .tier-purple { color: var(--accent-purple); }
-        .tier-blue { color: var(--accent-blue); }
-        .tier-green { color: var(--accent-green); }
-        
-        .principal-card[data-tier="FullControl"] {
-            border-left: 4px solid var(--accent-red);
-        }
-        
-        .principal-card[data-tier="AccessManager"] {
-            border-left: 4px solid var(--accent-orange);
-        }
-        
-        .principal-card[data-tier="Administrative"] {
-            border-left: 4px solid var(--accent-yellow);
-        }
-        
-        .principal-card[data-tier="PrivilegedOps"] {
-            border-left: 4px solid var(--accent-purple);
-        }
-        
-        .principal-card[data-tier="Write"] {
-            border-left: 4px solid var(--accent-blue);
-        }
-        
-        .principal-card[data-tier="ReadOnly"] {
-            border-left: 4px solid var(--accent-green);
-        }
-        
-        .principal-header {
-            padding: 12px 16px;
-            cursor: pointer;
-            user-select: none;
-        }
-        
-        .principal-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .principal-header-row {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        
-        .principal-header-row:first-child {
-            margin-bottom: 4px;
-        }
-        
-        .principal-identity {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex: 0 0 auto;
-        }
-        
-        .principal-icon {
-            font-size: 1.1rem;
-            flex-shrink: 0;
-        }
-        
-        .principal-name {
-            font-weight: 600;
-            font-size: 0.95rem;
-            white-space: nowrap;
-        }
-        
-        .principal-name-block {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-        
-        .principal-upn-row {
-            display: flex;
-            align-items: center;
-            padding-left: 28px; /* Align with name above (icon width + gap) */
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            margin-top: 2px;
-        }
-        
-        .principal-upn {
-            font-size: 0.8rem;
-            color: var(--text-muted);
-        }
-        
-        .principal-badges {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            flex-shrink: 0;
-        }
-        
-        .principal-summary {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            flex: 1;
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-            margin-left: auto;
-            flex-wrap: wrap;
-        }
-        
-        .summary-stat {
-            white-space: nowrap;
-        }
-        
-        .summary-item {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        
-        .principal-insights {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-left: 12px;
-            padding-left: 12px;
-            border-left: 1px solid var(--border-color);
-        }
-        
-        .insight-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 0.75rem;
-            font-weight: 500;
-            white-space: nowrap;
-        }
-        
-        .insight-badge.insight-critical {
-            background: rgba(255, 107, 107, 0.15);
-            color: var(--accent-red);
-            border: 1px solid rgba(255, 107, 107, 0.3);
-        }
-        
-        .insight-badge.insight-high {
-            background: rgba(254, 202, 87, 0.15);
-            color: var(--accent-yellow);
-            border: 1px solid rgba(254, 202, 87, 0.3);
-        }
-        
-        .insight-badge.insight-medium {
-            background: rgba(84, 160, 255, 0.15);
-            color: var(--accent-blue);
-            border: 1px solid rgba(84, 160, 255, 0.3);
-        }
-        
-        .insight-badge.insight-info {
-            background: rgba(155, 89, 182, 0.15);
-            color: var(--accent-purple);
-            border: 1px solid rgba(155, 89, 182, 0.3);
-        }
-        
-        .toggle-icon {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            transition: transform 0.2s;
-        }
-        
-        .principal-card.expanded .toggle-icon {
-            transform: rotate(180deg);
-        }
-        
-        .principal-details {
-            padding: 0 20px 20px 20px;
-            background: var(--bg-secondary);
-        }
-        
-        /* Access Tier Groups */
-        .access-tier-group {
-            margin-bottom: 20px;
-        }
-        
-        .tier-header {
-            padding: 10px 12px;
-            font-weight: 600;
-            font-size: 0.9rem;
-            color: var(--text-primary);
-            background: var(--bg-secondary);
-            border-bottom: 2px solid var(--border-color);
-        }
-        
-        .access-table {
-            width: 100%;
-            font-size: 0.85rem;
-            table-layout: fixed;
-        }
-        
-        .access-table th {
-            text-align: left;
-            padding: 10px 12px;
-            background: var(--bg-surface);
-            font-weight: 600;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            font-size: 0.75rem;
-        }
-        
-        .access-table th:nth-child(1) { width: 18%; } /* Role */
-        .access-table th:nth-child(2) { width: 18%; } /* Assigned At */
-        .access-table th:nth-child(3) { width: 22%; } /* Scope Name */
-        .access-table th:nth-child(4) { width: 32%; } /* Affects */
-        .access-table th:nth-child(5) { width: 10%; } /* Redundant */
-        
-        .access-table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid var(--border-color);
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-        }
-        
-        .affects-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            flex-wrap: wrap;
-        }
-        
-        .affects-toggle {
-            color: var(--accent-blue);
-            cursor: pointer;
-            user-select: none;
-            font-size: 0.85rem;
-            text-decoration: underline;
-        }
-        
-        .affects-toggle:hover {
-            color: var(--accent-blue);
-            opacity: 0.8;
-        }
-        
-        .affects-dropdown {
-            list-style: none;
-            margin: 5px 0 0 20px;
-            padding: 0;
-            background: var(--bg-secondary);
-            border-radius: var(--radius-sm);
-            padding: 8px 12px;
-            border: 1px solid var(--border-color);
-        }
-        
-        .affects-dropdown li {
-            padding: 2px 0;
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-        }
-        
-        .scope-table {
-            width: 100%;
-            font-size: 0.85rem;
-            table-layout: fixed;
-        }
-        
-        .scope-table th {
-            text-align: left;
-            padding: 10px 12px;
-            background: var(--bg-surface);
-            font-weight: 600;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            font-size: 0.75rem;
-        }
-        
-        .scope-table th:nth-child(1) { width: 20%; } /* Role */
-        .scope-table th:nth-child(2) { width: 15%; } /* Type */
-        .scope-table th:nth-child(3) { width: 45%; } /* Scope */
-        .scope-table th:nth-child(4) { width: 20%; } /* Subscription */
-        
-        .scope-table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid var(--border-color);
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-        }
-        
-        .scope-type {
-            display: inline-block;
-            min-width: 60px;
-        }
-        
-        .scope-name {
-            margin-left: 5px;
-        }
-        
-        .inheritance-badge {
-            background: var(--bg-hover);
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-        }
-        
-        /* Custom Role Card */
-        .custom-role-card {
-            background: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-md);
-            margin-bottom: 12px;
-            overflow: hidden;
-        }
-        
-        .custom-role-header {
-            padding: 16px 20px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            cursor: pointer;
-            user-select: none;
-        }
-        
-        .custom-role-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .custom-role-info {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            flex: 1;
-        }
-        
-        .custom-role-name-block {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            flex: 1;
-        }
-        
-        .custom-role-name {
-            font-weight: 600;
-            font-size: 1rem;
-        }
-        
-        .custom-role-desc {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-        }
-        
-        .custom-role-summary {
-            display: flex;
-            gap: 10px;
-        }
-        
-        .custom-role-details {
-            padding: 0 20px 20px 20px;
-            background: var(--bg-secondary);
-        }
-        
-        .custom-role-permissions,
-        .custom-role-usage {
-            margin-bottom: 20px;
-        }
-        
-        .custom-role-permissions h4,
-        .custom-role-usage h4 {
-            margin: 0 0 10px 0;
-            font-size: 0.95rem;
-            color: var(--text-primary);
-        }
-        
-        .permission-section {
-            margin-bottom: 15px;
-            padding: 10px;
-            background: var(--bg-surface);
-            border-radius: var(--radius-sm);
-        }
-        
-        .permission-section strong {
-            display: block;
-            margin-bottom: 8px;
-            color: var(--text-primary);
-        }
-        
-        .permission-section ul {
-            margin: 8px 0 0 20px;
-            padding: 0;
-        }
-        
-        .permission-section li {
-            margin: 4px 0;
-            font-size: 0.85rem;
-        }
-        
-        .permission-section code {
-            background: var(--bg-secondary);
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 0.85rem;
-            color: var(--accent-blue);
-        }
-        
-        /* Principal View (for orphaned section) */
-        .principal-view-row {
-            background: var(--bg-secondary);
-            border-radius: var(--radius-sm);
-            margin-bottom: 10px;
-            border-left: 4px solid var(--accent-blue);
-        }
-        
-        .principal-view-header {
-            padding: 15px;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            user-select: none;
-        }
-        
-        .principal-view-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .principal-view-info {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-        
-        .principal-view-name {
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .principal-view-subtitle {
-            color: var(--text-muted);
-            font-size: 0.8rem;
-            margin-top: 2px;
-        }
-        
-        .principal-view-stats {
-            display: flex;
-            gap: 15px;
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            margin-top: 4px;
-        }
-        
-        .principal-view-toggle {
-            margin-left: 15px;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            transition: transform 0.2s;
-        }
-        
-        .principal-view-row.expanded .principal-view-toggle {
-            transform: rotate(180deg);
-        }
-        
-        .principal-view-details {
-            display: none;
-            padding: 0 15px 15px 15px;
-        }
-        
-        .principal-view-row.expanded .principal-view-details {
-            display: block;
-        }
-        
-        .principal-view-details table {
-            margin-top: 10px;
-            font-size: 0.85rem;
-            table-layout: fixed;
-            width: 100%;
-        }
-        
-        .principal-view-details table th:nth-child(1) { width: 18%; } /* Role */
-        .principal-view-details table th:nth-child(2) { width: 15%; } /* Scope Type */
-        .principal-view-details table th:nth-child(3) { width: 22%; } /* Scope Name */
-        .principal-view-details table th:nth-child(4) { width: 20%; } /* Subscriptions */
-        .principal-view-details table th:nth-child(5) { width: 10%; } /* Privileged */
-        .principal-view-details table th:nth-child(6) { width: 15%; } /* Redundant */
-        
-        .principal-view-details table td {
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-        }
-        
-        /* Access Matrix */
-        .access-matrix {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 20px;
-            margin-bottom: 20px;
-            border: 1px solid var(--border-color);
-        }
-        
-        .access-matrix table {
-            table-layout: fixed;
-        }
-        
-        .access-matrix table th:nth-child(1) { width: 16%; } /* Role */
-        .access-matrix table th:nth-child(2) { width: 10%; } /* Privileged */
-        .access-matrix table th:nth-child(3) { width: 10%; } /* Root */
-        .access-matrix table th:nth-child(4) { width: 12%; } /* Mgmt Groups */
-        .access-matrix table th:nth-child(5) { width: 12%; } /* Subscriptions */
-        .access-matrix table th:nth-child(6) { width: 12%; } /* Resource Groups */
-        .access-matrix table th:nth-child(7) { width: 12%; } /* Resources */
-        .access-matrix table th:nth-child(8) { width: 8%; }  /* Total */
-        .access-matrix table th:nth-child(9) { width: 8%; }  /* Unique */
-        
-        .access-matrix table td {
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-        }
-        
-        /* Risk indicator dots */
-        .risk-dot {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            margin-right: 4px;
-        }
-        
-        /* Responsive */
-        @media (max-width: 1200px) {
-            .filters-content {
-                flex-wrap: wrap;
-            }
-            
-            .filter-stats {
-                margin-left: 0;
-                width: 100%;
-            }
-        }
-        
-        @media (max-width: 768px) {
-            .summary-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            
-            .filters-content {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .filter-group {
-                width: 100%;
-            }
-            
-            .filter-group input[type="text"] {
-                width: 100%;
-            }
-            
-            .filter-group select {
-                width: 100%;
-            }
-            
-            .filter-stats {
-                margin-left: 0;
-                margin-top: 10px;
-            }
-        }
-"@
+        # Get base stylesheet (report-specific CSS from _reports folder is automatically included)
 
     $html = @"
 <!DOCTYPE html>
@@ -1447,7 +312,6 @@ function Export-RBACReport {
     <title>RBAC/IAM Inventory Report</title>
     <style>
 $(Get-ReportStylesheet)
-$rbacSpecificStyles
     </style>
 </head>
 <body>
@@ -1467,11 +331,11 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             $unresolvedCount = $RBACData.Metadata.UnresolvedPrincipalCount
             @"
         <!-- Entra ID Access Warning -->
-        <div class="warning-banner" style="background: rgba(254, 202, 87, 0.15); border: 1px solid var(--accent-yellow); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
-            <span style="font-size: 1.2rem;">&#9888;</span>
-            <div>
-                <strong style="color: var(--accent-yellow);">Limited Entra ID Access</strong>
-                <p style="margin: 4px 0 0 0; color: var(--text-secondary); font-size: 0.9rem;">
+        <div class="warning-banner">
+            <span class="banner-icon">&#9888;</span>
+            <div class="banner-content">
+                <strong>Limited Entra ID Access</strong>
+                <p>
                     Unable to resolve $unresolvedCount principal name(s). The audit account lacks Directory Reader access to Entra ID. Principal IDs are shown instead of display names.
                 </p>
             </div>
@@ -1481,11 +345,11 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             $unresolvedCount = $RBACData.Metadata.UnresolvedPrincipalCount
             @"
         <!-- External Principals Info -->
-        <div class="info-banner" style="background: rgba(84, 160, 255, 0.1); border: 1px solid var(--accent-blue); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
-            <span style="font-size: 1.2rem;">&#8505;</span>
-            <div>
-                <strong style="color: var(--accent-blue);">External Principals</strong>
-                <p style="margin: 4px 0 0 0; color: var(--text-secondary); font-size: 0.9rem;">
+        <div class="info-banner">
+            <span class="banner-icon">&#8505;</span>
+            <div class="banner-content">
+                <strong>External Principals</strong>
+                <p>
                     $unresolvedCount external principal(s) could not be resolved (B2B guests or groups from external tenants).
                 </p>
             </div>
@@ -1494,32 +358,33 @@ $(Get-ReportNavigation -ActivePage "RBAC")
         })
         
         <!-- Summary Cards -->
-        <div class="summary-grid">
-            <div class="summary-card">
-                <div class="card-value">$($stats.TotalPrincipals)</div>
-                <div class="card-label">Principals</div>
-            </div>
-            <div class="summary-card card-critical">
-                <div class="card-value">$($stats.ByRiskTier.Privileged)</div>
-                <div class="card-label">Privileged Assignments</div>
-                <div class="card-sublabel">Owner, Contributor, UAA, RBAC Admin, Access Review Operator</div>
-            </div>
-            <div class="summary-card card-warning">
-                <div class="card-value">$($stats.OrphanedCount)</div>
-                <div class="card-label">Orphaned</div>
-                <div class="card-sublabel">Needs cleanup</div>
-            </div>
-            <div class="summary-card">
-                <div class="card-value">$($stats.RedundantCount)</div>
-                <div class="card-label">Redundant</div>
-                <div class="card-sublabel">Can be removed</div>
+        <div class="section-box">
+            <h2>Overview</h2>
+            <div class="summary-grid">
+                <div class="summary-card blue-border">
+                    <div class="summary-card-value">$($stats.TotalPrincipals)</div>
+                    <div class="summary-card-label">Principals</div>
+                </div>
+                <div class="summary-card red-border">
+                    <div class="summary-card-value">$($stats.ByRiskTier.Privileged)</div>
+                    <div class="summary-card-label">Privileged Assignments</div>
+                </div>
+                <div class="summary-card purple-border">
+                    <div class="summary-card-value">$($stats.OrphanedCount)</div>
+                    <div class="summary-card-label">Orphaned</div>
+                </div>
+                <div class="summary-card orange-border">
+                    <div class="summary-card-value">$($stats.RedundantCount)</div>
+                    <div class="summary-card-label">Redundant</div>
+                </div>
             </div>
         </div>
         
         <!-- Access Matrix -->
-        <div class="section">
+        <div class="section-box">
             <h2>Access Distribution</h2>
-            <table class="data-table matrix-table">
+            <div class="table-container">
+            <table class="data-table data-table--sticky-header data-table--compact">
                 <thead>
                     <tr>
                         <th>Role</th>
@@ -1540,13 +405,13 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                         $unique = if ($roleData.Unique) { $roleData.Unique } else { 0 }
                         $isPrivileged = if ($roleData.IsPrivileged) { $roleData.IsPrivileged } else { $false }
                         $privilegedBadge = if ($isPrivileged) {
-                            '<span class="badge badge-critical">Privileged</span>'
+                            '<span class="badge badge--critical">Privileged</span>'
                         } else {
                             '-'
                         }
                         @"
                     <tr>
-                        <td>$([System.Web.HttpUtility]::HtmlEncode($roleName))</td>
+                        <td>$(Encode-Html -Text $roleName)</td>
                         <td>$privilegedBadge</td>
                         <td>$($roleData['Tenant Root'])</td>
                         <td>$($roleData['Management Group'])</td>
@@ -1560,12 +425,13 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                     } -join "`n")
                 </tbody>
             </table>
+            </div>
         </div>
         
         <!-- Filters -->
-        <div class="filters">
-            <div class="filters-header">Filters</div>
-            <div class="filters-content">
+        <div class="section-box">
+            <h2>Filters</h2>
+            <div class="filter-section">
                 <div class="filter-group">
                     <input type="text" id="searchInput" placeholder="Search principal, role, scope..." onkeyup="applyFilters()">
                 </div>
@@ -1584,7 +450,8 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                         $(if ($RBACData.Principals) {
                             $uniqueRoles = $RBACData.Principals | ForEach-Object { $_.UniqueRoles } | Select-Object -Unique | Sort-Object
                             foreach ($role in $uniqueRoles) {
-                                "<option value='$([System.Web.HttpUtility]::HtmlAttributeEncode($role))'>$([System.Web.HttpUtility]::HtmlEncode($role))</option>"
+                                $roleValue = Encode-Html -Text $role
+                                "<option value='$roleValue'>$roleValue</option>"
                             } -join "`n"
                         })
                     </select>
@@ -1605,9 +472,9 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                 <div class="filter-group">
                     <label><input type="checkbox" id="privilegedOnly" onchange="applyFilters()"> Privileged only</label>
                 </div>
-                <div class="filter-stats">
-                    Showing <span id="visibleCount">0</span> of <span id="totalCount">0</span> principals
-                </div>
+            </div>
+            <div class="filter-stats">
+                Showing <span id="visibleCount">0</span> of <span id="totalCount">0</span> principals
             </div>
         </div>
 "@
@@ -1624,7 +491,7 @@ $(Get-ReportNavigation -ActivePage "RBAC")
     $html += @"
         
         <!-- Principal Access -->
-        <div class="section">
+        <div class="section-box">
             <h2>Principal Access</h2>
             <div class="section-content">
                 $principalsHtml
@@ -1675,18 +542,21 @@ $(Get-ReportNavigation -ActivePage "RBAC")
         $html += @"
 
         <!-- Orphaned Assignments -->
-        <div class="section">
-            <div class="section-header" onclick="toggleSection(this)">
-                <div class="section-title">
-                    &#128123; Orphaned Assignments
-                    <span class="section-count critical">$orphanedCount assignments ($($orphanedGroupList.Count) deleted principals)</span>
+        <div class="section-box">
+            <div class="expandable expandable--collapsed">
+                <div class="expandable__header" onclick="toggleSection(this)">
+                    <div class="expandable__title">
+                        <span class="expand-icon"></span>
+                        <h2>&#128123; Orphaned Assignments</h2>
+                    </div>
+                    <div class="expandable__badges">
+                        <span class="badge badge--critical">$orphanedCount assignments ($($orphanedGroupList.Count) deleted principals)</span>
+                    </div>
                 </div>
-                <span class="section-toggle">&#9660;</span>
-            </div>
-            <div class="section-content">
-                <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                    Role assignments pointing to deleted principals. Grouped by Principal ID. Click to expand and see all assignments. These should be removed.
-                </p>
+                <div class="expandable__content">
+                    <p class="section-description">
+                        Role assignments pointing to deleted principals. Grouped by Principal ID. Click to expand and see all assignments. These should be removed.
+                    </p>
 "@
 
         foreach ($orphanedPrincipal in $orphanedGroupList) {
@@ -1708,33 +578,33 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             $subscriptionsListEncoded = Encode-Html $subscriptionsList
             
             $html += @"
-                <div class="principal-view-row" id="$orphanedPrincipalId" style="border-left-color: var(--accent-purple);">
+                <div class="principal-view-row border-purple" id="$orphanedPrincipalId">
                     <div class="principal-view-header" data-principal-id="$orphanedPrincipalId" onclick="togglePrincipalDetails(this)">
                         <div class="principal-view-info">
                             <div class="principal-view-name">
                                 $icon $principalNameEncoded
-                                <span class="badge badge-orphaned">$($orphanedPrincipal.PrincipalType)</span>
+                                <span class="badge badge--orphaned">$($orphanedPrincipal.PrincipalType)</span>
                             </div>
                             <div class="principal-view-stats">
-                                <span>&#128193; $($orphanedPrincipal.Assignments.Count) $assignmentText</span>
-                                <span>&#128273; $($orphanedPrincipal.Subscriptions.Count) $subscriptionText</span>
-                                <span>&#127894; $($orphanedPrincipal.Roles.Count) $roleText</span>
-                            </div>
+                <span>&#128193; $($orphanedPrincipal.Assignments.Count) $assignmentText</span>
+                <span>&#128273; $($orphanedPrincipal.Subscriptions.Count) $subscriptionText</span>
+                <span>&#127894; $($orphanedPrincipal.Roles.Count) $roleText</span>
+            </div>
                         </div>
                         <span class="principal-view-toggle">&#9660;</span>
                     </div>
                     <div class="principal-view-details">
-                        <div style="color: var(--text-secondary); margin-bottom: 10px; font-size: 0.85rem;">
-                            <strong>Principal ID:</strong> <code style="color: var(--accent-purple);">$principalIdEncoded</code>
+                        <div class="orphaned-principal-info">
+                            <strong>Principal ID:</strong> <code>$principalIdEncoded</code>
                         </div>
-                        <div style="color: var(--text-secondary); margin-bottom: 10px; font-size: 0.85rem;">
+                        <div class="orphaned-principal-info">
                             <strong>Subscriptions:</strong> $subscriptionsListEncoded
                         </div>
-                        <div style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.85rem;">
+                        <div class="orphaned-principal-info orphaned-principal-info--last">
                             <strong>Roles:</strong> $rolesListEncoded
                         </div>
                         <div class="table-container">
-                            <table>
+                            <table class="data-table data-table--compact">
                                 <thead>
                                     <tr>
                                         <th>Role</th>
@@ -1769,7 +639,7 @@ $(Get-ReportNavigation -ActivePage "RBAC")
                                         </td>
                                         <td>$(
                                             if ($assignment.ScopeType -in @('ManagementGroup', 'Root')) {
-                                                '<span style="color: var(--text-muted); font-style: italic;">N/A</span>'
+                                                '<span class="subscription-na">N/A</span>'
                                             } else {
                                                 $subNameEncoded
                                             }
@@ -1801,18 +671,21 @@ $(Get-ReportNavigation -ActivePage "RBAC")
         $html += @"
 
         <!-- Custom Role Definitions -->
-        <div class="section collapsed">
-            <div class="section-header" onclick="toggleSection(this)">
-                <div class="section-title">
-                    &#127912; Custom Role Definitions
-                    <span class="section-count">$($customRoles.Count)</span>
+        <div class="section-box">
+            <div class="expandable expandable--collapsed">
+                <div class="expandable__header" onclick="toggleSection(this)">
+                    <div class="expandable__title">
+                        <span class="expand-icon"></span>
+                        <h2>&#127912; Custom Role Definitions</h2>
+                    </div>
+                    <div class="expandable__badges">
+                        <span class="badge badge--neutral">$($customRoles.Count)</span>
+                    </div>
                 </div>
-                <span class="section-toggle">&#9660;</span>
-            </div>
-            <div class="section-content">
-                <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                    Tenant-specific custom roles. Click on any role to expand and see detailed permissions and usage.
-                </p>
+                <div class="expandable__content">
+                    <p class="section-description">
+                        Tenant-specific custom roles. Click on any role to expand and see detailed permissions and usage.
+                    </p>
 "@
 
         foreach ($role in $customRoles) {
@@ -1829,21 +702,21 @@ $(Get-ReportNavigation -ActivePage "RBAC")
             
             $html += @"
                 <div class="custom-role-card" id="$roleCardId">
-                    <div class="custom-role-header" onclick="toggleCustomRole(this)">
+                    <div class="expandable__header custom-role-header" onclick="toggleCustomRole(this)">
                         <div class="custom-role-info">
                             <div class="custom-role-name-block">
                                 <span class="custom-role-name">$roleNameEncoded</span>
                                 $(if ($roleDescEncoded) { "<span class='custom-role-desc'>$roleDescEncoded</span>" })
                             </div>
                             <div class="custom-role-summary">
-                                <span class="badge badge-type">$actionsCount Actions</span>
-                                <span class="badge badge-type">$dataActionsCount Data Actions</span>
-                                <span class="badge badge-$(if ($assignmentCount -gt 0) { 'critical' } else { 'low' })">$assignmentCount Assignments</span>
+                                <span class="badge badge--neutral">$actionsCount Actions</span>
+                                <span class="badge badge--neutral">$dataActionsCount Data Actions</span>
+                                <span class="badge $(if ($assignmentCount -gt 0) { 'badge--critical' } else { 'badge--low' })">$assignmentCount Assignments</span>
                             </div>
                         </div>
                         <span class="toggle-icon">&#9660;</span>
                     </div>
-                    <div class="custom-role-details" style="display: none;">
+                    <div class="custom-role-details">
                         <div class="custom-role-permissions">
                             <h4>Permissions</h4>
                             $(if ($role.Actions -and $role.Actions.Count -gt 0) {
@@ -1909,8 +782,10 @@ $(Get-ReportNavigation -ActivePage "RBAC")
     <script>
         // Toggle section expand/collapse
         function toggleSection(header) {
-            const section = header.parentElement;
-            section.classList.toggle('collapsed');
+            const expandable = header.closest('.expandable');
+            if (expandable) {
+                expandable.classList.toggle('expandable--collapsed');
+            }
         }
         
         // Toggle principal card (new unified view)
@@ -1952,18 +827,9 @@ $(Get-ReportNavigation -ActivePage "RBAC")
         
         // Toggle custom role card
         function toggleCustomRole(header) {
-            const card = header.parentElement;
-            const details = card.querySelector('.custom-role-details');
-            const icon = header.querySelector('.toggle-icon');
-            
-            if (details.style.display === 'none' || !details.style.display) {
-                details.style.display = 'block';
-                card.classList.add('expanded');
-                icon.textContent = '▲';
-            } else {
-                details.style.display = 'none';
-                card.classList.remove('expanded');
-                icon.textContent = '▼';
+            const card = header.closest('.custom-role-card');
+            if (card) {
+                card.classList.toggle('expanded');
             }
         }
         

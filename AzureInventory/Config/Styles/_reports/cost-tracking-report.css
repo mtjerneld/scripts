@@ -1,0 +1,442 @@
+/* Cost Tracking Report Specific Styles */
+
+/* Clickable elements should have pointer cursor */
+h3[onclick],
+.expandable__header[onclick],
+.category-header[onclick],
+.subcategory-header[onclick] {
+    cursor: pointer;
+}
+
+/* Chart section styles */
+.chart-section {
+    margin-top: 15px;
+}
+
+.chart-controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+}
+
+.chart-controls select {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text);
+    font-size: 0.9rem;
+}
+
+.chart-container {
+    position: relative;
+    height: 400px;
+    margin-top: 20px;
+}
+
+/* Global filter bar styles */
+.global-filter-bar {
+    margin-bottom: 20px;
+}
+
+.global-filter-bar h3 {
+    margin: 0 0 10px 0;
+    font-size: 1.1rem;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.subscription-filter-content {
+    display: none;
+    margin-top: 10px;
+}
+
+.subscription-filter-content.show {
+    display: block;
+}
+
+.subscription-filter-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 15px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.subscription-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    padding: 6px 10px;
+    border-radius: 4px;
+    transition: background 0.2s ease;
+}
+
+.subscription-checkbox:hover {
+    background: var(--bg-hover);
+}
+
+.subscription-checkbox input[type="checkbox"] {
+    cursor: pointer;
+}
+
+.filter-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    width: 100%;
+}
+
+.filter-btn {
+    padding: 6px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.filter-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-blue);
+}
+
+/* Expand arrow rotation */
+.expand-arrow {
+    display: inline-block;
+    transition: transform 0.2s ease;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-right: 8px;
+}
+
+/* Note: Arrow direction is handled by JavaScript, not CSS rotation */
+/* This ensures consistent behavior across all expandable elements */
+
+/* Category and meter card styles */
+.category-card,
+.meter-card {
+    margin-bottom: 12px;
+}
+
+.category-header,
+.subcategory-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    transition: background 0.2s ease;
+    text-align: left;
+}
+
+/* Ensure meter-cost is right-aligned and blue within meter-header */
+.meter-header {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 10px !important;
+    padding: 12px 16px !important;
+    background: var(--bg-secondary) !important;
+    border-radius: 6px !important;
+    transition: background 0.2s ease !important;
+    text-align: left !important;
+}
+
+.meter-header-right {
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+    margin-left: auto !important;
+    flex-shrink: 0 !important;
+}
+
+.meter-header .meter-cost,
+.meter-header-right .meter-cost {
+    text-align: right !important;
+    color: var(--accent-blue) !important;
+    font-weight: 600 !important;
+    white-space: nowrap !important;
+}
+
+/* Also ensure meter-cost is blue and right-aligned even without meter-header-right wrapper (for no-expand meters) */
+.expandable__header.meter-header .meter-cost {
+    color: var(--accent-blue) !important;
+    text-align: right !important;
+    font-weight: 600 !important;
+    white-space: nowrap !important;
+    margin-left: auto !important;
+}
+
+.category-header:hover,
+.meter-header:hover,
+.subcategory-header:hover {
+    background: var(--bg-hover);
+}
+
+/* Ensure meter-cost is right-aligned and blue within meter-header */
+.meter-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+}
+
+.meter-header .meter-cost {
+    text-align: right;
+    color: var(--accent-blue) !important;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.category-title,
+.meter-name {
+    font-weight: 600;
+    flex: 1;
+    text-align: left;
+}
+
+.category-cost,
+.meter-cost {
+    font-weight: 600;
+    color: var(--accent-blue);
+}
+
+/* Category content - must be more specific than sections.css and override all other rules */
+.category-card .category-content {
+    padding: 12px 0 0 20px !important;
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
+}
+
+.category-card.expanded .category-content {
+    display: block !important;
+    visibility: visible !important;
+    height: auto !important;
+    overflow: visible !important;
+}
+
+/* Ensure category-card is collapsed by default - override any other rules */
+.category-card:not(.expanded) .category-content {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
+}
+
+/* Also handle the case where category-header might have collapsed class (legacy) */
+.category-header.collapsed + .category-content {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
+}
+
+/* Override sections.css rule that might make it visible */
+.category-header:not(.collapsed) + .category-content {
+    /* Only show if parent category-card is expanded */
+    display: none !important;
+}
+
+.category-card.expanded .category-header:not(.collapsed) + .category-content {
+    display: block !important;
+    visibility: visible !important;
+    height: auto !important;
+    overflow: visible !important;
+}
+
+/* Subcategory drilldown styles */
+.subcategory-drilldown {
+    margin-bottom: 12px;
+}
+
+/* Subcategory content - must be more specific and override all other rules */
+/* Override expandable__content rules from sections.css - subcategory uses subcategory-content, not expandable__content */
+/* IMPORTANT: This must override any default display rules from sections.css */
+.subcategory-drilldown .subcategory-content,
+.subcategory-drilldown .expandable__header + .subcategory-content,
+.subcategory-drilldown .subcategory-header + .subcategory-content {
+    padding: 12px 0 0 20px !important;
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    max-height: 0 !important;
+    opacity: 0 !important;
+    position: relative !important;
+}
+
+.subcategory-drilldown.expanded .subcategory-content {
+    display: block !important;
+    visibility: visible !important;
+    height: auto !important;
+    overflow: visible !important;
+    max-height: none !important;
+    opacity: 1 !important;
+}
+
+/* Ensure subcategory-drilldown is collapsed by default - override any other rules */
+.subcategory-drilldown:not(.expanded) .subcategory-content {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    max-height: 0 !important;
+    opacity: 0 !important;
+}
+
+/* Also override if subcategory-content is inside expandable__header structure - use adjacent sibling selector */
+.subcategory-drilldown .subcategory-header + .subcategory-content,
+.subcategory-drilldown .expandable__header.subcategory-header + .subcategory-content {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
+}
+
+.subcategory-drilldown.expanded .subcategory-header + .subcategory-content,
+.subcategory-drilldown.expanded .expandable__header.subcategory-header + .subcategory-content {
+    display: block !important;
+    visibility: visible !important;
+    height: auto !important;
+    overflow: visible !important;
+}
+
+/* Meter content styles */
+.meter-content {
+    padding: 12px 0 0 20px;
+    display: none !important;
+}
+
+.meter-card.expanded .meter-content {
+    display: block !important;
+}
+
+/* Ensure meter-card is collapsed by default */
+.meter-card:not(.expanded) .meter-content {
+    display: none !important;
+}
+
+/* Resource card styles */
+.resource-card {
+    margin-bottom: 16px;
+}
+
+.resource-info {
+    padding: 12px;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    margin-bottom: 12px;
+}
+
+.resource-info div {
+    margin-bottom: 6px;
+}
+
+.resource-info strong {
+    color: var(--text-secondary);
+    margin-right: 8px;
+}
+
+/* Meter quantity and unit price styles */
+.meter-quantity,
+.meter-unit-price {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.meter-count {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+/* Expandable h2/h3 inside section-box should not have extra margin */
+.section-box .expandable__title h2,
+.section-box .expandable__title h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* Table formatting improvements */
+.data-table th.text-right,
+.data-table td.text-right {
+    text-align: right;
+}
+
+.data-table .cost-value {
+    font-weight: 600;
+    color: var(--accent-blue);
+    white-space: nowrap;
+}
+
+.data-table th {
+    white-space: nowrap;
+}
+
+/* Ensure proper spacing in tables */
+.data-table tbody tr {
+    transition: background-color 0.2s ease;
+}
+
+.data-table tbody tr:hover {
+    background-color: var(--bg-hover);
+}
+
+/* Filter bar for resources */
+.filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+}
+
+.filter-bar label {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.filter-bar input[type="text"] {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text);
+    font-size: 0.9rem;
+}
+
+.filter-bar input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+}
+
+/* Summary card value styles for trend */
+.summary-card-value.trend-increasing {
+    color: var(--accent-red);
+}
+
+.summary-card-value.trend-decreasing {
+    color: var(--accent-green);
+}
+
+.summary-card-value.trend-stable {
+    color: var(--text-secondary);
+}
+

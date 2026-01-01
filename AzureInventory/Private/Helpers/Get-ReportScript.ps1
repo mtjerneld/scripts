@@ -312,12 +312,139 @@ function Get-ReportScript {
                         }
                     });
                     
+                    // Helper function to recalculate severity card values based on subscription filter
+                    function recalculateSeverityCards(selectedSub) {
+                        const severityCards = document.querySelectorAll('.summary-card[data-severity]');
+                        
+                        severityCards.forEach(card => {
+                            const severity = card.getAttribute('data-severity');
+                            const cardSubscriptions = card.getAttribute('data-subscription') || '';
+                            const originalValue = card.getAttribute('data-original-value') || '0';
+                            const valueElement = card.querySelector('.summary-card-value');
+                            
+                            // Check if subscription matches
+                            let subscriptionMatch = true;
+                            if (selectedSubscription !== 'all' && cardSubscriptions) {
+                                const subscriptionList = cardSubscriptions.toLowerCase().split('|');
+                                subscriptionMatch = subscriptionList.includes(selectedSubscription);
+                            }
+                            
+                            // Show/hide card based on subscription match
+                            if (subscriptionMatch) {
+                                card.style.display = '';
+                                
+                                // Update value based on subscription filter
+                                if (selectedSub === 'all' || typeof subscriptionSeverityCounts === 'undefined') {
+                                    // Show original value
+                                    if (valueElement) valueElement.textContent = originalValue;
+                                } else {
+                                    // Look up subscription-specific count
+                                    const subNameLower = selectedSub.toLowerCase();
+                                    let subData = null;
+                                    
+                                    for (const [subName, data] of Object.entries(subscriptionSeverityCounts)) {
+                                        if (subName.toLowerCase() === subNameLower) {
+                                            subData = data;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if (subData && valueElement) {
+                                        const count = subData[severity] || 0;
+                                        valueElement.textContent = count;
+                                    } else if (valueElement) {
+                                        valueElement.textContent = '0';
+                                    }
+                                }
+                            } else {
+                                card.style.display = 'none';
+                            }
+                        });
+                    }
+                    
+                    // Helper function to recalculate score card values based on subscription filter
+                    function recalculateScoreCard(card, selectedSub) {
+                        const scoreValue = card.querySelector('.score-value');
+                        const scoreDetails = card.querySelector('.score-details');
+                        
+                        if (selectedSub === 'all' || typeof subscriptionScores === 'undefined') {
+                            // Show original values
+                            const totalChecks = card.getAttribute('data-total-checks') || '0';
+                            const passedChecks = card.getAttribute('data-passed-checks') || '0';
+                            const overallScore = card.getAttribute('data-overall-score') || '0';
+                            
+                            if (scoreValue) scoreValue.textContent = overallScore + '%';
+                            if (scoreDetails) scoreDetails.textContent = passedChecks + ' / ' + totalChecks + ' checks passed';
+                            return;
+                        }
+                        
+                        // For specific subscription, look up scores from subscriptionScores object
+                        const subNameLower = selectedSub.toLowerCase();
+                        let subData = null;
+                        
+                        // Find matching subscription (case-insensitive)
+                        for (const [subName, data] of Object.entries(subscriptionScores)) {
+                            if (subName.toLowerCase() === subNameLower) {
+                                subData = data;
+                                break;
+                            }
+                        }
+                        
+                        if (subData) {
+                            // Determine which card type this is
+                            if (card.classList.contains('overall-score')) {
+                                // Overall score card
+                                const score = subData.Score || 0;
+                                const total = subData.Total || 0;
+                                const passed = subData.Passed || 0;
+                                
+                                if (scoreValue) scoreValue.textContent = score + '%';
+                                if (scoreDetails) scoreDetails.textContent = passed + ' / ' + total + ' checks passed';
+                            } else if (card.classList.contains('l1-score')) {
+                                // L1 score card
+                                const score = subData.L1Score || 0;
+                                const total = subData.L1Total || 0;
+                                const passed = subData.L1Passed || 0;
+                                
+                                if (scoreValue) scoreValue.textContent = score + '%';
+                                if (scoreDetails) scoreDetails.textContent = passed + ' / ' + total + ' checks passed';
+                            } else if (card.classList.contains('l2-score')) {
+                                // L2 score card
+                                const score = subData.L2Score || 0;
+                                const total = subData.L2Total || 0;
+                                const passed = subData.L2Passed || 0;
+                                
+                                if (scoreValue) scoreValue.textContent = score + '%';
+                                if (scoreDetails) scoreDetails.textContent = passed + ' / ' + total + ' checks passed';
+                            } else if (card.classList.contains('asb-score')) {
+                                // ASB score card
+                                const score = subData.AsbScore || 0;
+                                const total = subData.AsbTotal || 0;
+                                const passed = subData.AsbPassed || 0;
+                                
+                                if (scoreValue) scoreValue.textContent = score + '%';
+                                if (scoreDetails) scoreDetails.textContent = passed + ' / ' + total + ' checks passed';
+                            }
+                        } else {
+                            // Subscription not found, show zeros or original values
+                            if (scoreValue) scoreValue.textContent = '0%';
+                            if (scoreDetails) scoreDetails.textContent = '0 / 0 checks passed';
+                        }
+                    }
+                    
                     // Filter score cards (Overall Score, L1, L2, Category cards)
+                    // Only filter by subscription - other filters don't affect score cards
                     const scoreCards = document.querySelectorAll('.score-card, .category-score-card');
+                    let visibleScoreCards = 0;
+                    let visibleMainScoreCards = 0; // Overall, L1, L2
+                    let visibleCategoryScoreCards = 0;
+                    
                     scoreCards.forEach(card => {
                         const cardSubscriptions = card.getAttribute('data-subscription') || '';
-                        let subscriptionMatch = true;
+                        const isCategoryCard = card.classList.contains('category-score-card');
                         
+                        // Only filter by subscription - ignore category, severity, framework, and search filters
+                        let subscriptionMatch = true;
                         if (selectedSubscription !== 'all' && cardSubscriptions) {
                             // Check if the selected subscription is in the card's subscription list
                             // Subscriptions are pipe-separated, so split and check
@@ -327,12 +454,72 @@ function Get-ReportScript {
                         
                         if (subscriptionMatch) {
                             card.style.display = '';
+                            visibleScoreCards++;
+                            if (isCategoryCard) {
+                                visibleCategoryScoreCards++;
+                            } else {
+                                visibleMainScoreCards++;
+                                // Recalculate score for main cards based on subscription filter
+                                recalculateScoreCard(card, selectedSubscription);
+                            }
                         } else {
                             card.style.display = 'none';
                         }
                     });
                     
-                    resultCount.textContent = 'Showing ' + visibleCount + ' items';
+                    // Update severity cards based on subscription filter
+                    recalculateSeverityCards(selectedSubscription);
+                    
+                    // Hide/show "Security Compliance Score" section header and main score grid
+                    // Only hide if subscription filter hides all main cards
+                    const complianceSection = document.querySelector('.compliance-scores-section');
+                    const complianceHeader = complianceSection ? complianceSection.querySelector('h3') : null;
+                    const scoreGrid = document.querySelector('.score-grid');
+                    const categoryScoresHeader = document.querySelector('h4');
+                    
+                    if (complianceSection) {
+                        if (visibleMainScoreCards > 0) {
+                            if (complianceHeader) complianceHeader.style.display = '';
+                            if (scoreGrid) scoreGrid.style.display = '';
+                        } else {
+                            if (complianceHeader) complianceHeader.style.display = 'none';
+                            if (scoreGrid) scoreGrid.style.display = 'none';
+                        }
+                    }
+                    
+                    // Hide/show "Scores by Category" header and category scores grid
+                    // Only hide if subscription filter hides all category cards
+                    if (categoryScoresHeader && categoryScoresHeader.textContent.includes('Scores by Category')) {
+                        if (visibleCategoryScoreCards > 0) {
+                            categoryScoresHeader.style.display = '';
+                            const categoryScoresGrid = categoryScoresHeader.nextElementSibling;
+                            if (categoryScoresGrid && categoryScoresGrid.classList.contains('category-scores-grid')) {
+                                categoryScoresGrid.style.display = '';
+                            }
+                        } else {
+                            categoryScoresHeader.style.display = 'none';
+                            const categoryScoresGrid = categoryScoresHeader.nextElementSibling;
+                            if (categoryScoresGrid && categoryScoresGrid.classList.contains('category-scores-grid')) {
+                                categoryScoresGrid.style.display = 'none';
+                            }
+                        }
+                    }
+                    
+                    // Hide entire compliance section if subscription filter hides all cards
+                    if (complianceSection && visibleScoreCards === 0) {
+                        complianceSection.style.display = 'none';
+                    } else if (complianceSection) {
+                        complianceSection.style.display = '';
+                    }
+                    
+                    // Update visible count, keep total count unchanged
+                    const visibleCountSpan = document.getElementById('visibleCount');
+                    if (visibleCountSpan) {
+                        visibleCountSpan.textContent = visibleCount;
+                    } else {
+                        // Fallback for old structure
+                        resultCount.textContent = 'Showing ' + visibleCount + ' items';
+                    }
                     
                     // Ensure control-resources-row is hidden if control-row is not expanded
                     controlRows.forEach(row => {
@@ -373,6 +560,26 @@ function Get-ReportScript {
                             severityFilter.value = severity;
                             updateFilters();
                             const filtersSection = document.querySelector('h2');
+                            if (filtersSection) {
+                                filtersSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }
+                        }
+                    });
+                });
+                
+                // Make category score cards clickable to filter by category
+                const categoryScoreCards = document.querySelectorAll('.category-score-card');
+                categoryScoreCards.forEach(card => {
+                    card.style.cursor = 'pointer';
+                    card.addEventListener('click', function() {
+                        const category = this.getAttribute('data-category');
+                        const categoryLower = this.getAttribute('data-category-lower');
+                        if (category && categoryFilter) {
+                            // Set the category filter to the clicked category
+                            categoryFilter.value = category;
+                            updateFilters();
+                            // Scroll to filters section
+                            const filtersSection = document.querySelector('.section-box h2');
                             if (filtersSection) {
                                 filtersSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
                             }
@@ -559,18 +766,35 @@ function Get-ReportScript {
                 }
                 
                 // Category expand/collapse handlers
-                const categoryHeaders = document.querySelectorAll('.category-header');
-                categoryHeaders.forEach(header => {
-                    header.addEventListener('click', function() {
-                        const categoryId = this.getAttribute('data-category-id');
-                        const content = document.getElementById(categoryId);
-                        if (content) {
-                            const isHidden = content.style.display === 'none';
-                            content.style.display = isHidden ? 'block' : 'none';
-                            this.classList.toggle('collapsed', !isHidden);
+                // Use event delegation and check that we're NOT clicking on a control-row
+                document.addEventListener('click', function(event) {
+                    const categoryHeader = event.target.closest('.category-header');
+                    if (categoryHeader) {
+                        // Make sure we're NOT clicking on a control-row inside the category
+                        const controlRow = event.target.closest('.control-row');
+                        if (!controlRow) {
+                            // Only handle if clicking directly on header, not on control-row
+                            event.stopPropagation();
+                            const categoryId = categoryHeader.getAttribute('data-category-id');
+                            const content = document.getElementById(categoryId);
+                            if (content) {
+                                const isCollapsed = categoryHeader.classList.contains('collapsed');
+                                if (isCollapsed) {
+                                    // Expanding - remove collapsed class and show content
+                                    categoryHeader.classList.remove('collapsed');
+                                    // Force display block to override CSS
+                                    content.style.display = 'block';
+                                    content.style.setProperty('display', 'block', 'important');
+                                } else {
+                                    // Collapsing - add collapsed class and hide content
+                                    categoryHeader.classList.add('collapsed');
+                                    content.style.display = 'none';
+                                    content.style.setProperty('display', 'none', 'important');
+                                }
+                            }
                         }
-                    });
-                });
+                    }
+                }, true); // Use capture phase
                 
                 // Resource row click handlers (for "Failed Controls by Subscription" section)
                 resourceRows.forEach(row => {
@@ -587,18 +811,30 @@ function Get-ReportScript {
                 });
                 
                 // Control row click handlers (Category & Control table) - expand/collapse resources
-                controlRows.forEach(row => {
-                    row.addEventListener('click', function() {
-                        const controlKey = this.getAttribute('data-control-key');
-                        if (controlKey) {
-                            const resourcesRow = document.querySelector('.control-resources-row[data-control-key="' + controlKey + '"]');
-                            if (resourcesRow) {
-                                resourcesRow.classList.toggle('hidden');
-                                this.classList.toggle('expanded');
+                // Use event delegation to ensure it works even when categories are collapsed
+                // Must check control-row and stop propagation BEFORE category-header handles it
+                document.addEventListener('click', function(event) {
+                    // First check if click is on or inside a control-row
+                    const controlRow = event.target.closest('.control-row');
+                    if (controlRow) {
+                        // Make sure we're not clicking on category-header itself
+                        const clickedOnHeader = event.target.closest('.category-header');
+                        // Only process if we're clicking on the control-row, not the header
+                        if (!clickedOnHeader || clickedOnHeader !== controlRow.closest('.category-header')) {
+                            event.stopPropagation();
+                            event.preventDefault();
+                            const controlKey = controlRow.getAttribute('data-control-key');
+                            if (controlKey) {
+                                const resourcesRow = document.querySelector('.control-resources-row[data-control-key="' + controlKey + '"]');
+                                if (resourcesRow) {
+                                    resourcesRow.classList.toggle('hidden');
+                                    controlRow.classList.toggle('expanded');
+                                    return false; // Stop here, don't let category-header handle it
+                                }
                             }
                         }
-                    });
-                });
+                    }
+                }, true); // Use capture phase to catch events before they bubble
                 
                 // Control detail row click handlers (Subscription Details table) - expand/collapse remediation
                 const controlDetailRows = document.querySelectorAll('.control-detail-row');

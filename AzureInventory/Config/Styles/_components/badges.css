@@ -1,0 +1,222 @@
+/* Badge Component Styles - Consolidated .badge with modifiers */
+.badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+/* Semantic modifiers */
+.badge--success {
+    background: rgba(0, 210, 106, 0.15);
+    color: var(--accent-green);
+}
+
+.badge--danger {
+    background: rgba(255, 107, 107, 0.15);
+    color: var(--accent-red);
+}
+
+.badge--warning {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--accent-yellow);
+}
+
+.badge--warning-high {
+    background: rgba(255, 159, 67, 0.15);
+    color: var(--accent-orange);
+}
+
+.badge--info {
+    background: rgba(84, 160, 255, 0.15);
+    color: var(--accent-blue);
+}
+
+.badge--neutral {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+}
+
+/* Aliases for specific use cases */
+.badge--critical {
+    background: rgba(255, 107, 107, 0.15);
+    color: var(--accent-red);
+}
+
+.badge--high {
+    background: rgba(255, 159, 67, 0.15);
+    color: var(--accent-orange);
+}
+
+.badge--medium {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--accent-yellow);
+}
+
+.badge--low {
+    background: rgba(84, 160, 255, 0.15);
+    color: var(--accent-blue);
+}
+
+.badge--protected,
+.badge--healthy,
+.badge--running {
+    background: rgba(0, 210, 106, 0.15);
+    color: var(--accent-green);
+}
+
+.badge--unprotected,
+.badge--orphaned {
+    background: rgba(255, 107, 107, 0.15);
+    color: var(--accent-red);
+}
+
+.badge--external {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--accent-yellow);
+}
+
+.badge--stopped,
+.badge--deallocated {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--accent-yellow);
+}
+
+.badge--unknown {
+    background: rgba(136, 136, 136, 0.15);
+    color: var(--text-muted);
+}
+
+/* Size variants */
+.badge--small {
+    padding: 2px 8px;
+    font-size: 0.75rem;
+}
+
+/* Legacy class support (for backward compatibility during transition) */
+.status-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.status-badge.protected,
+.power-badge.running {
+    background: rgba(0, 210, 106, 0.15);
+    color: var(--accent-green);
+}
+
+.status-badge.unprotected {
+    background: rgba(255, 107, 107, 0.15);
+    color: var(--accent-red);
+}
+
+.status-badge.running {
+    background: rgba(84, 160, 255, 0.15);
+    color: var(--accent-blue);
+}
+
+.status-badge.deallocated,
+.status-badge.stopped,
+.power-badge.stopped {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--accent-yellow);
+}
+
+.status-badge.unknown,
+.power-badge.deallocated {
+    background: rgba(136, 136, 136, 0.15);
+    color: var(--text-muted);
+}
+
+.status-badge.healthy {
+    background: rgba(0, 210, 106, 0.15);
+    color: var(--accent-green);
+}
+
+.status-badge.warning {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--accent-yellow);
+}
+
+.status-badge.critical {
+    background: rgba(255, 107, 107, 0.15);
+    color: var(--danger);
+}
+
+.status-badge.high {
+    background: rgba(255, 159, 67, 0.15);
+    color: var(--accent-orange);
+}
+
+.status-badge.medium {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--warning);
+}
+
+.status-badge.low {
+    background: rgba(84, 160, 255, 0.15);
+    color: var(--info);
+}
+
+.os-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+}
+
+.impact-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.impact-badge.high {
+    background: rgba(255, 107, 107, 0.15);
+    color: var(--accent-red);
+}
+
+.impact-badge.medium {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--accent-yellow);
+}
+
+.impact-badge.low {
+    background: rgba(84, 160, 255, 0.15);
+    color: var(--accent-blue);
+}
+
+.severity-count {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.severity-count.critical {
+    background: rgba(255, 107, 107, 0.15);
+    color: var(--danger);
+}
+
+.severity-count.high {
+    background: rgba(255, 159, 67, 0.15);
+    color: var(--accent-orange);
+}
+
+.severity-count.medium {
+    background: rgba(254, 202, 87, 0.15);
+    color: var(--warning);
+}
+
+.severity-count.low {
+    background: rgba(84, 160, 255, 0.15);
+    color: var(--info);
+}

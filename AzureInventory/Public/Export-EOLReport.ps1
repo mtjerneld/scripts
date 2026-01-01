@@ -653,7 +653,7 @@ function Export-EOLReport {
                                     <td>$rg</td>
                                     <td>$resName</td>
                                     <td>$resType</td>
-                                    <td><span class="badge severity-$sevLower">$sev</span></td>
+                                    <td><span class="badge badge--$(if ($sevLower -eq 'critical') { 'danger' } elseif ($sevLower -eq 'high') { 'high' } elseif ($sevLower -eq 'medium') { 'warning' } else { 'info' })">$sev</span></td>
                                     <td>$dlText</td>
                                     <td>$diText</td>
                                     <td>
@@ -665,40 +665,36 @@ function Export-EOLReport {
         }
 
         $componentCardsHtml += @"
-                    <div class="eol-card-item" data-severity="$topSeverityLower">
-                        <div class="eol-card-header" onclick="toggleEolComponent(this)">
-                            <div class="eol-card-main">
-                                <div class="eol-card-header-info">
-                                    <span class="eol-component-name">$compName</span>
-                                    <span class="badge">$($comp.Count) resource(s)</span>
-                                    <span class="badge">Deadline: $deadlineText ($daysText)</span>
-                                    <span class="badge severity-$topSeverityLower eol-severity-badge">$topSeverity</span>
-                                </div>
+                    <div class="expandable expandable--collapsed" data-severity="$topSeverityLower">
+                        <div class="expandable__header" onclick="toggleEolComponent(this)">
+                            <div class="expandable__title">
+                                <span class="expand-icon"></span>
+                                <h3>$compName</h3>
                             </div>
-                            <div class="eol-card-toggle">
-                                <span class="expand-arrow">&#9654;</span>
+                            <div class="expandable__badges">
+                                <span class="badge badge--neutral">$($comp.Count) resource(s)</span>
+                                <span class="badge badge--neutral">Deadline: $deadlineText ($daysText)</span>
+                                <span class="badge badge--$(if ($topSeverityLower -eq 'critical') { 'danger' } elseif ($topSeverityLower -eq 'high') { 'high' } elseif ($topSeverityLower -eq 'medium') { 'warning' } else { 'info' })">$topSeverity</span>
                             </div>
                         </div>
-                        <div class="eol-card-body">
-                            <div class="eol-card-table">
-                                <table class="resource-summary-table eol-resource-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Subscription</th>
-                                            <th>Resource Group</th>
-                                            <th>Resource</th>
-                                            <th>Type</th>
-                                            <th>Severity</th>
-                                            <th>Deadline</th>
-                                            <th>Days</th>
-                                            <th>Action</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
+                        <div class="expandable__content">
+                            <table class="data-table data-table--sticky-header data-table--compact">
+                                <thead>
+                                    <tr>
+                                        <th>Subscription</th>
+                                        <th>Resource Group</th>
+                                        <th>Resource</th>
+                                        <th>Type</th>
+                                        <th>Severity</th>
+                                        <th>Deadline</th>
+                                        <th>Days</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
 $resourceRows
-                                    </tbody>
-                                </table>
-                            </div>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 "@
@@ -715,311 +711,6 @@ $resourceRows
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
 $(Get-ReportStylesheet)
-
-        .summary-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-
-        .summary-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 20px;
-            border: 1px solid var(--border-color);
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .summary-card .label {
-            font-size: 0.85rem;
-            text-transform: uppercase;
-            color: var(--text-secondary);
-            letter-spacing: 0.5px;
-        }
-
-        .summary-card .value {
-            font-size: 1.8rem;
-            font-weight: 700;
-        }
-
-        .summary-card .value.critical { color: var(--accent-red); }
-        .summary-card .value.high     { color: var(--accent-orange); }
-        .summary-card .value.medium   { color: var(--accent-yellow); }
-        .summary-card .value.low      { color: var(--accent-green); }
-
-        .timeline-section {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 24px;
-            margin-bottom: 30px;
-            border: 1px solid var(--border-color);
-        }
-
-        .timeline-section h2 {
-            margin-top: 0;
-            margin-bottom: 12px;
-        }
-
-        .timeline-legend {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            margin-bottom: 12px;
-        }
-
-        .timeline-legend-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-        }
-
-        .timeline-legend-color {
-            width: 12px;
-            height: 12px;
-            border-radius: 2px;
-        }
-
-        .timeline-legend-critical { background: rgba(231, 76, 60, 0.8); }
-        .timeline-legend-high     { background: rgba(241, 196, 15, 0.9); }
-        .timeline-legend-medium   { background: rgba(52, 152, 219, 0.8); }
-        .timeline-legend-low      { background: rgba(39, 174, 96, 0.8); }
-
-        .chart-container {
-            position: relative;
-            height: 320px;
-            width: 100%;
-        }
-
-        .eol-component-list {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 16px 20px;
-            border: 1px solid var(--border-color);
-            max-height: none;
-            overflow-y: visible;
-        }
-
-        .eol-component-list h2 {
-            margin-top: 0;
-            margin-bottom: 12px;
-        }
-
-        .eol-filter-bar {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-bottom: 12px;
-        }
-
-        .eol-filter-bar input,
-        .eol-filter-bar select {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            padding: 6px 10px;
-            border-radius: 6px;
-            font-size: 0.85rem;
-        }
-
-        .eol-filter-bar label {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-        }
-
-        .eol-card-item {
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-sm);
-            margin-bottom: 10px;
-            overflow: hidden;
-        }
-
-        .eol-card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px 16px;
-            cursor: pointer;
-            background: var(--bg-secondary);
-            gap: 12px;
-        }
-
-        .eol-card-header:hover {
-            background: var(--bg-hover);
-        }
-
-        .eol-component-name {
-            font-weight: 600;
-            margin-right: 12px;
-            min-width: 200px;
-        }
-        
-        .eol-card-header-info .badge {
-            margin-right: 0;
-            white-space: nowrap;
-        }
-
-        .eol-card-main {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 8px;
-            flex: 1;
-        }
-        
-        .eol-card-header-info {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 20px;
-            flex: 1;
-            row-gap: 10px;
-        }
-        
-        .eol-severity-badge {
-            margin-left: auto;
-        }
-        
-        .eol-card-header-info > * {
-            margin: 0;
-        }
-
-        .eol-card-toggle .expand-arrow {
-            font-size: 0.8rem;
-            display: inline-block;
-            transition: transform 0.2s;
-            color: var(--text-muted);
-        }
-
-        .eol-card-item.expanded .eol-card-toggle .expand-arrow {
-            transform: rotate(90deg);
-        }
-
-        .eol-card-body {
-            display: none;
-            padding: 10px 12px 12px;
-            background: var(--bg-primary);
-        }
-
-        .eol-card-item.expanded .eol-card-body {
-            display: block;
-        }
-
-
-        .eol-resource-table .resource-action-text {
-            max-width: 260px;
-            white-space: normal;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            margin-bottom: 4px;
-        }
-        
-        .eol-guidance-link-container {
-            margin-top: 4px;
-        }
-        
-        .eol-guidance-link-container a {
-            color: #5490ff !important;
-            text-decoration: underline !important;
-        }
-        
-        .eol-guidance-link-container a:hover {
-            color: #357abd !important;
-        }
-        
-        .eol-guidance-link-container a:visited {
-            color: #7b68ee !important;
-        }
-
-        .eol-resource-table {
-            width: 100%;
-        }
-
-        .eol-resource-table thead {
-            background: var(--bg-secondary);
-        }
-
-        .eol-resource-table th {
-            padding: 12px 16px;
-            text-align: left;
-            font-weight: 600;
-            color: var(--text-primary);
-            border-bottom: 2px solid var(--border-color);
-            font-size: 0.85rem;
-            white-space: nowrap;
-        }
-
-        .eol-resource-table td {
-            padding: 12px 16px;
-            border-bottom: none;
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-            word-wrap: break-word;
-        }
-        
-        .eol-resource-table td .eol-guidance-link {
-            color: #5490ff !important;
-        }
-
-        .eol-resource-table tbody tr {
-            background: transparent;
-        }
-
-        .eol-resource-table tbody tr:hover {
-            background: var(--bg-hover);
-        }
-
-        .badge.severity-critical {
-            background-color: rgba(231, 76, 60, 0.15);
-            color: #ff6b6b;
-        }
-        .badge.severity-high {
-            background-color: rgba(243, 156, 18, 0.15);
-            color: #f5b041;
-        }
-        .badge.severity-medium {
-            background-color: rgba(52, 152, 219, 0.15);
-            color: #5dade2;
-        }
-        .badge.severity-low {
-            background-color: rgba(46, 204, 113, 0.15);
-            color: #58d68d;
-        }
-        
-        /* EOL Guidance Links - White color */
-        .eol-guidance-link,
-        .eol-guidance-link:link,
-        .eol-guidance-link:visited,
-        .eol-guidance-link:hover,
-        .eol-guidance-link:active,
-        .eol-resource-table td .eol-guidance-link,
-        .eol-resource-table td .eol-guidance-link:link,
-        .eol-resource-table td .eol-guidance-link:visited,
-        .eol-resource-table td .eol-guidance-link:hover,
-        .eol-guidance-link-container a,
-        .eol-guidance-link-container a:link,
-        .eol-guidance-link-container a:visited,
-        .eol-guidance-link-container a:hover {
-            color: #ffffff !important;
-            text-decoration: underline !important;
-            font-weight: 500 !important;
-        }
-        
-        .eol-guidance-link:hover,
-        .eol-resource-table td .eol-guidance-link:hover,
-        .eol-guidance-link-container a:hover {
-            color: #e0e0e0 !important;
-        }
-        
-        .eol-guidance-link:visited,
-        .eol-resource-table td .eol-guidance-link:visited,
-        .eol-guidance-link-container a:visited {
-            color: #f0f0f0 !important;
-        }
     </style>
 </head>
 <body>
@@ -1027,7 +718,7 @@ $(Get-ReportNavigation -ActivePage "EOL")
 
     <div class="container">
         <div class="page-header">
-            <h1>End of Life / Deprecated Components</h1>
+            <h1>&#9200; End of Life / Deprecated Components</h1>
             <div class="metadata">
                 <p><strong>Tenant:</strong> $TenantId</p>
                 <p><strong>Scanned:</strong> $timestamp</p>
@@ -1037,43 +728,46 @@ $(Get-ReportNavigation -ActivePage "EOL")
             </div>
         </div>
 
-        <div class="summary-cards">
-            <div class="summary-card">
-                <div class="label">Total EOL Findings</div>
-                <div class="value">$totalFindings</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Unique Components</div>
-                <div class="value">$componentCount</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Critical</div>
-                <div class="value critical">$criticalTotal</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">High</div>
-                <div class="value high">$highTotal</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Medium</div>
-                <div class="value medium">$mediumTotal</div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Low</div>
-                <div class="value low">$lowTotal</div>
+        <div class="section-box">
+            <h2>EOL Overview</h2>
+            <div class="summary-grid">
+                <div class="summary-card blue-border">
+                    <div class="summary-card-value">$totalFindings</div>
+                    <div class="summary-card-label">Total EOL Findings</div>
+                </div>
+                <div class="summary-card teal-border">
+                    <div class="summary-card-value">$componentCount</div>
+                    <div class="summary-card-label">Unique Components</div>
+                </div>
+                <div class="summary-card red-border">
+                    <div class="summary-card-value">$criticalTotal</div>
+                    <div class="summary-card-label">Critical</div>
+                </div>
+                <div class="summary-card orange-border">
+                    <div class="summary-card-value">$highTotal</div>
+                    <div class="summary-card-label">High</div>
+                </div>
+                <div class="summary-card yellow-border">
+                    <div class="summary-card-value">$mediumTotal</div>
+                    <div class="summary-card-label">Medium</div>
+                </div>
+                <div class="summary-card green-border">
+                    <div class="summary-card-value">$lowTotal</div>
+                    <div class="summary-card-label">Low</div>
+                </div>
             </div>
         </div>
 
-        <div class="timeline-section">
+        <div class="section-box">
             <h2>EOL Timeline</h2>
-            <div class="chart-controls" style="margin-bottom: 16px;">
-                <select id="eolChartView" onchange="updateEolChartView()" style="background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 10px; border-radius: 6px; font-size: 0.85rem;">
+            <div class="chart-controls">
+                <select id="eolChartView" onchange="updateEolChartView()" class="eol-chart-select">
                     <option value="severity">Stacked by Severity</option>
                     <option value="subscription">Stacked by Subscription</option>
                     <option value="category">Stacked by Category</option>
                 </select>
             </div>
-            <div class="timeline-legend" id="eolLegend">
+            <div class="timeline-legend" id="eolLegend" style="display: none;">
                 <div class="timeline-legend-item"><span class="timeline-legend-color timeline-legend-critical"></span> Critical (&lt; 0d or &lt; 90d)</div>
                 <div class="timeline-legend-item"><span class="timeline-legend-color timeline-legend-high"></span> High (90-180d)</div>
                 <div class="timeline-legend-item"><span class="timeline-legend-color timeline-legend-medium"></span> Medium (180-365d)</div>
@@ -1084,15 +778,15 @@ $(Get-ReportNavigation -ActivePage "EOL")
             </div>
         </div>
 
-        <div class="eol-component-list">
+        <div class="section-box">
             <h2>Deprecated Components</h2>
             <div class="eol-filter-bar">
-                <div>
-                    <label for="eolSearch">Search</label><br/>
+                <div class="filter-group">
+                    <label for="eolSearch">Search</label>
                     <input type="text" id="eolSearch" placeholder="Search component or resource..." />
                 </div>
-                <div>
-                    <label for="eolSeverityFilter">Severity</label><br/>
+                <div class="filter-group">
+                    <label for="eolSeverityFilter">Severity</label>
                     <select id="eolSeverityFilter">
                         <option value="all">All</option>
                         <option value="critical">Critical</option>
@@ -1102,11 +796,14 @@ $(Get-ReportNavigation -ActivePage "EOL")
                     </select>
                 </div>
             </div>
+            <div class="filter-stats">
+                Showing <span id="visibleCount">$componentCount</span> of <span id="totalCount">$componentCount</span> components
+            </div>
 
             <div id="eolComponents">
 $componentCardsHtml
 $(if ($componentCount -eq 0) { @"
-                <div style=""padding: 16px; text-align: center; color: var(--text-secondary);"">
+                <div class="eol-empty-state">
                     <p>No EOL / deprecated components detected for the scanned subscriptions.</p>
                 </div>
 "@ })
@@ -1244,49 +941,67 @@ $(if ($componentCount -eq 0) { @"
             
             if (currentEolView === 'severity') {
                 // Severity view - original stacked by severity with past month styling
+                // Colors match summary card border colors: Critical=Red, High=Orange, Medium=Yellow, Low=Green
+                // For past months (overdue), all events are shown in red to indicate they're past due
                 // Pre-compute colors for updateEolChart as well
-                const criticalBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(231, 76, 60, 0.4)' : 'rgba(231, 76, 60, 0.8)');
-                const highBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(241, 196, 15, 0.45)' : 'rgba(241, 196, 15, 0.9)');
-                const mediumBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(52, 152, 219, 0.4)' : 'rgba(52, 152, 219, 0.8)');
-                const lowBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(39, 174, 96, 0.4)' : 'rgba(39, 174, 96, 0.8)');
+                const criticalBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(255, 107, 107, 0.6)' : 'rgba(255, 107, 107, 0.8)');
+                const highBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(255, 107, 107, 0.6)' : 'rgba(255, 159, 67, 0.8)');
+                const mediumBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(255, 107, 107, 0.6)' : 'rgba(254, 202, 87, 0.8)');
+                const lowBgUpdate = eolIsPastMonth.map(isPast => isPast ? 'rgba(255, 107, 107, 0.6)' : 'rgba(0, 210, 106, 0.8)');
                 
                 datasets = [
                     {
-                        label: 'Critical',
+                        label: 'Critical (< 0d or < 90d)',
                         data: eolCritical,
                         backgroundColor: criticalBgUpdate,
-                        borderColor: 'rgba(231, 76, 60, 1)',
+                        borderColor: function(context) {
+                            const dataIndex = context.dataIndex;
+                            const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+                            return 'rgba(255, 107, 107, 1)'; // Always red for Critical
+                        },
                         borderWidth: 1,
                         stack: 'severity'
                     },
                     {
-                        label: 'High',
+                        label: 'High (90-180d)',
                         data: eolHigh,
                         backgroundColor: highBgUpdate,
-                        borderColor: 'rgba(243, 156, 18, 1)',
+                        borderColor: function(context) {
+                            const dataIndex = context.dataIndex;
+                            const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+                            return isPast ? 'rgba(255, 107, 107, 1)' : 'rgba(255, 159, 67, 1)'; // Red if past, orange if future
+                        },
                         borderWidth: 1,
                         stack: 'severity'
                     },
                     {
-                        label: 'Medium',
+                        label: 'Medium (180-365d)',
                         data: eolMedium,
                         backgroundColor: mediumBgUpdate,
-                        borderColor: 'rgba(52, 152, 219, 1)',
+                        borderColor: function(context) {
+                            const dataIndex = context.dataIndex;
+                            const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+                            return isPast ? 'rgba(255, 107, 107, 1)' : 'rgba(254, 202, 87, 1)'; // Red if past, yellow if future
+                        },
                         borderWidth: 1,
                         stack: 'severity'
                     },
                     {
-                        label: 'Low',
+                        label: 'Low (> 365d)',
                         data: eolLow,
                         backgroundColor: lowBgUpdate,
-                        borderColor: 'rgba(39, 174, 96, 1)',
+                        borderColor: function(context) {
+                            const dataIndex = context.dataIndex;
+                            const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+                            return isPast ? 'rgba(255, 107, 107, 1)' : 'rgba(0, 210, 106, 1)'; // Red if past, green if future
+                        },
                         borderWidth: 1,
                         stack: 'severity'
                     }
                 ];
-                // Show severity legend
-                document.getElementById('eolLegend').style.display = 'flex';
-                // Show chart legend
+                // Hide top timeline legend - Chart.js legend will show with verbose descriptions
+                document.getElementById('eolLegend').style.display = 'none';
+                // Show chart legend with verbose labels
                 eolChart.options.plugins.legend.display = true;
             } else if (currentEolView === 'subscription') {
                 // Subscription view - stacked by subscription
@@ -1392,10 +1107,12 @@ $(if ($componentCount -eq 0) { @"
             
             try {
                 // Pre-compute colors based on isPast
-                const criticalBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(231, 76, 60, 0.4)' : 'rgba(231, 76, 60, 0.8)');
-                const highBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(241, 196, 15, 0.45)' : 'rgba(241, 196, 15, 0.9)');
-                const mediumBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(52, 152, 219, 0.4)' : 'rgba(52, 152, 219, 0.8)');
-                const lowBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(39, 174, 96, 0.4)' : 'rgba(39, 174, 96, 0.8)');
+                // Colors match summary card border colors: Critical=Red, High=Orange, Medium=Yellow, Low=Green
+                // For past months (overdue), all events are shown in red to indicate they're past due
+                const criticalBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(255, 107, 107, 0.6)' : 'rgba(255, 107, 107, 0.8)');
+                const highBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(255, 107, 107, 0.6)' : 'rgba(255, 159, 67, 0.8)');
+                const mediumBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(255, 107, 107, 0.6)' : 'rgba(254, 202, 87, 0.8)');
+                const lowBg = eolIsPastMonth.map(isPast => isPast ? 'rgba(255, 107, 107, 0.6)' : 'rgba(0, 210, 106, 0.8)');
                 
                 // Pre-compute x-axis tick colors - past months are red
                 const xAxisTickColors = eolIsPastMonth.map(isPast => isPast ? '#ff6b6b' : '#888');
@@ -1406,34 +1123,50 @@ $(if ($componentCount -eq 0) { @"
                         labels: eolLabels,
                         datasets: [
                             {
-                                label: 'Critical',
+                                label: 'Critical (< 0d or < 90d)',
                                 data: eolCritical,
                                 backgroundColor: criticalBg,
-                                borderColor: 'rgba(231, 76, 60, 1)',
+                                borderColor: function(context) {
+                                    const dataIndex = context.dataIndex;
+                                    const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+                                    return 'rgba(255, 107, 107, 1)'; // Always red for Critical
+                                },
                                 borderWidth: 1,
                                 stack: 'severity'
                             },
                             {
-                                label: 'High',
+                                label: 'High (90-180d)',
                                 data: eolHigh,
                                 backgroundColor: highBg,
-                                borderColor: 'rgba(243, 156, 18, 1)',
+                                borderColor: function(context) {
+                                    const dataIndex = context.dataIndex;
+                                    const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+                                    return isPast ? 'rgba(255, 107, 107, 1)' : 'rgba(255, 159, 67, 1)'; // Red if past, orange if future
+                                },
                                 borderWidth: 1,
                                 stack: 'severity'
                             },
                             {
-                                label: 'Medium',
+                                label: 'Medium (180-365d)',
                                 data: eolMedium,
                                 backgroundColor: mediumBg,
-                                borderColor: 'rgba(52, 152, 219, 1)',
+                                borderColor: function(context) {
+                                    const dataIndex = context.dataIndex;
+                                    const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+                                    return isPast ? 'rgba(255, 107, 107, 1)' : 'rgba(254, 202, 87, 1)'; // Red if past, yellow if future
+                                },
                                 borderWidth: 1,
                                 stack: 'severity'
                             },
                             {
-                                label: 'Low',
+                                label: 'Low (> 365d)',
                                 data: eolLow,
                                 backgroundColor: lowBg,
-                                borderColor: 'rgba(39, 174, 96, 1)',
+                                borderColor: function(context) {
+                                    const dataIndex = context.dataIndex;
+                                    const isPast = eolIsPastMonth && dataIndex < eolIsPastMonth.length && eolIsPastMonth[dataIndex] === true;
+                                    return isPast ? 'rgba(255, 107, 107, 1)' : 'rgba(0, 210, 106, 1)'; // Red if past, green if future
+                                },
                                 borderWidth: 1,
                                 stack: 'severity'
                             }
@@ -1610,13 +1343,11 @@ $(if ($componentCount -eq 0) { @"
                 const search = (searchInput.value || '').toLowerCase();
                 const sevFilter = (severitySelect.value || 'all');
 
-                const cards = document.querySelectorAll('.eol-card-item');
+                const cards = document.querySelectorAll('.expandable[data-severity]');
                 cards.forEach(card => {
                     let visible = true;
 
-                    if (sevFilter !== 'all' && !card.dataset) {
-                        visible = true;
-                    } else if (sevFilter !== 'all') {
+                    if (sevFilter !== 'all') {
                         const sev = card.getAttribute('data-severity');
                         if (sev !== sevFilter) {
                             visible = false;
@@ -1630,7 +1361,7 @@ $(if ($componentCount -eq 0) { @"
                         }
                     }
 
-                    card.style.display = visible ? '' : 'none';
+                    card.classList.toggle('hidden', !visible);
                 });
             }
 
@@ -1643,9 +1374,9 @@ $(if ($componentCount -eq 0) { @"
         }
 
         function toggleEolComponent(headerEl) {
-            const card = headerEl.closest('.eol-card-item');
-            if (!card) return;
-            card.classList.toggle('expanded');
+            const expandable = headerEl.closest('.expandable');
+            if (!expandable) return;
+            expandable.classList.toggle('expandable--collapsed');
         }
     </script>
 

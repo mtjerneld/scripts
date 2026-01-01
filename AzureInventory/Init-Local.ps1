@@ -135,12 +135,25 @@ $functionsToRemove = @(
     'Test-SecurityReport',
     'Test-Advisor',
     'Test-VMBackup',
-    'Test-RBAC'
+    'Test-RBAC',
+    # Test data functions
+    'New-TestSecurityData',
+    'New-TestVMBackupData',
+    'New-TestChangeTrackingData',
+    'New-TestCostTrackingData',
+    'New-TestEOLData',
+    'New-TestNetworkInventoryData',
+    'New-TestRBACData',
+    'New-TestAdvisorData',
+    'New-TestAllData',
+    'Test-SingleReport'
 )
 
 foreach ($funcName in $functionsToRemove) {
-    if (Get-Command $funcName -ErrorAction SilentlyContinue) {
-        Remove-Item "Function:\$funcName" -ErrorAction SilentlyContinue
+    # Force removal - try even if Get-Command doesn't find it (handles edge cases)
+    $existed = Get-Command $funcName -ErrorAction SilentlyContinue
+    Remove-Item "Function:\$funcName" -Force -ErrorAction SilentlyContinue
+    if ($existed) {
         Write-Verbose "Removed: $funcName"
     }
 }
@@ -150,21 +163,44 @@ Get-Module AzureSecurityAudit | Remove-Module -Force -ErrorAction SilentlyContin
 
 Write-Host "  Loading functions..." -ForegroundColor Gray
 
-# Ladda alla dependencies i rätt ordning
-# 1. Config först (konstanter och definitioner som används av andra)
-Write-Host "  Loading Private Config..." -ForegroundColor Gray
-Get-ChildItem -Path "$ModuleRoot\Private\Config\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
-    $file = $_  # Capture file reference BEFORE try/catch
-    try {
-        . $file.FullName
-        Write-Verbose "Loaded: $($file.Name)"
+# Validate CSS structure exists (required for reports)
+Write-Host "  Validating CSS structure..." -ForegroundColor Gray
+$stylesPath = Join-Path $ModuleRoot "Config\Styles"
+$requiredCoreFiles = @("_variables.css", "_base.css", "_navigation.css", "_layout.css")
+$componentsPath = Join-Path $stylesPath "_components"
+$requiredComponents = @("tables.css", "badges.css", "cards.css", "sections.css", "filters.css", "buttons.css", "progress-bars.css", "stats.css", "links.css", "hero.css", "score-circle.css")
+
+if (-not (Test-Path $stylesPath)) {
+    Write-Warning "CSS styles directory not found: $stylesPath"
+    Write-Warning "Reports may not render correctly. Please ensure Config/Styles/ directory structure exists."
+} else {
+    $missingFiles = @()
+    foreach ($file in $requiredCoreFiles) {
+        $filePath = Join-Path $stylesPath $file
+        if (-not (Test-Path $filePath)) {
+            $missingFiles += $file
+        }
     }
-    catch {
-        Write-Warning "Failed to load $($file.Name): $_"
+    if (Test-Path $componentsPath) {
+        foreach ($file in $requiredComponents) {
+            $filePath = Join-Path $componentsPath $file
+            if (-not (Test-Path $filePath)) {
+                $missingFiles += $file
+            }
+        }
+    } else {
+        Write-Warning "CSS components directory not found: $componentsPath"
+    }
+    if ($missingFiles.Count -gt 0) {
+        Write-Warning "Missing CSS files: $($missingFiles -join ', ')"
+        Write-Warning "Reports may not render correctly."
+    } else {
+        Write-Verbose "CSS structure validated successfully"
     }
 }
 
-# 2. Helpers (grundläggande helper-funktioner)
+# Ladda alla dependencies i rätt ordning
+# 1. Helpers (grundläggande helper-funktioner, inkluderar konstanter och definitioner)
 Write-Host "  Loading Private Helpers..." -ForegroundColor Gray
 Get-ChildItem -Path "$ModuleRoot\Private\Helpers\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
     $file = $_  # Capture file reference BEFORE try/catch
@@ -177,7 +213,7 @@ Get-ChildItem -Path "$ModuleRoot\Private\Helpers\*.ps1" -ErrorAction SilentlyCon
     }
 }
 
-# 3. Scanners (använder helpers)
+# 2. Scanners (använder helpers)
 Write-Host "  Loading Private Scanners..." -ForegroundColor Gray
 Get-ChildItem -Path "$ModuleRoot\Private\Scanners\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
     $file = $_  # Capture file reference BEFORE try/catch
@@ -190,7 +226,7 @@ Get-ChildItem -Path "$ModuleRoot\Private\Scanners\*.ps1" -ErrorAction SilentlyCo
     }
 }
 
-# 4. Collectors (använder helpers)
+# 3. Collectors (använder helpers)
 Write-Host "  Loading Private Collectors..." -ForegroundColor Gray
 Get-ChildItem -Path "$ModuleRoot\Private\Collectors\*.ps1" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 
     $file = $_  # Capture file reference BEFORE try/catch
@@ -225,6 +261,28 @@ Get-ChildItem -Path "$ModuleRoot\Public\*.ps1" -ErrorAction SilentlyContinue | S
     catch {
         Write-Warning "Failed to load $($file.Name): $_"
     }
+}
+
+# 6. Test Data Functions (for test data generation)
+Write-Host "  Loading Test Data Functions..." -ForegroundColor Gray
+$testDataScript = Join-Path $ModuleRoot "Tools\New-TestData.ps1"
+if (Test-Path $testDataScript) {
+    try {
+        # Ensure Test-SingleReport is removed before loading
+        Remove-Item "Function:\Test-SingleReport" -Force -ErrorAction SilentlyContinue
+        . $testDataScript
+        # Verify Test-SingleReport was loaded
+        if (Get-Command Test-SingleReport -ErrorAction SilentlyContinue) {
+            Write-Verbose "Loaded: New-TestData.ps1 (Test-SingleReport available)"
+        } else {
+            Write-Warning "Test-SingleReport function not found after loading New-TestData.ps1"
+        }
+    }
+    catch {
+        Write-Warning "Failed to load test data functions: $_"
+    }
+} else {
+    Write-Warning "Test data script not found: $testDataScript"
 }
 
 Write-Host "`n[OK] All functions loaded! Module initialized and ready to use." -ForegroundColor Green
@@ -1389,7 +1447,17 @@ $userFunctions = @(
     'Test-EOLTracking',
     'Test-CostTracking',
     'Test-RBAC',
-    'Test-RetryAIAnalysis'
+    'Test-RetryAIAnalysis',
+    'Test-SingleReport',
+    'New-TestSecurityData',
+    'New-TestVMBackupData',
+    'New-TestChangeTrackingData',
+    'New-TestCostTrackingData',
+    'New-TestEOLData',
+    'New-TestNetworkInventoryData',
+    'New-TestRBACData',
+    'New-TestAdvisorData',
+    'New-TestAllData'
 )
 
 foreach ($funcName in $userFunctions) {

@@ -1,0 +1,97 @@
+/* Button Component Styles - Consolidated .btn */
+.btn {
+    padding: 8px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-blue);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Variants */
+.btn--primary {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: white;
+}
+
+.btn--primary:hover {
+    background: #4590e6;
+}
+
+.btn--secondary {
+    background: var(--bg-secondary);
+}
+
+.btn--ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-muted);
+}
+
+.btn--ghost:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+
+.btn--close {
+    background: var(--accent-red);
+    border-color: var(--accent-red);
+    color: white;
+}
+
+.btn--close:hover {
+    background: #e55;
+}
+
+/* Size variants */
+.btn--small {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+}
+
+/* Legacy support */
+.btn-clear {
+    padding: 0.5rem 1rem;
+    background-color: var(--text-muted);
+    color: white;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background-color 0.2s;
+}
+
+.btn-clear:hover {
+    background-color: var(--text);
+}
+
+.filter-btn,
+.diagram-btn {
+    padding: 8px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.filter-btn:hover,
+.diagram-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-blue);
+}

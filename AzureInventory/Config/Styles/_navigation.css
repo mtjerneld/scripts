@@ -1,0 +1,38 @@
+/* Navigation Styles */
+.report-nav {
+    background: var(--bg-secondary);
+    padding: 15px 30px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    border-bottom: 1px solid var(--border-color);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.nav-brand {
+    font-weight: 600;
+    font-size: 1.1rem;
+    color: var(--accent-blue);
+    margin-right: 30px;
+}
+
+.nav-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+    font-size: 0.9rem;
+}
+
+.nav-link:hover {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+}
+
+.nav-link.active {
+    background: var(--accent-blue);
+    color: white;
+}

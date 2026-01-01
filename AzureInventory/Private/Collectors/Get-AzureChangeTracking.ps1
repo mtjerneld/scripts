@@ -467,21 +467,214 @@ function Get-AzureChangeTracking {
             'Microsoft.Web/serverFarms' = 'Web'
         }
         
-        # Security flagging rules
+        # Enhanced Security Flagging System
+        # Define security-sensitive operation patterns with context-aware severity assessment
+        
+        # High Priority Patterns - Critical security operations
         $highPriorityPatterns = @(
-            'Microsoft.Authorization/roleAssignments/write',
-            'Microsoft.Authorization/roleAssignments/delete', # Role assignment removal (high security)
-            'Microsoft.Network/networkSecurityGroups/securityRules/write',
-            'Microsoft.KeyVault/vaults/accessPolicies/write',
-            'Microsoft.KeyVault/vaults/secrets/delete',
-            'Microsoft.Network/publicIPAddresses/write'
+            # RBAC Operations
+            @{ Pattern = 'Microsoft.Authorization/roleAssignments/write'; Reason = 'RBAC role assignment'; Context = 'RBAC' }
+            @{ Pattern = 'Microsoft.Authorization/roleAssignments/delete'; Reason = 'RBAC role assignment removal'; Context = 'RBAC' }
+            
+            # Network Security
+            @{ Pattern = 'Microsoft.Network/networkSecurityGroups/securityRules/write'; Reason = 'NSG security rule change'; Context = 'Network' }
+            @{ Pattern = 'Microsoft.Network/networkSecurityGroups/securityRules/delete'; Reason = 'NSG security rule removal'; Context = 'Network' }
+            @{ Pattern = 'Microsoft.Network/firewallPolicies/ruleCollectionGroups/write'; Reason = 'Firewall policy rule change'; Context = 'Network' }
+            @{ Pattern = 'Microsoft.Network/publicIPAddresses/write'; Reason = 'Public IP address created'; Context = 'Network' }
+            @{ Pattern = 'Microsoft.Network/privateEndpoints/write'; Reason = 'Private endpoint change'; Context = 'Network' }
+            @{ Pattern = 'Microsoft.Network/privateEndpoints/delete'; Reason = 'Private endpoint removal'; Context = 'Network' }
+            
+            # Key Vault Operations
+            @{ Pattern = 'Microsoft.KeyVault/vaults/accessPolicies/write'; Reason = 'Key Vault access policy change'; Context = 'KeyVault' }
+            @{ Pattern = 'Microsoft.KeyVault/vaults/secrets/delete'; Reason = 'Key Vault secret deletion'; Context = 'KeyVault' }
+            @{ Pattern = 'Microsoft.KeyVault/vaults/keys/delete'; Reason = 'Key Vault key deletion'; Context = 'KeyVault' }
+            @{ Pattern = 'Microsoft.KeyVault/vaults/keys/rotate/action'; Reason = 'Key Vault key rotation'; Context = 'KeyVault' }
+            
+            # Storage Security
+            @{ Pattern = 'Microsoft.Storage/storageAccounts/write'; Reason = 'Storage account configuration change'; Context = 'Storage' }
+            @{ Pattern = 'Microsoft.Storage/storageAccounts/regenerateKey/action'; Reason = 'Storage account key regeneration'; Context = 'Storage' }
+            
+            # Database Security
+            @{ Pattern = 'Microsoft.Sql/servers/firewallRules/write'; Reason = 'SQL firewall rule change'; Context = 'Database' }
+            @{ Pattern = 'Microsoft.Sql/servers/firewallRules/delete'; Reason = 'SQL firewall rule removal'; Context = 'Database' }
+            @{ Pattern = 'Microsoft.Sql/servers/administrators/write'; Reason = 'SQL server administrator change'; Context = 'Database' }
+            @{ Pattern = 'Microsoft.DocumentDB/databaseAccounts/firewallRules/write'; Reason = 'Cosmos DB firewall rule change'; Context = 'Database' }
+            
+            # App Service Security
+            @{ Pattern = 'Microsoft.Web/sites/config/write'; Reason = 'App Service configuration change'; Context = 'Web' }
+            @{ Pattern = 'Microsoft.Web/sites/slots/config/write'; Reason = 'App Service slot configuration change'; Context = 'Web' }
+            
+            # Resource Locks
+            @{ Pattern = 'Microsoft.Authorization/locks/delete'; Reason = 'Resource lock removal'; Context = 'Governance' }
+            
+            # Policy Operations
+            @{ Pattern = 'Microsoft.Authorization/policyAssignments/write'; Reason = 'Policy assignment change'; Context = 'Governance' }
+            @{ Pattern = 'Microsoft.Authorization/policyAssignments/delete'; Reason = 'Policy assignment removal'; Context = 'Governance' }
+            
+            # Managed Identity
+            @{ Pattern = 'Microsoft.ManagedIdentity/userAssignedIdentities/assignments/write'; Reason = 'Managed identity assignment'; Context = 'Identity' }
+            
+            # Container Security
+            @{ Pattern = 'Microsoft.ContainerRegistry/registries/webhooks/write'; Reason = 'Container registry webhook change'; Context = 'Container' }
+            @{ Pattern = 'Microsoft.ContainerService/managedClusters/agentPools/write'; Reason = 'AKS node pool change'; Context = 'Container' }
         )
         
+        # Medium Priority Patterns - Important but less critical security operations
         $mediumPriorityPatterns = @(
-            'Microsoft.Authorization/policyExemptions/write',
-            'Microsoft.Management/managementGroups/write',
-            'Microsoft.Insights/diagnosticSettings/delete'
+            @{ Pattern = 'Microsoft.Authorization/policyExemptions/write'; Reason = 'Policy exemption created'; Context = 'Governance' }
+            @{ Pattern = 'Microsoft.Authorization/policyExemptions/delete'; Reason = 'Policy exemption removed'; Context = 'Governance' }
+            @{ Pattern = 'Microsoft.Management/managementGroups/write'; Reason = 'Management group change'; Context = 'Governance' }
+            @{ Pattern = 'Microsoft.Insights/diagnosticSettings/delete'; Reason = 'Diagnostic settings deleted'; Context = 'Monitoring' }
+            @{ Pattern = 'Microsoft.Insights/diagnosticSettings/write'; Reason = 'Diagnostic settings changed'; Context = 'Monitoring' }
+            @{ Pattern = 'Microsoft.Network/networkSecurityGroups/write'; Reason = 'NSG configuration change'; Context = 'Network' }
+            @{ Pattern = 'Microsoft.Network/networkSecurityGroups/delete'; Reason = 'NSG deletion'; Context = 'Network' }
+            @{ Pattern = 'Microsoft.KeyVault/vaults/write'; Reason = 'Key Vault configuration change'; Context = 'KeyVault' }
+            @{ Pattern = 'Microsoft.Storage/storageAccounts/delete'; Reason = 'Storage account deletion'; Context = 'Storage' }
+            @{ Pattern = 'Microsoft.Authorization/locks/write'; Reason = 'Resource lock created'; Context = 'Governance' }
         )
+        
+        # Whitelist patterns - Known safe operations that should not be flagged
+        # These are typically automated processes or low-risk operations
+        $whitelistPatterns = @(
+            'Microsoft.Resources/deployments/write',  # ARM template deployments (handled separately)
+            'Microsoft.Resources/tags/write',          # Tag updates (low risk)
+            'Microsoft.Compute/virtualMachines/start/action',  # VM start (routine operation)
+            'Microsoft.Compute/virtualMachines/deallocate/action',  # VM stop (routine operation)
+            'Microsoft.RecoveryServices/vaults/backup'  # Backup operations (routine)
+        )
+        
+        # Helper function to assess security flag with context awareness
+        function Get-SecurityFlag {
+            param(
+                [string]$OperationName,
+                [string]$OperationType,
+                [string]$ResourceId,
+                [string]$CallerType,
+                [string]$Caller,
+                [hashtable]$RequestBody = $null
+            )
+            
+            # Check whitelist first
+            foreach ($whitelistPattern in $whitelistPatterns) {
+                if ($OperationName -like "*$whitelistPattern*") {
+                    return @{ Flag = $null; Reason = $null }
+                }
+            }
+            
+            # Determine scope from ResourceId
+            $scope = 'Resource'
+            if ($ResourceId) {
+                if ($ResourceId -match '/subscriptions/[^/]+$' -or $ResourceId -match '/subscriptions/[^/]+/resourceGroups/[^/]+$') {
+                    $scope = 'Subscription'
+                } elseif ($ResourceId -match '/resourceGroups/[^/]+$') {
+                    $scope = 'ResourceGroup'
+                }
+            }
+            
+            # Check high priority patterns
+            foreach ($patternInfo in $highPriorityPatterns) {
+                if ($OperationName -like "*$($patternInfo.Pattern)*") {
+                    $baseReason = $patternInfo.Reason
+                    $context = $patternInfo.Context
+                    
+                    # Enhance reason based on context
+                    $reason = $baseReason
+                    
+                    # Add scope information for RBAC
+                    if ($context -eq 'RBAC') {
+                        if ($scope -eq 'Subscription') {
+                            $reason += ' at subscription scope - verify permissions'
+                        } elseif ($scope -eq 'ResourceGroup') {
+                            $reason += ' at resource group scope - verify permissions'
+                        } else {
+                            $reason += ' - verify permissions'
+                        }
+                        
+                        # Add caller type context
+                        if ($CallerType -eq 'ServicePrincipal') {
+                            $reason += ' (Service Principal)'
+                        } elseif ($CallerType -eq 'ManagedIdentity') {
+                            $reason += ' (Managed Identity)'
+                        }
+                    }
+                    # Add direction context for network security
+                    elseif ($context -eq 'Network') {
+                        if ($OperationType -eq 'Delete') {
+                            $reason = $reason -replace 'change', 'removal'
+                            $reason += ' - verify security posture'
+                        } else {
+                            $reason += ' - verify security rules'
+                        }
+                    }
+                    # Add context for Key Vault
+                    elseif ($context -eq 'KeyVault') {
+                        if ($OperationType -eq 'Delete') {
+                            $reason += ' - potential data loss risk'
+                        } else {
+                            $reason += ' - verify access policies'
+                        }
+                    }
+                    # Add context for storage
+                    elseif ($context -eq 'Storage') {
+                        if ($OperationName -like '*regenerateKey*') {
+                            $reason += ' - verify key rotation process'
+                        } else {
+                            $reason += ' - verify access configuration'
+                        }
+                    }
+                    # Add context for database
+                    elseif ($context -eq 'Database') {
+                        if ($OperationType -eq 'Delete') {
+                            $reason += ' - verify firewall rules'
+                        } else {
+                            $reason += ' - verify access rules'
+                        }
+                    }
+                    # Add context for governance
+                    elseif ($context -eq 'Governance') {
+                        if ($OperationType -eq 'Delete') {
+                            $reason += ' - verify compliance impact'
+                        } else {
+                            $reason += ' - verify governance impact'
+                        }
+                    }
+                    
+                    return @{ Flag = 'high'; Reason = $reason }
+                }
+            }
+            
+            # Check medium priority patterns
+            foreach ($patternInfo in $mediumPriorityPatterns) {
+                if ($OperationName -like "*$($patternInfo.Pattern)*") {
+                    $baseReason = $patternInfo.Reason
+                    $context = $patternInfo.Context
+                    
+                    # Enhance reason based on context
+                    $reason = $baseReason
+                    
+                    # Add direction context
+                    if ($OperationType -eq 'Delete') {
+                        if ($context -eq 'Monitoring') {
+                            $reason += ' - verify logging coverage'
+                        } elseif ($context -eq 'Governance') {
+                            $reason += ' - verify compliance impact'
+                        } elseif ($context -eq 'Network') {
+                            $reason += ' - verify network security'
+                        }
+                    } else {
+                        if ($context -eq 'Monitoring') {
+                            $reason += ' - verify logging configuration'
+                        } elseif ($context -eq 'Governance') {
+                            $reason += ' - verify governance impact'
+                        }
+                    }
+                    
+                    return @{ Flag = 'medium'; Reason = $reason }
+                }
+            }
+            
+            return @{ Flag = $null; Reason = $null }
+        }
         
         # Process each activity log entry
         $processedCount = 0
@@ -705,6 +898,9 @@ function Get-AzureChangeTracking {
                     }
                 }
                 
+                # Initialize requestBody for potential use in security assessment
+                $requestBody = $null
+                
                 # Extract additional details from Properties (Title, Details, Description)
                 $changeTitle = $null
                 $changeDescription = $null
@@ -841,46 +1037,16 @@ function Get-AzureChangeTracking {
                     }
                 }
                 
-                # Check security flags
-                $securityFlag = $null
-                $securityReason = $null
+                # Check security flags using enhanced context-aware assessment
+                $securityAssessment = Get-SecurityFlag -OperationName $operationName `
+                    -OperationType $operationType `
+                    -ResourceId $resourceId `
+                    -CallerType $callerType `
+                    -Caller $caller `
+                    -RequestBody $requestBody
                 
-                foreach ($pattern in $highPriorityPatterns) {
-                    if ($operationName -like "*$pattern*") {
-                        $securityFlag = 'high'
-                        if ($operationName -like '*roleAssignments*') {
-                            $securityReason = 'RBAC role assignment - verify permissions'
-                        }
-                        elseif ($operationName -like '*networkSecurityGroups*') {
-                            $securityReason = 'NSG rule change - verify inbound rules'
-                        }
-                        elseif ($operationName -like '*KeyVault*') {
-                            $securityReason = 'Key Vault access policy or secret change'
-                        }
-                        elseif ($operationName -like '*publicIPAddresses*') {
-                            $securityReason = 'Public IP address created - verify exposure'
-                        }
-                        break
-                    }
-                }
-                
-                if (-not $securityFlag) {
-                    foreach ($pattern in $mediumPriorityPatterns) {
-                        if ($operationName -like "*$pattern*") {
-                            $securityFlag = 'medium'
-                            if ($operationName -like '*policyExemptions*') {
-                                $securityReason = 'Policy exemption created - verify compliance'
-                            }
-                            elseif ($operationName -like '*managementGroups*') {
-                                $securityReason = 'Management group change - verify governance'
-                            }
-                            elseif ($operationName -like '*diagnosticSettings*') {
-                                $securityReason = 'Diagnostic settings deleted - verify logging'
-                            }
-                            break
-                        }
-                    }
-                }
+                $securityFlag = $securityAssessment.Flag
+                $securityReason = $securityAssessment.Reason
                 
                 # Create change object - ensure we have at least basic info
                 if (-not $resourceName -and $resourceId) {

@@ -31,7 +31,7 @@ Invoke-Pester -Path .\Tests\ConvertTo-SecurityAIInsights.Tests.ps1
 ## Architecture
 
 ### Module Structure
-- **AzureSecurityAudit.psm1**: Root module that dot-sources all functions from Public/, Private/Helpers/, Private/Scanners/, Private/Config/, Private/Collectors/
+- **AzureSecurityAudit.psm1**: Root module that dot-sources all functions from Public/, Private/Helpers/, Private/Scanners/, Private/Collectors/
 - **AzureSecurityAudit.psd1**: Module manifest defining exported functions
 
 ### Key Directories

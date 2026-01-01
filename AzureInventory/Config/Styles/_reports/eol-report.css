@@ -1,0 +1,181 @@
+/* EOL Report Specific Styles */
+
+/* Chart Controls */
+.section-box .chart-controls {
+    margin-bottom: 16px;
+}
+
+.eol-chart-select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.eol-chart-select:hover {
+    background: var(--bg-hover);
+}
+
+.eol-chart-select:focus {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
+}
+
+/* Timeline Legend */
+.timeline-legend {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+}
+
+.timeline-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.timeline-legend-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.timeline-legend-critical {
+    background: rgba(255, 107, 107, 0.8); /* Red - matches summary card red-border */
+}
+
+.timeline-legend-high {
+    background: rgba(255, 159, 67, 0.8); /* Orange - matches summary card orange-border */
+}
+
+.timeline-legend-medium {
+    background: rgba(254, 202, 87, 0.8); /* Yellow - matches summary card yellow-border */
+}
+
+.timeline-legend-low {
+    background: rgba(0, 210, 106, 0.8); /* Green - matches summary card green-border */
+}
+
+/* Chart Container */
+.chart-container {
+    position: relative;
+    height: 400px;
+    margin-top: 20px;
+}
+
+/* Filter Bar */
+.section-box .eol-filter-bar {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 20px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+}
+
+.section-box .eol-filter-bar .filter-group {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.section-box .eol-filter-bar .filter-group label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.section-box .eol-filter-bar .filter-group input,
+.section-box .eol-filter-bar .filter-group select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    min-width: 180px;
+}
+
+.section-box .eol-filter-bar .filter-group input:focus,
+.section-box .eol-filter-bar .filter-group select:focus {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
+}
+
+.section-box .eol-filter-bar .filter-group select {
+    cursor: pointer;
+}
+
+/* Empty State */
+.eol-empty-state {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.eol-empty-state p {
+    margin: 0;
+}
+
+/* EOL Component Expandable Sections */
+#eolComponents {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* Resource Action Text */
+.resource-action-text {
+    word-break: break-word;
+    overflow-wrap: break-word;
+    margin-bottom: 4px;
+}
+
+.eol-guidance-link-container {
+    margin-top: 4px;
+}
+
+.eol-guidance-link {
+    color: var(--accent-blue) !important;
+    text-decoration: underline !important;
+}
+
+.eol-guidance-link:hover {
+    color: var(--accent-blue-hover) !important;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .section-box .eol-filter-bar {
+        flex-direction: column;
+    }
+    
+    .section-box .eol-filter-bar .filter-group {
+        width: 100%;
+    }
+    
+    .section-box .eol-filter-bar .filter-group input,
+    .section-box .eol-filter-bar .filter-group select {
+        width: 100%;
+        min-width: unset;
+    }
+    
+    .timeline-legend {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    
+    .chart-container {
+        height: 300px;
+    }
+}
+

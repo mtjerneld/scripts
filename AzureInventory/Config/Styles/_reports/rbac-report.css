@@ -1,0 +1,272 @@
+/* RBAC Report Specific Styles */
+
+/* Note: Page header icon is defined in HTML (Export-RBACReport.ps1) */
+
+/* Warning and Info Banners */
+.warning-banner,
+.info-banner {
+    background: rgba(254, 202, 87, 0.15);
+    border: 1px solid var(--accent-yellow);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.info-banner {
+    background: rgba(84, 160, 255, 0.1);
+    border-color: var(--accent-blue);
+}
+
+.warning-banner .banner-icon,
+.info-banner .banner-icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+
+.warning-banner .banner-content strong,
+.info-banner .banner-content strong {
+    color: var(--accent-yellow);
+    display: block;
+}
+
+.info-banner .banner-content strong {
+    color: var(--accent-blue);
+}
+
+.warning-banner .banner-content p,
+.info-banner .banner-content p {
+    margin: 4px 0 0 0;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+/* Principal View Row - Main Container */
+.principal-view-row {
+    border-left-width: 4px;
+    border-left-style: solid;
+    background: var(--bg-surface);
+    border-radius: 10px;
+    margin-bottom: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+}
+
+.principal-view-row.border-blue {
+    border-left-color: var(--accent-blue);
+}
+
+.principal-view-row.border-purple {
+    border-left-color: var(--accent-purple);
+}
+
+.principal-view-row.border-orange {
+    border-left-color: var(--accent-orange);
+}
+
+/* Principal View Header */
+.principal-view-header {
+    cursor: pointer;
+    padding: 16px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-secondary);
+    transition: background 0.2s ease;
+}
+
+.principal-view-header:hover {
+    background: var(--bg-hover);
+}
+
+/* Principal View Info Container */
+.principal-view-info {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Principal View Name - Title with badges */
+.principal-view-name {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.principal-view-name .badge {
+    margin-left: 0;
+}
+
+/* Principal View Subtitle */
+.principal-view-subtitle {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-bottom: 8px;
+    word-break: break-word;
+}
+
+/* Principal View Stats */
+.principal-view-stats {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 8px;
+}
+
+.principal-view-stats span {
+    white-space: nowrap;
+}
+
+/* Principal View Toggle Icon */
+.principal-view-toggle {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+    margin-left: 16px;
+}
+
+.principal-view-row.expanded .principal-view-toggle {
+    transform: rotate(180deg);
+}
+
+/* Principal View Row - Expandable Details */
+.principal-view-row.expanded .principal-view-details {
+    display: block;
+    padding: 20px;
+    background: var(--bg-surface);
+}
+
+.principal-view-row:not(.expanded) .principal-view-details {
+    display: none;
+}
+
+/* Clickable principal view headers */
+.principal-view-header[onclick] {
+    cursor: pointer;
+}
+
+/* Custom Role Details */
+.custom-role-details {
+    display: none;
+}
+
+.custom-role-card.expanded .custom-role-details {
+    display: block;
+}
+
+.custom-role-header {
+    cursor: pointer;
+}
+
+/* Section Content Container */
+.section-content {
+    padding: 0;
+}
+
+/* Section Description Text */
+.section-box .section-description {
+    color: var(--text-secondary);
+    margin-bottom: 15px;
+}
+
+/* Orphaned Principal Info */
+.orphaned-principal-info {
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    font-size: 0.85rem;
+}
+
+.orphaned-principal-info--last {
+    margin-bottom: 15px;
+}
+
+.orphaned-principal-info code {
+    color: var(--accent-purple);
+}
+
+/* N/A Subscription Cell */
+.data-table td .subscription-na {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Filter Section */
+.section-box .filters {
+    margin-top: 15px;
+}
+
+.section-box .filter-section {
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 16px;
+}
+
+.section-box .filter-section .filter-group {
+    flex-shrink: 0;
+    flex-grow: 0;
+}
+
+.section-box .filter-section .filter-group label {
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    width: auto;
+    max-width: none;
+}
+
+.section-box .filter-section .filter-group:has(input[type="checkbox"]) {
+    width: auto;
+    min-width: auto;
+    max-width: none;
+}
+
+.section-box .filter-section .filter-group:has(input[type="checkbox"]) label {
+    width: auto;
+    max-width: none;
+}
+
+.section-box .filter-section .filter-group input[type="checkbox"] {
+    width: auto !important;
+    min-width: auto !important;
+    max-width: none;
+    flex-shrink: 0;
+    padding: 0;
+}
+
+
+/* Table overflow handling in section-box - wrap wide tables for horizontal scrolling */
+.section-box > .data-table {
+    margin-top: 0;
+    width: 100%;
+}
+
+/* Table container wrapper for horizontal scrolling on wide tables */
+.table-container {
+    overflow-x: auto;
+    margin-top: 15px;
+    width: 100%;
+}
+
+.section-box .table-container {
+    margin-top: 0;
+}
+
+/* Ensure data-table maintains proper table layout */
+.data-table {
+    min-width: 100%;
+}
+
+/* Note: Expandable sections, badges, and tables use component CSS from _components/ */
+

@@ -1,0 +1,376 @@
+/* Card Component Styles - Consolidated .card with modifiers */
+.card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.card__header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.card__title {
+    font-weight: 600;
+    font-size: 1.1rem;
+}
+
+.card__body {
+    padding: 24px;
+}
+
+/* Summary card variant */
+.card--summary {
+    padding: 20px;
+    text-align: center;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card--summary:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.card--summary .card__value,
+.summary-card .value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.card--summary .card__label,
+.summary-card .label {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-top: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Color variants for summary cards */
+.card--summary.card--total .card__value,
+.summary-card.total .value {
+    color: var(--accent-blue);
+}
+
+.card--summary.card--resources .card__value,
+.summary-card.resources .value {
+    color: var(--text-secondary);
+}
+
+.card--summary.card--cost .card__value,
+.summary-card.cost .value {
+    color: var(--accent-green);
+}
+
+.card--summary.card--security .card__value,
+.summary-card.security .value {
+    color: var(--accent-red);
+}
+
+.card--summary.card--reliability .card__value,
+.summary-card.reliability .value {
+    color: var(--accent-orange);
+}
+
+.card--summary.card--performance .card__value,
+.summary-card.performance .value {
+    color: var(--accent-purple);
+}
+
+.card--summary.card--savings .card__value,
+.summary-card.savings .value {
+    color: var(--accent-green);
+}
+
+.card--summary.card--protected .card__value,
+.summary-card.protected .value {
+    color: var(--accent-green);
+}
+
+.card--summary.card--unprotected .card__value,
+.summary-card.unprotected .value {
+    color: var(--accent-red);
+}
+
+.card--summary.card--running .card__value,
+.summary-card.running .value {
+    color: var(--accent-blue);
+}
+
+.card--summary.card--stopped .card__value,
+.summary-card.stopped .value {
+    color: var(--accent-yellow);
+}
+
+.card--summary.card--rate .card__value,
+.summary-card.rate .value {
+    color: var(--accent-purple);
+}
+
+.card--summary.card--critical .card__value,
+.summary-card.critical .summary-card-value {
+    color: var(--danger);
+}
+
+.card--summary.card--high .card__value,
+.summary-card.high .summary-card-value {
+    color: var(--accent-orange);
+}
+
+.card--summary.card--medium .card__value,
+.summary-card.medium .summary-card-value {
+    color: var(--warning);
+}
+
+.card--summary.card--low .card__value,
+.summary-card.low .summary-card-value {
+    color: var(--info);
+}
+
+/* Score card variant */
+.card--score,
+.score-card {
+    background: var(--bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1.5rem;
+    text-align: center;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card--score:hover,
+.score-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.card--score .card__value,
+.score-card .score-value {
+    font-size: 2.5rem;
+    font-weight: 700;
+    line-height: 1.2;
+    margin: 0.5rem 0;
+}
+
+.card--score .card__label,
+.score-card .score-label {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.5rem;
+}
+
+.card--score .card__details,
+.score-card .score-details {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
+}
+
+.card--score.score-excellent .card__value,
+.score-card.score-excellent .score-value {
+    color: var(--success);
+}
+
+.card--score.score-good .card__value,
+.score-card.score-good .score-value {
+    color: var(--accent-blue);
+}
+
+.card--score.score-fair .card__value,
+.score-card.score-fair .score-value {
+    color: var(--warning);
+}
+
+.card--score.score-poor .card__value,
+.score-card.score-poor .score-value {
+    color: var(--danger);
+}
+
+/* Category score card */
+.category-score-card {
+    background-color: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1rem;
+    text-align: center;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.category-score-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.category-score-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-bottom: 0.5rem;
+}
+
+.category-score-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+}
+
+.category-score-card.score-excellent .category-score-value {
+    color: var(--success);
+}
+
+.category-score-card.score-good .category-score-value {
+    color: var(--accent-blue);
+}
+
+.category-score-card.score-fair .category-score-value {
+    color: var(--warning);
+}
+
+.category-score-card.score-poor .category-score-value {
+    color: var(--danger);
+}
+
+/* Size variants */
+.card--small {
+    padding: 12px 16px;
+}
+
+.card--small .card__value {
+    font-size: 1.5rem;
+}
+
+/* Summary cards grid */
+.summary-cards,
+.summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 16px;
+    margin-bottom: 30px;
+}
+
+.summary-grid {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 20px;
+}
+
+/* Legacy support */
+.summary-card {
+    background: var(--bg);
+    padding: 20px;
+    border-radius: 10px;
+    text-align: center;
+    border: 1px solid var(--border-color);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.summary-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.summary-card-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 8px;
+}
+
+.summary-card-value {
+    font-size: 2.5rem;
+    font-weight: 700;
+    line-height: 1.2;
+    min-height: 3rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Smaller font for longer text values (like "USD 42850/yr") */
+.summary-card-value.savings-value {
+    font-size: 1.8rem;
+    line-height: 1.2;
+    min-height: 3rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Border color variants for summary cards */
+.summary-card.blue-border {
+    border-color: var(--accent-blue);
+}
+
+.summary-card.green-border {
+    border-color: var(--accent-green);
+}
+
+.summary-card.yellow-border {
+    border-color: var(--accent-yellow);
+}
+
+.summary-card.purple-border {
+    border-color: var(--accent-purple);
+}
+
+.summary-card.teal-border {
+    border-color: var(--accent-cyan);
+}
+
+.summary-card.gray-border {
+    border-color: var(--text-muted);
+}
+
+.summary-card.red-border {
+    border-color: var(--accent-red);
+}
+
+.summary-card.orange-border {
+    border-color: var(--accent-orange);
+}
+
+/* Dashboard grid */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 24px;
+    margin-bottom: 30px;
+}
+
+/* Category scores grid */
+.category-scores-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem;
+}
+
+/* Card link */
+.card-link {
+    color: var(--accent-blue);
+    text-decoration: none;
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.card-link:hover {
+    text-decoration: underline;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .summary-cards,
+    .summary-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
+}

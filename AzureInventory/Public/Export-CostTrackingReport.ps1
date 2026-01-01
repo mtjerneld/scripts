@@ -124,8 +124,175 @@ function Export-CostTrackingReport {
     
     # Initially hide resources beyond top 20 (JavaScript will show/hide based on filters)
     # We generate HTML for all resources so JavaScript can recalculate top 20 based on subscription filter
-    $dailyTrend = if ($CostTrackingData.DailyTrend) { $CostTrackingData.DailyTrend } else { @() }
+    # Handle both hashtable and array formats for DailyTrend
+    $dailyTrendRaw = if ($CostTrackingData.DailyTrend) { $CostTrackingData.DailyTrend } else { @() }
+    $dailyTrend = @()
     
+    if ($dailyTrendRaw) {
+        if ($dailyTrendRaw -is [hashtable]) {
+            # Convert hashtable to array (Collect-CostData returns hashtable keyed by date string)
+            $dailyTrend = @($dailyTrendRaw.Values | Sort-Object { $_.Date })
+        } elseif ($dailyTrendRaw -is [System.Array] -or $dailyTrendRaw -is [System.Collections.IList]) {
+            # Already an array (test data generator returns array directly)
+            $dailyTrend = @($dailyTrendRaw)
+        } elseif ($dailyTrendRaw -is [PSCustomObject] -or $dailyTrendRaw -is [PSObject]) {
+            # Single object, wrap in array
+            $dailyTrend = @($dailyTrendRaw)
+        } else {
+            # Unknown type, attempt to enumerate
+            $dailyTrend = @($dailyTrendRaw)
+        }
+    }
+    
+    # Calculate cost increases for resources (compare first half vs second half, similar to trend calculation)
+    $resourceIncreaseData = @{}  # Store increase data keyed by resource name
+    if ($dailyTrend.Count -ge 4) {
+        $totalDays = $dailyTrend.Count
+        $daysPerHalf = [math]::Floor($totalDays / 2)
+        $firstHalfDays = $dailyTrend[0..($daysPerHalf - 1)]
+        $secondHalfDays = $dailyTrend[($totalDays - $daysPerHalf)..($totalDays - 1)]
+        
+        # Get all unique resource names from daily trend
+        $allResourceNamesInTrend = [System.Collections.Generic.HashSet[string]]::new()
+        foreach ($day in $dailyTrend) {
+            if ($day.ByResource) {
+                foreach ($resKey in $day.ByResource.Keys) {
+                    if ($resKey -and $resKey -ne 'Other') {
+                        [void]$allResourceNamesInTrend.Add($resKey)
+                    }
+                }
+            }
+        }
+        
+        # Calculate costs per resource for each half
+        foreach ($resName in $allResourceNamesInTrend) {
+            $firstHalfCost = 0
+            $secondHalfCost = 0
+            
+            # Sum costs for first half
+            foreach ($day in $firstHalfDays) {
+                if ($day.ByResource -and $day.ByResource.ContainsKey($resName)) {
+                    $resData = $day.ByResource[$resName]
+                    $cost = if ($resData.CostLocal) { $resData.CostLocal } else { 0 }
+                    $firstHalfCost += $cost
+                }
+            }
+            
+            # Sum costs for second half
+            foreach ($day in $secondHalfDays) {
+                if ($day.ByResource -and $day.ByResource.ContainsKey($resName)) {
+                    $resData = $day.ByResource[$resName]
+                    $cost = if ($resData.CostLocal) { $resData.CostLocal } else { 0 }
+                    $secondHalfCost += $cost
+                }
+            }
+            
+            # Calculate percentage increase (only if first half > 0)
+            $increasePercent = 0
+            $increaseAmount = $secondHalfCost - $firstHalfCost
+            if ($firstHalfCost -gt 0) {
+                $increasePercent = (($secondHalfCost - $firstHalfCost) / $firstHalfCost) * 100
+            } elseif ($secondHalfCost -gt 0) {
+                # If first half was 0 but second half has cost, it's a new resource (100%+ increase)
+                $increasePercent = 1000  # Use large number to prioritize new resources
+            }
+            
+            # Only store if there's an increase
+            if ($increaseAmount -gt 0) {
+                $resourceIncreaseData[$resName] = @{
+                    ResourceName = $resName
+                    FirstHalfCost = $firstHalfCost
+                    SecondHalfCost = $secondHalfCost
+                    IncreaseAmount = $increaseAmount
+                    IncreasePercent = $increasePercent
+                }
+            }
+        }
+    }
+    
+    # Now match with actual resource objects from topResources (or rawData) and sort by increase amount
+    $increasedResourcesWithObjects = @()
+    foreach ($resName in $resourceIncreaseData.Keys) {
+        # Find the resource object - check topResources first, then rawData
+        $resObj = $topResources | Where-Object { $_.ResourceName -eq $resName } | Select-Object -First 1
+        if (-not $resObj -and $rawData.Count -gt 0) {
+            # Try to find in rawData - match by ResourceName (case-insensitive)
+            $resItem = $rawData | Where-Object { $_.ResourceName -and $_.ResourceName -eq $resName } | Select-Object -First 1
+            if ($resItem) {
+                # Aggregate costs for all entries with this resource name
+                $matchingItems = $rawData | Where-Object { $_.ResourceName -eq $resName }
+                $resObj = [PSCustomObject]@{
+                    ResourceId = $resItem.ResourceId
+                    ResourceName = $resItem.ResourceName
+                    ResourceGroup = $resItem.ResourceGroup
+                    ResourceType = $resItem.ResourceType
+                    SubscriptionName = $resItem.SubscriptionName
+                    SubscriptionId = $resItem.SubscriptionId
+                    CostLocal = ($matchingItems | Measure-Object -Property CostLocal -Sum).Sum
+                    CostUSD = ($matchingItems | Measure-Object -Property CostUSD -Sum).Sum
+                }
+            }
+        }
+        
+        # If still no match, create a basic resource object from daily trend data
+        if (-not $resObj) {
+            # Try to get resource info from any day's ByResource entry
+            $trendResourceInfo = $null
+            foreach ($day in $dailyTrend) {
+                if ($day.ByResource -and $day.ByResource.ContainsKey($resName)) {
+                    $dayResData = $day.ByResource[$resName]
+                    # Try to get subscription name from BySubscription
+                    $subName = $null
+                    if ($dayResData.BySubscription) {
+                        $subKeys = $dayResData.BySubscription.Keys
+                        if ($subKeys.Count -gt 0) {
+                            $subName = $subKeys[0]
+                        }
+                    }
+                    # Try to get category (and infer resource type)
+                    $category = $null
+                    if ($dayResData.ByCategory) {
+                        $catKeys = $dayResData.ByCategory.Keys
+                        if ($catKeys.Count -gt 0) {
+                            $category = $catKeys[0]
+                        }
+                    }
+                    
+                    $trendResourceInfo = @{
+                        SubscriptionName = $subName
+                        Category = $category
+                    }
+                    break
+                }
+            }
+            
+            # Create minimal resource object
+            $resObj = [PSCustomObject]@{
+                ResourceId = ""  # Unknown
+                ResourceName = $resName
+                ResourceGroup = ""  # Unknown
+                ResourceType = ""  # Unknown
+                SubscriptionName = if ($trendResourceInfo) { $trendResourceInfo.SubscriptionName } else { "" }
+                SubscriptionId = ""  # Unknown
+                CostLocal = $resourceIncreaseData[$resName].SecondHalfCost  # Use second half cost as estimate
+                CostUSD = $resourceIncreaseData[$resName].SecondHalfCost
+            }
+        }
+        
+        if ($resObj) {
+            $increasedResourcesWithObjects += [PSCustomObject]@{
+                Resource = $resObj
+                IncreaseData = $resourceIncreaseData[$resName]
+            }
+        }
+    }
+    
+    # Sort by increase amount (descending) and get top 20
+    $topIncreasedResources = @($increasedResourcesWithObjects |
+        Sort-Object { $_.IncreaseData.IncreaseAmount } -Descending |
+        Select-Object -First 20 |
+        ForEach-Object { $_.Resource })
+
     # Calculate trend (compare first half vs second half of period)
     # Remove highest and lowest day from each half to reduce outlier impact
     $trendPercent = 0
@@ -166,8 +333,60 @@ function Export-CostTrackingReport {
     }
     
     # Prepare subscription data as array (sorted by cost descending)
-    # Note: Using { $_.CostUSD } because these are hashtables, not PSCustomObjects
-    $subscriptionsArray = @($bySubscription.Values | Sort-Object { $_.CostUSD } -Descending)
+    # Convert hashtable values to PSCustomObjects for reliable property access
+    # Use hashtable keys as fallback for Name if not present in value
+    $subscriptionsArray = @($bySubscription.GetEnumerator() | ForEach-Object {
+        $key = $_.Key
+        $ht = $_.Value
+        [PSCustomObject]@{
+            Name = if ($ht -is [hashtable] -and $ht.ContainsKey('Name') -and $ht['Name']) { 
+                $ht['Name'] 
+            } elseif ($ht -is [PSCustomObject] -and $ht.Name) {
+                $ht.Name
+            } else { 
+                $key  # Use hashtable key as fallback
+            }
+            SubscriptionId = if ($ht -is [hashtable] -and $ht.ContainsKey('SubscriptionId') -and $ht['SubscriptionId']) { 
+                $ht['SubscriptionId'] 
+            } elseif ($ht -is [PSCustomObject] -and $ht.SubscriptionId) {
+                $ht.SubscriptionId
+            } else { 
+                "" 
+            }
+            CostLocal = if ($ht -is [hashtable] -and $ht.ContainsKey('CostLocal')) { 
+                $ht['CostLocal'] 
+            } elseif ($ht -is [PSCustomObject] -and $ht.CostLocal) {
+                $ht.CostLocal
+            } else { 
+                0 
+            }
+            CostUSD = if ($ht -is [hashtable] -and $ht.ContainsKey('CostUSD')) { 
+                $ht['CostUSD'] 
+            } elseif ($ht -is [PSCustomObject] -and $ht.CostUSD) {
+                $ht.CostUSD
+            } else { 
+                0 
+            }
+            Currency = if ($ht -is [hashtable] -and $ht.ContainsKey('Currency') -and $ht['Currency']) { 
+                $ht['Currency'] 
+            } elseif ($ht -is [PSCustomObject] -and $ht.Currency) {
+                $ht.Currency
+            } else { 
+                "USD" 
+            }
+            ItemCount = if ($ht -is [hashtable] -and $ht.ContainsKey('ItemCount')) { 
+                $ht['ItemCount'] 
+            } elseif ($ht -is [hashtable] -and $ht.ContainsKey('MeterCount')) { 
+                $ht['MeterCount'] 
+            } elseif ($ht -is [PSCustomObject] -and $ht.ItemCount) {
+                $ht.ItemCount
+            } elseif ($ht -is [PSCustomObject] -and $ht.MeterCount) {
+                $ht.MeterCount
+            } else { 
+                0 
+            }
+        }
+    } | Sort-Object { $_.CostUSD } -Descending)
     
     # Prepare categories data as array (sorted by cost descending)
     $categoriesArray = @($byMeterCategory.Values | Sort-Object { $_.CostUSD } -Descending)
@@ -255,12 +474,55 @@ function Export-CostTrackingReport {
         $chartDatasetsByResource[$resName] = @()
     }
     
-    foreach ($day in ($dailyTrend | Sort-Object { $_.Date })) {
-        $chartLabels += $day.DateString
+    # Sort daily trend by Date, handling null dates gracefully
+    # Handle both array and single object cases, and ensure we have valid data
+    $sortedDailyTrend = @()
+    if ($dailyTrend) {
+        if ($dailyTrend -is [System.Array]) {
+            if ($dailyTrend.Count -gt 0) {
+                $sortedDailyTrend = $dailyTrend | Where-Object { 
+                    $null -ne $_ -and ($null -ne $_.Date -or $_.DateString)
+                } | Sort-Object { 
+                    if ($_.Date) { $_.Date } elseif ($_.DateString) { [DateTime]::Parse($_.DateString) } else { [DateTime]::MinValue }
+                }
+            }
+        } elseif ($dailyTrend -is [PSCustomObject] -or $dailyTrend -is [Hashtable]) {
+            # Single object, wrap in array
+            if ($null -ne $dailyTrend.Date -or $dailyTrend.DateString) {
+                $sortedDailyTrend = @($dailyTrend)
+            }
+        }
+    }
+    
+    foreach ($day in $sortedDailyTrend) {
+        # Get date string - try DateString first, then generate from Date, then empty string
+        $dayDateString = $null
+        if ($day.DateString -and $day.DateString.ToString().Trim() -ne '') {
+            $dayDateString = $day.DateString.ToString().Trim()
+        } elseif ($day.Date) {
+            try {
+                if ($day.Date -is [DateTime]) {
+                    $dayDateString = Get-Date $day.Date -Format 'yyyy-MM-dd'
+                } elseif ($day.Date -is [String]) {
+                    $dayDateString = (Get-Date $day.Date -Format 'yyyy-MM-dd')
+                } else {
+                    $dayDateString = $day.Date.ToString()
+                }
+            } catch {
+                $dayDateString = $null
+            }
+        }
         
-        # Build raw daily data for JavaScript filtering
+        if ($dayDateString) {
+            $chartLabels += $dayDateString
+        } else {
+            # Skip days without valid dates
+            continue
+        }
+        
+        # Build raw daily data for JavaScript filtering (use the same date string)
         $dayData = @{
-            date = $day.DateString
+            date = $dayDateString
             categories = @{}
             subscriptions = @{}
             meters = @{}
@@ -567,9 +829,9 @@ function Export-CostTrackingReport {
                 
                 $meterCardsHtml += @"
                             <div class="meter-card no-expand">
-                                <div class="meter-header">
-                                    <span class="meter-name">$meterNameEncoded</span>
-                                    <span class="meter-cost">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
+                                <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
+                                    <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
+                                    <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
                                     $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
                                     $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
                                     <span class="meter-count">$meterCount records</span>
@@ -579,13 +841,13 @@ function Export-CostTrackingReport {
             }
             
             $categoryHtml += @"
-                        <div class="category-card">
-                            <div class="category-header" onclick="toggleCategory(this, event)">
+                        <div class="category-card collapsed">
+                            <div class="expandable__header category-header collapsed" onclick="toggleCategory(this, event)">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="category-title">$catNameEncoded</span>
                                 <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
                             </div>
-                            <div class="category-content">
+                            <div class="category-content" style="display: none !important;">
 $meterCardsHtml
                             </div>
                         </div>
@@ -599,7 +861,7 @@ $meterCardsHtml
                             <span class="category-title">$resName</span>
                             <span class="category-cost">$currency $resCostLocal (`$$resCostUSD)</span>
                         </div>
-                        <div class="category-content">
+                        <div class="category-content" style="display: none !important;">
                             <div class="resource-info">
                                 <div>
                                     <div><strong>Resource Group:</strong> $resGroup</div>
@@ -613,9 +875,224 @@ $categoryHtml
 "@
     }
     
+    # Generate Top 20 Cost Increase Drivers HTML (similar structure to top resources)
+    $topIncreasedResourcesSectionsHtml = ""
+
+    foreach ($res in $topIncreasedResources) {
+        # Find the increase data for this resource
+        $increaseData = $resourceIncreaseData[$res.ResourceName]
+        if (-not $increaseData) {
+            continue  # Skip if no increase data found
+        }
+        $resId = $res.ResourceId
+        $resName = if ($res.ResourceName) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceName) } else { "N/A" }
+        $resGroup = if ($res.ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceGroup) } else { "N/A" }
+        $resSub = if ($res.SubscriptionName) { [System.Web.HttpUtility]::HtmlEncode($res.SubscriptionName) } else { "N/A" }
+        $resType = if ($res.ResourceType) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceType) } else { "N/A" }
+        $increaseAmount = Format-NumberWithSeparator -Number $increaseData.IncreaseAmount
+        $increasePercent = [math]::Round($increaseData.IncreasePercent, 1)
+        $increasePercentDisplay = if ($increasePercent -gt 1000) { "New" } else { "$increasePercent%" }
+        
+        # Get all cost data for this resource from raw data
+        # Try matching by ResourceId first, then fall back to ResourceName if ResourceId is empty
+        $resourceData = @()
+        if ($resId -and -not [string]::IsNullOrWhiteSpace($resId)) {
+            $resourceData = $rawData | Where-Object { $_.ResourceId -eq $resId }
+        }
+        # Fall back to ResourceName matching if no match by ResourceId
+        if ($resourceData.Count -eq 0 -and $resName -and $resName -ne "N/A") {
+            $resourceData = $rawData | Where-Object { $_.ResourceName -eq $resName }
+        }
+        
+        # Group by Meter Category (reuse same logic as top resources)
+        $categoryGroups = $resourceData | Group-Object MeterCategory
+        $categoryHtml = ""
+        
+        foreach ($catGroup in ($categoryGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+            $catName = $catGroup.Name
+            if ([string]::IsNullOrWhiteSpace($catName)) {
+                $catName = "Unknown"
+            }
+            $catItems = $catGroup.Group
+            $catCostLocal = ($catItems | Measure-Object -Property CostLocal -Sum).Sum
+            $catCostUSD = ($catItems | Measure-Object -Property CostUSD -Sum).Sum
+            $catCostLocalRounded = Format-NumberWithSeparator -Number $catCostLocal
+            $catCostUSDRounded = Format-NumberWithSeparator -Number $catCostUSD
+            $catNameEncoded = [System.Web.HttpUtility]::HtmlEncode($catName)
+            
+            # Group by Meter within category
+            $meterGroups = $catItems | Group-Object Meter
+            $meterCardsHtml = ""
+            
+            foreach ($meterGroup in ($meterGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                $meterName = $meterGroup.Name
+                if ([string]::IsNullOrWhiteSpace($meterName)) {
+                    $meterName = "Unknown"
+                }
+                $meterItems = $meterGroup.Group
+                $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
+                $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
+                $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
+                $meterUnitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
+                $meterUnitOfMeasure = if ($meterUnitOfMeasureGroups.Count -gt 0) {
+                    ($meterUnitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
+                } else { "" }
+                $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
+                $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
+                $meterCostLocalRounded = Format-NumberWithSeparator -Number $meterCostLocal
+                $meterCostUSDRounded = Format-NumberWithSeparator -Number $meterCostUSD
+                $meterNameEncoded = [System.Web.HttpUtility]::HtmlEncode($meterName)
+                $meterCount = $meterItems.Count
+                $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
+                $unitPriceDisplay = if ($meterUnitPrice -gt 0) { Format-NumberWithSeparator -Number $meterUnitPrice } else { "" }
+                $unitPriceUSDDisplay = if ($meterUnitPriceUSD -gt 0) { Format-NumberWithSeparator -Number $meterUnitPriceUSD } else { "" }
+                
+                $meterCardsHtml += @"
+                            <div class="meter-card no-expand">
+                                <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
+                                    <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
+                                    <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
+                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
+                                    $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
+                                    <span class="meter-count">$meterCount records</span>
+                                </div>
+                            </div>
+"@
+            }
+            
+            $categoryHtml += @"
+                        <div class="category-card collapsed">
+                            <div class="expandable__header category-header collapsed" onclick="toggleCategory(this, event)">
+                                <span class="expand-arrow">&#9654;</span>
+                                <span class="category-title">$catNameEncoded</span>
+                                <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
+                            </div>
+                            <div class="category-content" style="display: none !important;">
+$meterCardsHtml
+                            </div>
+                        </div>
+"@
+        }
+        
+        $topIncreasedResourcesSectionsHtml += @"
+                    <div class="category-card resource-card increased-cost-card" data-subscription="$resSub">
+                        <div class="category-header" onclick="toggleCategory(this, event)">
+                            <span class="expand-arrow">&#9654;</span>
+                            <span class="category-title">$resName</span>
+                            <span class="category-cost">+$currency $increaseAmount ($increasePercentDisplay)</span>
+                        </div>
+                        <div class="category-content" style="display: none !important;">
+                            <div class="resource-info">
+                                <div>
+                                    <div><strong>Resource Group:</strong> $resGroup</div>
+                                    <div><strong>Subscription:</strong> $resSub</div>
+                                    <div><strong>Type:</strong> $resType</div>
+                                    <div><strong>Cost Increase:</strong> +$currency $increaseAmount ($increasePercentDisplay)</div>
+                                </div>
+                            </div>
+$categoryHtml
+                        </div>
+                    </div>
+"@
+    }
+
     # Generate category sections HTML with drilldown (4 levels: Category > SubCategory > Meter > Resource)
     $categorySectionsHtml = ""
     $meterIdCounter = 0
+    
+    # Build categories structure from rawData if available, otherwise use simple byMeterCategory
+    if ($rawData.Count -gt 0) {
+        # Group raw data by category
+        $categoryGroups = $rawData | Group-Object MeterCategory
+        $categoriesArray = @()
+        foreach ($catGroup in ($categoryGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+            $catName = $catGroup.Name
+            if ([string]::IsNullOrWhiteSpace($catName)) {
+                $catName = "Unknown"
+            }
+            $catItems = $catGroup.Group
+            $catCostLocal = ($catItems | Measure-Object -Property CostLocal -Sum).Sum
+            $catCostUSD = ($catItems | Measure-Object -Property CostUSD -Sum).Sum
+            
+            # Build SubCategories structure
+            $subCatGroups = $catItems | Group-Object MeterSubCategory
+            $subCategories = @{}
+            foreach ($subCatGroup in ($subCatGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                $subCatName = $subCatGroup.Name
+                if ([string]::IsNullOrWhiteSpace($subCatName)) {
+                    $subCatName = "N/A"
+                }
+                $subCatItems = $subCatGroup.Group
+                $subCatCostLocal = ($subCatItems | Measure-Object -Property CostLocal -Sum).Sum
+                $subCatCostUSD = ($subCatItems | Measure-Object -Property CostUSD -Sum).Sum
+                
+                # Build Meters structure
+                $meterGroups = $subCatItems | Group-Object Meter
+                $meters = @{}
+                foreach ($meterGroup in ($meterGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                    $meterName = $meterGroup.Name
+                    if ([string]::IsNullOrWhiteSpace($meterName)) {
+                        $meterName = "Unknown"
+                    }
+                    $meterItems = $meterGroup.Group
+                    $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
+                    $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
+                    $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
+                    $meterUnitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
+                    $meterUnitOfMeasure = if ($meterUnitOfMeasureGroups.Count -gt 0) {
+                        ($meterUnitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
+                    } else { "" }
+                    $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
+                    $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
+                    $meterCount = $meterItems.Count
+                    
+                    # Build Resources structure
+                    $resourceGroups = $meterItems | Where-Object { $_.ResourceName -and -not [string]::IsNullOrWhiteSpace($_.ResourceName) } | Group-Object ResourceName
+                    $resources = @{}
+                    foreach ($resGroup in ($resourceGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                        $resName = $resGroup.Name
+                        $resItems = $resGroup.Group
+                        $resCostLocal = ($resItems | Measure-Object -Property CostLocal -Sum).Sum
+                        $resCostUSD = ($resItems | Measure-Object -Property CostUSD -Sum).Sum
+                        $resources[$resName] = @{
+                            ResourceName = $resName
+                            ResourceGroup = if ($resItems[0].ResourceGroup) { $resItems[0].ResourceGroup } else { "N/A" }
+                            SubscriptionName = if ($resItems[0].SubscriptionName) { $resItems[0].SubscriptionName } else { "N/A" }
+                            CostLocal = $resCostLocal
+                            CostUSD = $resCostUSD
+                        }
+                    }
+                    
+                    $meters[$meterName] = @{
+                        Meter = $meterName
+                        CostLocal = $meterCostLocal
+                        CostUSD = $meterCostUSD
+                        Quantity = $meterQuantity
+                        UnitOfMeasure = $meterUnitOfMeasure
+                        UnitPrice = $meterUnitPrice
+                        UnitPriceUSD = $meterUnitPriceUSD
+                        ItemCount = $meterCount
+                        Resources = $resources
+                    }
+                }
+                
+                $subCategories[$subCatName] = @{
+                    MeterSubCategory = $subCatName
+                    CostLocal = $subCatCostLocal
+                    CostUSD = $subCatCostUSD
+                    Meters = $meters
+                }
+            }
+            
+            $categoriesArray += [PSCustomObject]@{
+                MeterCategory = $catName
+                CostLocal = $catCostLocal
+                CostUSD = $catCostUSD
+                SubCategories = $subCategories
+            }
+        }
+    }
+    
     foreach ($cat in $categoriesArray) {
         $catName = if ($cat.MeterCategory) { [System.Web.HttpUtility]::HtmlEncode($cat.MeterCategory) } else { "Unknown" }
         $catCostLocal = Format-NumberWithSeparator -Number $cat.CostLocal
@@ -677,22 +1154,24 @@ $categoryHtml
                         if ($hasResources) {
                             $meterCardsHtml += @"
                             <div class="meter-card">
-                                <div class="meter-header" onclick="toggleMeter(this)">
+                                <div class="meter-header" onclick="toggleMeter(this)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="expand-arrow">&#9654;</span>
-                                    <span class="meter-name">$meterName</span>
-                                    <span class="meter-cost">$currency $meterCostLocal (`$$meterCostUSD)</span>
-                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
-                                    $(if ($meterUnitPrice) { "<span class='meter-unit-price'>Unit: $currency $meterUnitPrice (`$$meterUnitPriceUSD)</span>" } else { "" })
-                                    <span class="meter-count">$meterCount records</span>
+                                    <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterName</span>
+                                    <div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
+                                        <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap;">$currency $meterCostLocal (`$$meterCostUSD)</span>
+                                        $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
+                                        $(if ($meterUnitPrice) { "<span class='meter-unit-price'>Unit: $currency $meterUnitPrice (`$$meterUnitPriceUSD)</span>" } else { "" })
+                                        <span class="meter-count">$meterCount records</span>
+                                    </div>
                                 </div>
                                 <div class="meter-content">
-                                    <table class="cost-table resource-table">
+                                    <table class="data-table">
                                         <thead>
                                             <tr>
                                                 <th>Resource</th>
                                                 <th>Resource Group</th>
                                                 <th>Subscription</th>
-                                                <th class="text-right">Cost ($currency)</th>
+                                                <th class="text-right">Cost (Local)</th>
                                                 <th class="text-right">Cost (USD)</th>
                                             </tr>
                                         </thead>
@@ -706,9 +1185,9 @@ $resourceRowsHtml
                         } else {
                             $meterCardsHtml += @"
                             <div class="meter-card no-expand">
-                                <div class="meter-header">
-                                    <span class="meter-name">$meterName</span>
-                                    <span class="meter-cost">$currency $meterCostLocal (`$$meterCostUSD)</span>
+                                <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
+                                    <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterName</span>
+                                    <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocal (`$$meterCostUSD)</span>
                                     $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
                                     $(if ($meterUnitPrice) { "<span class='meter-unit-price'>Unit: $currency $meterUnitPrice (`$$meterUnitPriceUSD)</span>" } else { "" })
                                     <span class="meter-count">$meterCount records</span>
@@ -721,12 +1200,12 @@ $resourceRowsHtml
                 
                 $subCatHtml += @"
                         <div class="subcategory-drilldown">
-                            <div class="subcategory-header" onclick="toggleSubCategory(this)">
+                            <div class="expandable__header subcategory-header" onclick="toggleSubCategory(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                 <span class="expand-arrow">&#9654;</span>
-                                <span class="subcategory-name">$subCatName</span>
-                                <span class="subcategory-cost">$currency $subCatCostLocal (`$$subCatCostUSD)</span>
+                                <span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$subCatName</span>
+                                <span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $subCatCostLocal (`$$subCatCostUSD)</span>
                             </div>
-                            <div class="subcategory-content">
+                            <div class="subcategory-content" style="display: none !important;">
 $meterCardsHtml
                             </div>
                         </div>
@@ -735,13 +1214,13 @@ $meterCardsHtml
         }
         
         $categorySectionsHtml += @"
-                    <div class="category-card">
-                        <div class="category-header" onclick="toggleCategory(this, event)">
+                    <div class="category-card collapsed">
+                        <div class="category-header collapsed" onclick="toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$catName</span>
                             <span class="category-cost">$currency $catCostLocal (`$$catCostUSD)</span>
                         </div>
-                        <div class="category-content">
+                        <div class="category-content" style="display: none !important;">
 $subCatHtml
                         </div>
                     </div>
@@ -857,21 +1336,23 @@ $subCatHtml
                         if ($hasResources) {
                             $meterCardsHtml += @"
                             <div class="meter-card">
-                                <div class="meter-header" onclick="toggleMeter(this)">
+                                <div class="meter-header" onclick="toggleMeter(this)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="expand-arrow">&#9654;</span>
-                                    <span class="meter-name">$meterNameEncoded</span>
-                                    <span class="meter-cost">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
-                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
-                                    $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
-                                    <span class="meter-count">$meterCount records</span>
+                                    <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
+                                    <div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
+                                        <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
+                                        $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
+                                        $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
+                                        <span class="meter-count">$meterCount records</span>
+                                    </div>
                                 </div>
                                 <div class="meter-content">
-                                    <table class="cost-table resource-table">
+                                    <table class="data-table">
                                         <thead>
                                             <tr>
                                                 <th>Resource</th>
                                                 <th>Resource Group</th>
-                                                <th class="text-right">Cost ($currency)</th>
+                                                <th class="text-right">Cost (Local)</th>
                                                 <th class="text-right">Cost (USD)</th>
                                             </tr>
                                         </thead>
@@ -885,9 +1366,9 @@ $resourceRowsHtml
                         } else {
                             $meterCardsHtml += @"
                             <div class="meter-card no-expand">
-                                <div class="meter-header">
-                                    <span class="meter-name">$meterNameEncoded</span>
-                                    <span class="meter-cost">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
+                                <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
+                                    <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
+                                    <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
                                     $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
                                     $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
                                     <span class="meter-count">$meterCount records</span>
@@ -899,12 +1380,12 @@ $resourceRowsHtml
                     
                     $subCatHtml += @"
                         <div class="subcategory-drilldown">
-                            <div class="subcategory-header" onclick="toggleSubCategory(this)">
+                            <div class="expandable__header subcategory-header" onclick="toggleSubCategory(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                 <span class="expand-arrow">&#9654;</span>
-                                <span class="subcategory-name">$subCatNameEncoded</span>
-                                <span class="subcategory-cost">$currency $subCatCostLocalRounded (`$$subCatCostUSDRounded)</span>
+                                <span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$subCatNameEncoded</span>
+                                <span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $subCatCostLocalRounded (`$$subCatCostUSDRounded)</span>
                             </div>
-                            <div class="subcategory-content">
+                            <div class="subcategory-content" style="display: none !important;">
 $meterCardsHtml
                             </div>
                         </div>
@@ -912,13 +1393,13 @@ $meterCardsHtml
                 }
                 
                 $categoryHtml += @"
-                        <div class="category-card">
-                            <div class="category-header" onclick="toggleCategory(this, event)">
+                        <div class="category-card collapsed">
+                            <div class="expandable__header category-header collapsed" onclick="toggleCategory(this, event)">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="category-title">$catNameEncoded</span>
                                 <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
                             </div>
-                            <div class="category-content">
+                            <div class="category-content" style="display: none !important;">
 $subCatHtml
                             </div>
                         </div>
@@ -926,13 +1407,13 @@ $subCatHtml
             }
             
             $subscriptionSectionsHtml += @"
-                    <div class="category-card subscription-card" data-subscription="$subNameEncoded">
-                        <div class="category-header" onclick="toggleCategory(this, event)">
+                    <div class="category-card subscription-card collapsed" data-subscription="$subNameEncoded">
+                        <div class="category-header collapsed" onclick="toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$subNameEncoded</span>
                             <span class="category-cost">$currency $subCostLocalRounded (`$$subCostUSDRounded)</span>
                         </div>
-                        <div class="category-content">
+                        <div class="category-content" style="display: none !important;">
 $categoryHtml
                         </div>
                     </div>
@@ -963,591 +1444,6 @@ $categoryHtml
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
 $(Get-ReportStylesheet)
-        /* Cost Tracking specific styles */
-        .summary-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        
-        .summary-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 24px;
-            border: 1px solid var(--border-color);
-            text-align: center;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        
-        .summary-card:hover {
-            transform: translateY(-3px);
-            box-shadow: var(--shadow-md);
-        }
-        
-        .summary-card .value {
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: var(--accent-blue);
-            margin-bottom: 8px;
-        }
-        
-        .summary-card .label {
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
-        .summary-card .trend {
-            font-size: 0.85rem;
-            margin-top: 10px;
-            padding: 4px 8px;
-            border-radius: 4px;
-        }
-        
-        .trend.up {
-            background: rgba(255, 107, 107, 0.15);
-            color: var(--accent-red);
-        }
-        
-        .trend.down {
-            background: rgba(0, 210, 106, 0.15);
-            color: var(--accent-green);
-        }
-        
-        .trend.neutral {
-            background: rgba(136, 136, 136, 0.15);
-            color: var(--text-muted);
-        }
-        
-        /* Trend color classes for summary card value */
-        .summary-card .value.trend-increasing {
-            color: #ff6b6b; /* Red for increasing */
-        }
-        
-        .summary-card .value.trend-decreasing {
-            color: #00d26a; /* Green for decreasing */
-        }
-        
-        .summary-card .value.trend-stable {
-            color: #feca57; /* Yellow for stable */
-        }
-        
-        /* Global filter bar */
-        .global-filter-bar {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 16px 20px;
-            margin-bottom: 30px;
-            border: 1px solid var(--border-color);
-        }
-        
-        .global-filter-bar h3 {
-            margin: 0 0 12px 0;
-            font-size: 0.9rem;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
-        .subscription-filter-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            align-items: center;
-        }
-        
-        .subscription-checkbox {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 12px;
-            background: var(--bg-secondary);
-            border-radius: 6px;
-            cursor: pointer;
-            transition: background 0.2s;
-            font-size: 0.9rem;
-        }
-        
-        .subscription-checkbox:hover {
-            background: var(--bg-hover);
-        }
-        
-        .subscription-checkbox input {
-            cursor: pointer;
-            accent-color: var(--accent-blue);
-        }
-        
-        .filter-actions {
-            display: flex;
-            gap: 10px;
-            margin-left: auto;
-        }
-        
-        .filter-btn {
-            padding: 6px 12px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            color: var(--text-secondary);
-            cursor: pointer;
-            font-size: 0.85rem;
-            transition: all 0.2s;
-        }
-        
-        .filter-btn:hover {
-            background: var(--bg-hover);
-            color: var(--text-primary);
-        }
-        
-        .chart-section {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 24px;
-            margin-bottom: 30px;
-            border: 1px solid var(--border-color);
-        }
-        
-        .chart-section h2 {
-            margin-top: 0;
-            margin-bottom: 20px;
-            color: var(--text-primary);
-        }
-        
-        .chart-controls {
-            display: flex;
-            gap: 15px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
-        
-        .chart-controls select {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 0.9rem;
-        }
-        
-        .chart-container {
-            position: relative;
-            height: 400px;
-            width: 100%;
-        }
-        
-        .section {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 24px;
-            margin-bottom: 30px;
-            border: 1px solid var(--border-color);
-        }
-        
-        .section h2 {
-            margin-top: 0;
-            margin-bottom: 20px;
-            color: var(--text-primary);
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .section h2 .expand-arrow,
-        .global-filter-bar h3 .expand-arrow {
-            font-size: 0.8rem;
-            transition: transform 0.2s;
-            color: var(--accent-blue);
-        }
-        
-        .section h2.expanded .expand-arrow,
-        .global-filter-bar h3.expanded .expand-arrow {
-            transform: rotate(90deg);
-        }
-        
-        .section-content,
-        .subscription-filter-content {
-            display: none;
-        }
-        
-        .section h2.expanded + .section-content,
-        .global-filter-bar h3.expanded + .subscription-filter-content {
-            display: block;
-        }
-        
-        .cost-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 15px;
-        }
-        
-        .cost-table thead {
-            background: var(--bg-secondary);
-        }
-        
-        .cost-table th {
-            padding: 12px 16px;
-            text-align: left;
-            font-weight: 600;
-            color: var(--text-primary);
-            border-bottom: 2px solid var(--border-color);
-            font-size: 0.85rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
-        .cost-table th.text-right,
-        .cost-table td.text-right {
-            text-align: right;
-        }
-        
-        .cost-table td {
-            padding: 12px 16px;
-            border-bottom: 1px solid var(--border-color);
-            color: var(--text-secondary);
-        }
-        
-        .cost-table tbody tr:hover {
-            background: var(--bg-hover);
-        }
-        
-        /* Banded rows (alternating row colors) */
-        .cost-table tbody tr:nth-child(even) {
-            background: rgba(61, 61, 92, 0.3);
-        }
-        
-        .cost-table tbody tr:nth-child(odd) {
-            background: transparent;
-        }
-        
-        .cost-table tbody tr:nth-child(even):hover {
-            background: var(--bg-hover);
-        }
-        
-        .cost-table tbody tr.filtered-out,
-        .meter-card.filtered-out,
-        .subcategory-drilldown.filtered-out,
-        .category-card.filtered-out {
-            display: none;
-        }
-        
-        .cost-value {
-            font-weight: 600;
-            color: var(--text-primary);
-            font-family: 'Consolas', 'Monaco', monospace;
-        }
-        
-        .category-card {
-            background: var(--bg-secondary);
-            border-radius: var(--radius-sm);
-            margin-bottom: 15px;
-            overflow: hidden;
-        }
-        
-        .category-header {
-            padding: 16px 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        
-        .category-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .category-header .expand-arrow {
-            font-size: 0.8rem;
-            transition: transform 0.2s;
-            color: var(--accent-blue);
-            display: inline-block;
-            transform: rotate(0deg);
-        }
-        
-        /* Use direct child selector to only affect the card's own header arrow */
-        .category-card.expanded > .category-header .expand-arrow {
-            transform: rotate(90deg);
-        }
-        
-        .category-title {
-            font-weight: 600;
-            color: var(--text-primary);
-            flex: 1;
-        }
-        
-        .category-cost {
-            color: var(--accent-blue);
-            font-weight: 600;
-            font-family: 'Consolas', 'Monaco', monospace;
-        }
-        
-        .category-content {
-            display: none;
-            padding: 0 20px 20px;
-        }
-        
-        /* Use direct child selector to only affect immediate category-content */
-        .category-card.expanded > .category-content {
-            display: block;
-        }
-        
-        /* Nested category cards (categories inside subscription cards) */
-        .subscription-card .category-content .category-card {
-            margin-top: 10px;
-            margin-bottom: 10px;
-        }
-        
-        .subscription-card .category-content .category-card:first-child {
-            margin-top: 0;
-        }
-        
-        .subscription-card .category-content .category-card:last-child {
-            margin-bottom: 0;
-        }
-        
-        /* Nested category cards in subscription-card inherit the base behavior */
-        /* No override needed since we use direct child selector above */
-        
-        /* Resource cards (top resources section) */
-        .resource-card {
-            margin-bottom: 15px;
-        }
-        
-        .resource-info {
-            background: var(--bg-secondary);
-            border-radius: var(--radius-sm);
-            padding: 12px 20px;
-            margin-bottom: 10px;
-            font-size: 0.9rem;
-        }
-        
-        .resource-info div {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 10px;
-        }
-        
-        .resource-info strong {
-            color: var(--text-primary);
-        }
-        
-        .resource-card .category-content .category-card {
-            margin-top: 10px;
-            margin-bottom: 10px;
-        }
-        
-        .resource-card .category-content .category-card:first-child {
-            margin-top: 0;
-        }
-        
-        .resource-card .category-content .category-card:last-child {
-            margin-bottom: 0;
-        }
-        
-        /* Nested category cards in resource-card inherit the base behavior */
-        /* No override needed since we use direct child selector above */
-        
-        /* SubCategory level */
-        .subcategory-drilldown {
-            margin-top: 10px;
-            background: var(--bg-surface);
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-        }
-        
-        .subcategory-header {
-            padding: 12px 16px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        
-        .subcategory-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .subcategory-header .expand-arrow {
-            font-size: 0.7rem;
-            transition: transform 0.2s;
-            color: var(--accent-blue);
-            display: inline-block;
-            transform: rotate(0deg);
-        }
-        
-        .subcategory-drilldown.expanded .subcategory-header .expand-arrow {
-            transform: rotate(90deg);
-        }
-        
-        .subcategory-name {
-            font-weight: 500;
-            color: var(--text-primary);
-            flex: 1;
-        }
-        
-        .subcategory-cost {
-            color: var(--accent-blue);
-            font-weight: 600;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 0.9rem;
-        }
-        
-        .subcategory-content {
-            display: none;
-            padding: 0 16px 16px;
-        }
-        
-        .subcategory-drilldown.expanded .subcategory-content {
-            display: block;
-        }
-        
-        /* Meter level */
-        .meter-card {
-            margin-top: 8px;
-            background: var(--bg-primary);
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-            border: 1px solid var(--border-color);
-        }
-        
-        .meter-card.no-expand .meter-header {
-            cursor: default;
-        }
-        
-        .meter-header {
-            padding: 10px 14px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        
-        .meter-header:hover {
-            background: var(--bg-hover);
-        }
-        
-        .meter-card.no-expand .meter-header:hover {
-            background: transparent;
-        }
-        
-        .meter-header .expand-arrow {
-            font-size: 0.6rem;
-            transition: transform 0.2s;
-            color: var(--text-muted);
-            display: inline-block;
-            transform: rotate(0deg);
-        }
-        
-        .meter-card.expanded .meter-header .expand-arrow {
-            transform: rotate(90deg);
-        }
-        
-        .meter-name {
-            font-weight: 500;
-            color: var(--text-secondary);
-            flex: 1;
-            font-size: 0.9rem;
-        }
-        
-        .meter-cost {
-            color: var(--accent-green);
-            font-weight: 600;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 0.85rem;
-        }
-        
-        .meter-count {
-            color: var(--text-muted);
-            font-size: 0.8rem;
-        }
-        
-        .meter-quantity {
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-            font-family: 'Consolas', 'Monaco', monospace;
-            margin-left: 10px;
-        }
-        
-        .meter-unit-price {
-            color: var(--accent-blue);
-            font-size: 0.8rem;
-            font-family: 'Consolas', 'Monaco', monospace;
-            margin-left: 10px;
-        }
-        
-        .meter-content {
-            display: none;
-            padding: 0 14px 14px;
-        }
-        
-        .meter-card.expanded .meter-content {
-            display: block;
-        }
-        
-        .resource-table {
-            margin-top: 10px;
-            font-size: 0.85rem;
-        }
-        
-        .resource-table th {
-            font-size: 0.75rem;
-            padding: 8px 12px;
-            text-align: left;
-        }
-        
-        .resource-table th.text-right,
-        .resource-table td.text-right {
-            text-align: right;
-        }
-        
-        .resource-table td {
-            padding: 8px 12px;
-        }
-        
-        /* Banded rows for resource tables */
-        .resource-table tbody tr:nth-child(even) {
-            background: rgba(61, 61, 92, 0.3);
-        }
-        
-        .resource-table tbody tr:nth-child(odd) {
-            background: transparent;
-        }
-        
-        .resource-table tbody tr:nth-child(even):hover {
-            background: var(--bg-hover);
-        }
-        
-        .filter-bar {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 16px 20px;
-            margin-bottom: 20px;
-            border: 1px solid var(--border-color);
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-            align-items: center;
-        }
-        
-        .filter-bar label {
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-        }
-        
-        .filter-bar input {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 0.9rem;
-            width: 250px;
-        }
     </style>
 </head>
 <body>
@@ -1555,7 +1451,7 @@ $(Get-ReportStylesheet)
     
     <div class="container">
         <div class="page-header">
-            <h1>Cost Tracking</h1>
+            <h1>&#128176; Cost Tracking</h1>
             <div class="metadata">
                 <p><strong>Tenant:</strong> $TenantId</p>
                 <p><strong>Scanned:</strong> $timestamp</p>
@@ -1565,46 +1461,34 @@ $(Get-ReportStylesheet)
             </div>
         </div>
         
-        <div class="global-filter-bar">
-            <h3 onclick="toggleSubscriptionFilter(this)" style="cursor: pointer;">
-                <span class="expand-arrow">&#9654;</span> Filter by Subscription
-            </h3>
-            <div class="subscription-filter-content">
-                <div class="subscription-filter-container">
-$subscriptionOptionsHtml
-                    <div class="filter-actions">
-                        <button class="filter-btn" onclick="selectAllSubscriptions()">Select All</button>
-                        <button class="filter-btn" onclick="deselectAllSubscriptions()">Deselect All</button>
-                    </div>
+        <div class="section-box">
+            <h2>Cost Overview</h2>
+            <div class="summary-grid">
+                <div class="summary-card blue-border">
+                    <div class="summary-card-value" id="summary-total-cost-local">$(Format-NumberNoDecimals -Number $totalCostLocal)</div>
+                    <div class="summary-card-label">Total Cost ($currency)</div>
+                </div>
+                <div class="summary-card green-border">
+                    <div class="summary-card-value" id="summary-total-cost-usd">$(Format-NumberNoDecimals -Number $totalCostUSD)</div>
+                    <div class="summary-card-label">Total Cost (USD)</div>
+                </div>
+                <div class="summary-card purple-border">
+                    <div class="summary-card-value" id="summary-subscription-count">$subscriptionCount</div>
+                    <div class="summary-card-label">Subscriptions</div>
+                </div>
+                <div class="summary-card teal-border">
+                    <div class="summary-card-value" id="summary-category-count">$($byMeterCategory.Count)</div>
+                    <div class="summary-card-label">Meter Categories</div>
+                </div>
+                <div class="summary-card $(if ($trendDirection -eq 'up') { 'red-border' } elseif ($trendDirection -eq 'down') { 'green-border' } else { 'gray-border' })">
+                    <div class="summary-card-value $trendColorClass" id="summary-trend-percent">$trendArrow $([math]::Abs($trendPercent))%</div>
+                    <div class="summary-card-label">Cost Trend</div>
                 </div>
             </div>
         </div>
         
-        <div class="summary-cards">
-            <div class="summary-card">
-                <div class="value" id="summary-total-cost-local">$(Format-NumberNoDecimals -Number $totalCostLocal)</div>
-                <div class="label">Total Cost ($currency)</div>
-            </div>
-            <div class="summary-card">
-                <div class="value" id="summary-total-cost-usd">$(Format-NumberNoDecimals -Number $totalCostUSD)</div>
-                <div class="label">Total Cost (USD)</div>
-            </div>
-            <div class="summary-card">
-                <div class="value" id="summary-subscription-count">$subscriptionCount</div>
-                <div class="label">Subscriptions</div>
-            </div>
-            <div class="summary-card">
-                <div class="value" id="summary-category-count">$($byMeterCategory.Count)</div>
-                <div class="label">Meter Categories</div>
-            </div>
-            <div class="summary-card">
-                <div class="value $trendColorClass" id="summary-trend-percent">$trendArrow $([math]::Abs($trendPercent))%</div>
-                <div class="label">Cost Trend</div>
-            </div>
-        </div>
-        
-        <div class="chart-section">
-            <h2>Daily Cost Breakdown</h2>
+        <div class="section-box">
+            <h2>Daily Cost Chart</h2>
             <div class="chart-controls">
                 <select id="chartView" onchange="updateChartView()">
                     <option value="stacked-category">Stacked by Category</option>
@@ -1622,28 +1506,76 @@ $subscriptionOptionsHtml
             </div>
         </div>
         
-        <div class="section">
-            <h2 onclick="toggleSection(this)"><span class="expand-arrow">&#9654;</span> Cost by Subscription</h2>
-            <div class="section-content">
-$subscriptionSectionsHtml
-            </div>
-        </div>
-        
-        <div class="section">
-            <h2 onclick="toggleSection(this)"><span class="expand-arrow">&#9654;</span> Cost by Meter Category</h2>
-            <div class="section-content">
-$categorySectionsHtml
-            </div>
-        </div>
-        
-        <div class="section">
-            <h2 onclick="toggleSection(this)"><span class="expand-arrow">&#9654;</span> Top 20 Resources by Cost</h2>
-            <div class="section-content">
-                <div class="filter-bar">
+        <div class="section-box">
+            <h2>Filters</h2>
+            <div class="global-filter-bar">
+                <div class="filter-bar" style="margin-bottom: 15px;">
                     <label>Search:</label>
-                    <input type="text" id="resourceSearch" placeholder="Filter resources..." oninput="filterResources()">
+                    <input type="text" id="resourceSearch" placeholder="Filter all sections..." oninput="filterResources()">
                 </div>
+                <h3 onclick="toggleSubscriptionFilter(this)">
+                    <span class="expand-arrow">&#9654;</span> Filter by Subscription
+                </h3>
+                <div class="subscription-filter-content">
+                    <div class="subscription-filter-container">
+$subscriptionOptionsHtml
+                        <div class="filter-actions">
+                            <button class="filter-btn" onclick="selectAllSubscriptions()">Select All</button>
+                            <button class="filter-btn" onclick="deselectAllSubscriptions()">Deselect All</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="section-box">
+            <h2>Cost Breakdown</h2>
+            <div class="expandable expandable--collapsed">
+                <div class="expandable__header" onclick="toggleSection(this)">
+                    <div class="expandable__title">
+                        <span class="expand-arrow">&#9654;</span>
+                        <h3>Cost by Subscription</h3>
+                    </div>
+                </div>
+                <div class="expandable__content">
+$subscriptionSectionsHtml
+                </div>
+            </div>
+            
+            <div class="expandable expandable--collapsed">
+                <div class="expandable__header" onclick="toggleSection(this)">
+                    <div class="expandable__title">
+                        <span class="expand-arrow">&#9654;</span>
+                        <h3>Cost by Meter Category</h3>
+                    </div>
+                </div>
+                <div class="expandable__content">
+$categorySectionsHtml
+                </div>
+            </div>
+            
+            <div class="expandable expandable--collapsed">
+                <div class="expandable__header" onclick="toggleSection(this)">
+                    <div class="expandable__title">
+                        <span class="expand-arrow">&#9654;</span>
+                        <h3>Top 20 Resources by Cost</h3>
+                    </div>
+                </div>
+                <div class="expandable__content">
 $topResourcesSectionsHtml
+                </div>
+            </div>
+            
+            <div class="expandable expandable--collapsed">
+                <div class="expandable__header" onclick="toggleSection(this)">
+                    <div class="expandable__title">
+                        <span class="expand-arrow">&#9654;</span>
+                        <h3>Top 20 Cost Increase Drivers</h3>
+                    </div>
+                </div>
+                <div class="expandable__content">
+$topIncreasedResourcesSectionsHtml
+                </div>
             </div>
         </div>
     </div>
@@ -1714,6 +1646,68 @@ $datasetsByResourceJsonString
         
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
+
+            // Initialize: Ensure all meter-cards are collapsed by default
+            document.querySelectorAll('.meter-card:not(.no-expand)').forEach(card => {
+                
+                if (!card.classList.contains('expanded')) {
+                    card.classList.remove('expanded');
+                    const meterHeader = card.querySelector('.meter-header');
+                    if (meterHeader) {
+                        const arrow = meterHeader.querySelector('.expand-arrow');
+                        if (arrow) {
+                            arrow.textContent = '\u25B6'; // ▶ (collapsed)
+                        }
+                    }
+                }
+            });
+            
+            // Initialize: Ensure all category-cards are collapsed by default
+            document.querySelectorAll('.category-card').forEach(card => {
+                // Always remove expanded class to ensure collapsed state
+                card.classList.remove('expanded');
+                const categoryContent = card.querySelector('.category-content');
+                if (categoryContent) {
+                    // Force hide with multiple methods to ensure it works
+                    categoryContent.style.display = 'none';
+                    categoryContent.style.visibility = 'hidden';
+                    categoryContent.style.height = '0';
+                    categoryContent.style.overflow = 'hidden';
+                }
+                const categoryHeader = card.querySelector('.category-header, .expandable__header.category-header');
+                if (categoryHeader) {
+                    const arrow = categoryHeader.querySelector('.expand-arrow');
+                    if (arrow) {
+                        arrow.textContent = '\u25B6'; // ▶ (collapsed)
+                    }
+                }
+            });
+            
+            // Initialize: Ensure all subcategory-drilldowns are collapsed by default
+            document.querySelectorAll('.subcategory-drilldown').forEach(drilldown => {
+                // Always remove expanded class to ensure collapsed state
+                drilldown.classList.remove('expanded');
+                const subcategoryContent = drilldown.querySelector('.subcategory-content');
+                if (subcategoryContent) {
+                    // Force hide with multiple methods to ensure it works - use !important via setProperty
+                    // Also remove any inline styles that might make it visible
+                    subcategoryContent.removeAttribute('style');
+                    subcategoryContent.style.setProperty('display', 'none', 'important');
+                    subcategoryContent.style.setProperty('visibility', 'hidden', 'important');
+                    subcategoryContent.style.setProperty('height', '0', 'important');
+                    subcategoryContent.style.setProperty('overflow', 'hidden', 'important');
+                    subcategoryContent.style.setProperty('max-height', '0', 'important');
+                    subcategoryContent.style.setProperty('opacity', '0', 'important');
+                }
+                const subcategoryHeader = drilldown.querySelector('.subcategory-header, .expandable__header.subcategory-header');
+                if (subcategoryHeader) {
+                    const arrow = subcategoryHeader.querySelector('.expand-arrow');
+                    if (arrow) {
+                        arrow.textContent = '\u25B6'; // ▶ (collapsed)
+                    }
+                }
+            });
+            
             // Initialize selected subscriptions from checkboxes
             document.querySelectorAll('.subscription-checkbox input').forEach(cb => {
                 if (cb.checked) {
@@ -1749,8 +1743,9 @@ $datasetsByResourceJsonString
             // Update chart to show default view (Total Cost)
             updateChart();
             
-            // Initially hide resources beyond top 20 (JavaScript will show correct top 20 based on filters)
-            const resourceCards = document.querySelectorAll('.resource-card');
+            // Initially hide resources beyond top 20 in "Top 20 Resources" section only
+            // Don't hide cards in "Top 20 Cost Increase Drivers" section (they use .increased-cost-card class)
+            const resourceCards = document.querySelectorAll('.resource-card:not(.increased-cost-card)');
             resourceCards.forEach((card, index) => {
                 if (index >= 20) {
                     card.classList.add('filtered-out');
@@ -1759,20 +1754,18 @@ $datasetsByResourceJsonString
         });
         
         function initChart() {
-            const ctx = document.getElementById('costChart').getContext('2d');
+            const ctx = document.getElementById('costChart');
+            if (!ctx) {
+                console.error('Chart canvas element not found');
+                return;
+            }
             
-            // Sort initial datasets by total cost (largest at bottom for stacked chart)
-            const sortedDatasetsByCategory = [...datasetsByCategory].sort((a, b) => {
-                const aTotal = (a.data || []).reduce((sum, val) => sum + val, 0);
-                const bTotal = (b.data || []).reduce((sum, val) => sum + val, 0);
-                return bTotal - aTotal;
-            });
-            
-            costChart = new Chart(ctx, {
+            // Initialize with empty data - updateChart() will populate it
+            costChart = new Chart(ctx.getContext('2d'), {
                 type: 'bar',
                 data: {
                     labels: chartLabels,
-                    datasets: sortedDatasetsByCategory
+                    datasets: []
                 },
                 options: {
                     responsive: true,
@@ -1881,6 +1874,12 @@ $datasetsByResourceJsonString
             // Ensure chart is initialized before updating
             if (!costChart) {
                 console.warn('Chart not initialized yet, skipping update');
+                return;
+            }
+            
+            // Ensure rawDailyData is available
+            if (!rawDailyData || !Array.isArray(rawDailyData) || rawDailyData.length === 0) {
+                console.warn('rawDailyData not available or empty, skipping chart update');
                 return;
             }
             
@@ -2224,9 +2223,11 @@ $datasetsByResourceJsonString
             // Filter category sections, subscription sections, and resource sections
             filterCategorySections();
             
-            // Recalculate and reorder Top 20 resources based on subscription filter
-            // Only if DOM is ready (resource cards exist)
+            // Apply search filter to all sections (if search input exists)
             if (document.getElementById('resourceSearch')) {
+                filterResources();
+            } else {
+                // If no search input, still recalculate top resources with subscription filter
                 recalculateTopResources();
             }
             
@@ -2414,24 +2415,30 @@ $datasetsByResourceJsonString
         }
         
         function filterCategorySections() {
+            // Get search text for combined filtering
+            const searchInput = document.getElementById('resourceSearch');
+            const searchText = searchInput ? searchInput.value.toLowerCase().trim() : '';
+            
             // Filter subscription cards first (for subscription drilldown section)
             document.querySelectorAll('.subscription-card').forEach(subCard => {
                 const subscription = subCard.getAttribute('data-subscription');
-                if (subscription && selectedSubscriptions.size > 0) {
-                    subCard.classList.toggle('filtered-out', !selectedSubscriptions.has(subscription));
-                } else {
-                    subCard.classList.remove('filtered-out');
-                }
+                const matchesSubscription = selectedSubscriptions.size === 0 || 
+                    (subscription && selectedSubscriptions.has(subscription));
+                const cardText = subCard.textContent.toLowerCase();
+                const matchesSearch = searchText === '' || cardText.includes(searchText);
+                
+                subCard.classList.toggle('filtered-out', !matchesSubscription || !matchesSearch);
             });
             
-            // Filter resource rows within meter sections by subscription
+            // Filter resource rows within meter sections by subscription and search
             document.querySelectorAll('.resource-table tbody tr').forEach(row => {
                 const subscription = row.getAttribute('data-subscription');
-                if (subscription && selectedSubscriptions.size > 0) {
-                    row.classList.toggle('filtered-out', !selectedSubscriptions.has(subscription));
-                } else {
-                    row.classList.remove('filtered-out');
-                }
+                const matchesSubscription = selectedSubscriptions.size === 0 || 
+                    (subscription && selectedSubscriptions.has(subscription));
+                const rowText = row.textContent.toLowerCase();
+                const matchesSearch = searchText === '' || rowText.includes(searchText);
+                
+                row.classList.toggle('filtered-out', !matchesSubscription || !matchesSearch);
             });
             
             // Update visibility of meter cards based on whether they have visible resources
@@ -2477,7 +2484,16 @@ $datasetsByResourceJsonString
                     return;
                 }
                 
-                const resourcesContainer = searchInput.closest('.section-content');
+                // Find the Top 20 Resources section by finding the expandable that contains resource-card elements (but not increased-cost-card)
+                const allExpandables = document.querySelectorAll('.expandable__content');
+                let resourcesContainer = null;
+                for (const container of allExpandables) {
+                    if (container.querySelector('.resource-card:not(.increased-cost-card)')) {
+                        resourcesContainer = container;
+                        break;
+                    }
+                }
+                
                 if (!resourcesContainer) {
                     console.warn('resourcesContainer not found, skipping recalculateTopResources');
                     return;
@@ -2489,8 +2505,8 @@ $datasetsByResourceJsonString
                     return;
                 }
                 
-                // Check if resource cards exist
-                const resourceCards = document.querySelectorAll('.resource-card');
+                // Check if resource cards exist (only in Top 20 Resources section, not Cost Increase Drivers)
+                const resourceCards = resourcesContainer.querySelectorAll('.resource-card:not(.increased-cost-card)');
                 if (resourceCards.length === 0) {
                     console.warn('No resource cards found, skipping recalculateTopResources');
                     return;
@@ -2547,17 +2563,9 @@ $datasetsByResourceJsonString
                 
                 const searchText = searchInput.value.toLowerCase();
                 
-                // Store the filter bar (search input and its container)
-                const filterBar = searchInput.closest('.filter-bar');
-                
                 // Remove all resource cards from DOM (temporarily)
                 const cardsToReorder = cardsWithCosts.map(item => item.card);
                 cardsToReorder.forEach(card => card.remove());
-                
-                // Re-add filter bar if it was removed
-                if (filterBar && !resourcesContainer.contains(filterBar)) {
-                    resourcesContainer.insertBefore(filterBar, resourcesContainer.firstChild);
-                }
                 
                 // Filter by subscription first to get resources matching the subscription filter
                 const subscriptionFiltered = cardsWithCosts.filter(item => {
@@ -2632,11 +2640,37 @@ $datasetsByResourceJsonString
         }
         
         function toggleSection(element) {
-            element.classList.toggle('expanded');
+            // Find the closest expandable parent
+            const expandable = element.closest('.expandable');
+            if (expandable) {
+                expandable.classList.toggle('expandable--collapsed');
+                // Update expand arrow - ▶ when collapsed (pointing right = expand), ▼ when expanded (pointing down = collapse)
+                const arrow = element.querySelector('.expand-arrow');
+                if (arrow) {
+                    if (expandable.classList.contains('expandable--collapsed')) {
+                        arrow.textContent = '\u25B6'; // ▶ (collapsed - click to expand)
+                    } else {
+                        arrow.textContent = '\u25BC'; // ▼ (expanded - click to collapse)
+                    }
+                }
+            }
         }
         
         function toggleSubscriptionFilter(element) {
-            element.classList.toggle('expanded');
+            // Toggle the subscription filter content visibility
+            const filterContent = element.nextElementSibling;
+            if (filterContent && filterContent.classList.contains('subscription-filter-content')) {
+                filterContent.classList.toggle('show');
+                // Update expand arrow
+                const arrow = element.querySelector('.expand-arrow');
+                if (arrow) {
+                    if (filterContent.classList.contains('show')) {
+                        arrow.textContent = '\u25BC'; // ▼
+                    } else {
+                        arrow.textContent = '\u25B6'; // ▶
+                    }
+                }
+            }
         }
         
         function toggleCategory(element, event) {
@@ -2644,29 +2678,196 @@ $datasetsByResourceJsonString
             if (event) {
                 event.stopPropagation();
             }
-            const categoryCard = element.parentElement;
+            const categoryCard = element.closest('.category-card');
             if (categoryCard && categoryCard.classList.contains('category-card')) {
+                const wasExpanded = categoryCard.classList.contains('expanded');
                 categoryCard.classList.toggle('expanded');
+                const isNowExpanded = categoryCard.classList.contains('expanded');
+                
+                // Force update display style to ensure CSS is applied
+                const categoryContent = categoryCard.querySelector('.category-content');
+                if (categoryContent) {
+                    if (isNowExpanded) {
+                        categoryContent.style.setProperty('display', 'block', 'important');
+                        categoryContent.style.setProperty('visibility', 'visible', 'important');
+                        categoryContent.style.setProperty('height', 'auto', 'important');
+                        categoryContent.style.setProperty('overflow', 'visible', 'important');
+                    } else {
+                        categoryContent.style.setProperty('display', 'none', 'important');
+                        categoryContent.style.setProperty('visibility', 'hidden', 'important');
+                        categoryContent.style.setProperty('height', '0', 'important');
+                        categoryContent.style.setProperty('overflow', 'hidden', 'important');
+                    }
+                }
+                
+                // Update expand arrow
+                const arrow = element.querySelector('.expand-arrow');
+                if (arrow) {
+                    if (isNowExpanded) {
+                        arrow.textContent = '\u25BC'; // ▼
+                    } else {
+                        arrow.textContent = '\u25B6'; // ▶
+                    }
+                }
             }
         }
         
-        function toggleSubCategory(element) {
-            const subcategoryDrilldown = element.parentElement;
-            if (subcategoryDrilldown && subcategoryDrilldown.classList.contains('subcategory-drilldown')) {
+        function toggleSubCategory(element, event) {
+            if (event) {
+                event.stopPropagation();
+            }
+
+            const subcategoryDrilldown = element.closest('.subcategory-drilldown');
+            if (subcategoryDrilldown) {
+                const wasExpanded = subcategoryDrilldown.classList.contains('expanded');
+                
                 subcategoryDrilldown.classList.toggle('expanded');
+                const isNowExpanded = subcategoryDrilldown.classList.contains('expanded');
+                
+                // Visual feedback removed per user request
+
+                // Force update display style to ensure CSS is applied - use setProperty for !important
+                const subcategoryContent = subcategoryDrilldown.querySelector('.subcategory-content');
+                if (subcategoryContent) {
+                    if (isNowExpanded) {
+                        subcategoryContent.style.setProperty('display', 'block', 'important');
+                        subcategoryContent.style.setProperty('visibility', 'visible', 'important');
+                        subcategoryContent.style.setProperty('height', 'auto', 'important');
+                        subcategoryContent.style.setProperty('overflow', 'visible', 'important');
+                        subcategoryContent.style.setProperty('max-height', 'none', 'important');
+                        subcategoryContent.style.setProperty('opacity', '1', 'important');
+                    } else {
+                        subcategoryContent.style.setProperty('display', 'none', 'important');
+                        subcategoryContent.style.setProperty('visibility', 'hidden', 'important');
+                        subcategoryContent.style.setProperty('height', '0', 'important');
+                        subcategoryContent.style.setProperty('overflow', 'hidden', 'important');
+                        subcategoryContent.style.setProperty('max-height', '0', 'important');
+                        subcategoryContent.style.setProperty('opacity', '0', 'important');
+                    }
+                }
+                
+                // Update expand arrow
+                const arrow = element.querySelector('.expand-arrow');
+                if (arrow) {
+                    if (isNowExpanded) {
+                        arrow.textContent = '\u25BC'; // ▼
+                    } else {
+                        arrow.textContent = '\u25B6'; // ▶
+                    }
+                }
             }
         }
         
         function toggleMeter(element) {
-            const meterCard = element.parentElement;
+            const meterCard = element.closest('.meter-card');
             if (meterCard && meterCard.classList.contains('meter-card')) {
                 meterCard.classList.toggle('expanded');
+                // Update expand arrow rotation
+                const arrow = element.querySelector('.expand-arrow');
+                if (arrow) {
+                    if (meterCard.classList.contains('expanded')) {
+                        arrow.textContent = '\u25BC'; // ▼
+                    } else {
+                        arrow.textContent = '\u25B6'; // ▶
+                    }
+                }
             }
         }
         
         function filterResources() {
-            // Recalculate and reorder resources (this also applies search filter)
-            recalculateTopResources();
+            const searchInput = document.getElementById('resourceSearch');
+            const searchText = searchInput ? searchInput.value.toLowerCase().trim() : '';
+            
+            // Filter subscription cards (Cost by Subscription section) - respect both subscription and search filters
+            document.querySelectorAll('.subscription-card').forEach(card => {
+                const subscription = card.getAttribute('data-subscription');
+                const matchesSubscription = selectedSubscriptions.size === 0 || 
+                    (subscription && selectedSubscriptions.has(subscription));
+                const cardText = card.textContent.toLowerCase();
+                const matchesSearch = searchText === '' || cardText.includes(searchText);
+                
+                card.classList.toggle('filtered-out', !matchesSubscription || !matchesSearch);
+            });
+            
+            // Filter category cards (Cost by Meter Category section) - exclude subscription-card and resource-card
+            document.querySelectorAll('.category-card:not(.subscription-card):not(.resource-card)').forEach(card => {
+                const cardText = card.textContent.toLowerCase();
+                const matchesSearch = searchText === '' || cardText.includes(searchText);
+                if (matchesSearch) {
+                    card.classList.remove('filtered-out');
+                } else {
+                    card.classList.add('filtered-out');
+                }
+            });
+            
+            // Filter subcategory drilldowns (nested in category cards)
+            document.querySelectorAll('.subcategory-drilldown').forEach(subcat => {
+                const subcatText = subcat.textContent.toLowerCase();
+                const matchesSearch = searchText === '' || subcatText.includes(searchText);
+                if (matchesSearch) {
+                    subcat.classList.remove('filtered-out');
+                } else {
+                    subcat.classList.add('filtered-out');
+                }
+            });
+            
+            // Filter meter cards (nested in categories/subcategories)
+            document.querySelectorAll('.meter-card').forEach(card => {
+                const cardText = card.textContent.toLowerCase();
+                const matchesSearch = searchText === '' || cardText.includes(searchText);
+                if (matchesSearch) {
+                    card.classList.remove('filtered-out');
+                } else {
+                    card.classList.add('filtered-out');
+                }
+            });
+            
+            // Filter resource rows in meter sections - respect both subscription and search filters
+            document.querySelectorAll('.resource-table tbody tr').forEach(row => {
+                const subscription = row.getAttribute('data-subscription');
+                const matchesSubscription = selectedSubscriptions.size === 0 || 
+                    (subscription && selectedSubscriptions.has(subscription));
+                const rowText = row.textContent.toLowerCase();
+                const matchesSearch = searchText === '' || rowText.includes(searchText);
+                
+                row.classList.toggle('filtered-out', !matchesSubscription || !matchesSearch);
+            });
+            
+            // Update visibility of parent containers based on visible children
+            // Update meter cards based on visible resource rows
+            document.querySelectorAll('.meter-card').forEach(card => {
+                const visibleRows = card.querySelectorAll('.resource-table tbody tr:not(.filtered-out)');
+                const totalRows = card.querySelectorAll('.resource-table tbody tr');
+                if (totalRows.length > 0 && searchText !== '') {
+                    const cardMatches = card.textContent.toLowerCase().includes(searchText);
+                    card.classList.toggle('filtered-out', !cardMatches && visibleRows.length === 0);
+                }
+            });
+            
+            // Update subcategory drilldowns based on visible meters
+            document.querySelectorAll('.subcategory-drilldown').forEach(subcat => {
+                const visibleMeters = subcat.querySelectorAll('.meter-card:not(.filtered-out)');
+                const totalMeters = subcat.querySelectorAll('.meter-card');
+                if (totalMeters.length > 0 && searchText !== '') {
+                    const subcatMatches = subcat.textContent.toLowerCase().includes(searchText);
+                    subcat.classList.toggle('filtered-out', !subcatMatches && visibleMeters.length === 0);
+                }
+            });
+            
+            // Update category cards based on visible subcategories
+            document.querySelectorAll('.category-card:not(.subscription-card):not(.resource-card)').forEach(cat => {
+                const visibleSubcats = cat.querySelectorAll('.subcategory-drilldown:not(.filtered-out)');
+                const totalSubcats = cat.querySelectorAll('.subcategory-drilldown');
+                if (totalSubcats.length > 0 && searchText !== '') {
+                    const catMatches = cat.textContent.toLowerCase().includes(searchText);
+                    cat.classList.toggle('filtered-out', !catMatches && visibleSubcats.length === 0);
+                }
+            });
+            
+            // Recalculate and reorder Top 20 resources (this also applies search filter to resource cards)
+            if (document.getElementById('resourceSearch')) {
+                recalculateTopResources();
+            }
         }
     </script>
 </body>

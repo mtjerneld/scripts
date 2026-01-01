@@ -59,12 +59,12 @@ function Export-ChangeTrackingReport {
         Select-Object -First 5 | 
         ForEach-Object { [PSCustomObject]@{ ResourceType = $_.Name; Count = $_.Count } }
     
-    # Changes by day (for sparkline) - use ChangeTime instead of Timestamp
-    # First, group changes by day
+    # Changes by day and type (for stacked chart) - use ChangeTime instead of Timestamp
+    # Group changes by day and type
     $changesGrouped = $ChangeTrackingData | 
-        Where-Object { $_.ChangeTime } |
+        Where-Object { $_.ChangeTime -and $_.ChangeType } |
         Group-Object { 
-            if ($_.ChangeTime -is [DateTime]) {
+            $dateKey = if ($_.ChangeTime -is [DateTime]) {
                 $_.ChangeTime.ToString('yyyy-MM-dd')
             } else {
                 try {
@@ -73,13 +73,23 @@ function Export-ChangeTrackingReport {
                     (Get-Date).ToString('yyyy-MM-dd')
                 }
             }
+            "$dateKey|$($_.ChangeType)"
         }
     
-    # Create a hashtable for quick lookup
-    $changesByDate = @{}
+    # Create a nested hashtable for quick lookup: $changesByDateAndType[date][type] = count
+    $changesByDateAndType = @{}
     foreach ($group in $changesGrouped) {
-        $changesByDate[$group.Name] = $group.Count
+        $parts = $group.Name -split '\|'
+        $dateKey = $parts[0]
+        $type = $parts[1]
+        if (-not $changesByDateAndType.ContainsKey($dateKey)) {
+            $changesByDateAndType[$dateKey] = @{}
+        }
+        $changesByDateAndType[$dateKey][$type] = $group.Count
     }
+    
+    # Get all unique change types
+    $allChangeTypes = @($ChangeTrackingData | Where-Object { $_.ChangeType } | Select-Object -ExpandProperty ChangeType -Unique | Sort-Object)
     
     # Generate all 14 days (from 13 days ago to today, inclusive)
     $today = (Get-Date).Date
@@ -87,8 +97,17 @@ function Export-ChangeTrackingReport {
     for ($i = 13; $i -ge 0; $i--) {
         $date = $today.AddDays(-$i)
         $dateKey = $date.ToString('yyyy-MM-dd')
-        $count = if ($changesByDate.ContainsKey($dateKey)) { $changesByDate[$dateKey] } else { 0 }
-        $changesByDay += [PSCustomObject]@{ Date = $date; Count = $count }
+        $dayData = @{ Date = $date; Types = @{}; Total = 0 }
+        foreach ($type in $allChangeTypes) {
+            $count = if ($changesByDateAndType.ContainsKey($dateKey) -and $changesByDateAndType[$dateKey].ContainsKey($type)) {
+                $changesByDateAndType[$dateKey][$type]
+            } else {
+                0
+            }
+            $dayData.Types[$type] = $count
+            $dayData.Total += $count
+        }
+        $changesByDay += [PSCustomObject]$dayData
     }
     
     # Security alerts (high and medium priority)
@@ -96,6 +115,12 @@ function Export-ChangeTrackingReport {
     
     # Get unique subscriptions for filter
     $allSubscriptions = @($ChangeTrackingData | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object)
+    
+    # Get unique resource groups for filter
+    $allResourceGroups = @($ChangeTrackingData | Where-Object { $_.ResourceGroup } | Select-Object -ExpandProperty ResourceGroup -Unique | Sort-Object)
+    
+    # Get unique change types for filter
+    $allChangeTypes = @($ChangeTrackingData | Where-Object { $_.ChangeType } | Select-Object -ExpandProperty ChangeType -Unique | Sort-Object)
     
     # Encode-Html is imported from Private/Helpers/Encode-Html.ps1
     
@@ -164,284 +189,6 @@ function Export-ChangeTrackingReport {
     <title>Azure Change Tracking Report (14 days)</title>
     <style>
 $(Get-ReportStylesheet)
-        /* Change Tracking specific styles */
-        .summary-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 15px;
-            margin-bottom: 30px;
-        }
-        
-        .summary-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 15px;
-            border: 1px solid var(--border-color);
-            text-align: center;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-
-        .summary-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            border-color: var(--accent-primary);
-        }
-        
-        .summary-card .value {
-            font-size: 1.8rem;
-            font-weight: 700;
-            margin-bottom: 5px;
-        }
-        
-        .summary-card.create .value { color: var(--accent-green); }
-        .summary-card.modify .value { color: var(--accent-blue); }
-        .summary-card.delete .value { color: var(--accent-red); }
-        .summary-card.action .value { color: var(--accent-yellow); }
-        .summary-card.resourcehealth .value { color: #9b59b6; }
-        .summary-card.security .value { color: var(--accent-red); }
-        
-        .summary-card .label {
-            color: var(--text-muted);
-            font-size: 0.85rem;
-        }
-        
-        .trend-chart {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 20px;
-            margin-bottom: 30px;
-            border: 1px solid var(--border-color);
-        }
-
-        .chart-labels {
-            display: flex;
-            margin-top: 10px;
-            gap: 2px;
-            padding: 0;
-            color: var(--text-muted);
-            font-size: 0.8rem;
-        }
-        
-        .insights-panel {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 20px;
-            border: 1px solid var(--border-color);
-            margin-bottom: 20px;
-        }
-        
-        .insights-panel h3 {
-            margin-top: 0;
-            margin-bottom: 15px;
-            font-size: 1.1rem;
-        }
-        
-        .insights-list {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-        }
-        
-        .insights-list li {
-            padding: 8px 0;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .insights-list li:last-child {
-            border-bottom: none;
-        }
-        
-        .security-alert {
-            padding: 12px;
-            border-radius: 6px;
-            margin-bottom: 10px;
-            border-left: 4px solid;
-        }
-        
-        .security-alert.high {
-            background: rgba(255, 107, 107, 0.1);
-            border-left-color: var(--accent-red);
-        }
-        
-        .security-alert.medium {
-            background: rgba(254, 202, 87, 0.1);
-            border-left-color: var(--accent-yellow);
-        }
-        
-        .filter-section {
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            padding: 20px;
-            margin-bottom: 30px;
-            border: 1px solid var(--border-color);
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            align-items: center;
-        }
-        
-        .filter-group {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .filter-group label {
-            color: var(--text-secondary);
-            font-size: 0.9rem;
-        }
-        
-        .filter-group input,
-        .filter-group select {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-size: 0.9rem;
-        }
-        
-        .change-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: var(--bg-surface);
-            border-radius: var(--radius-md);
-            overflow: hidden;
-            table-layout: fixed; /* Better performance for large tables */
-        }
-        
-        .change-table thead {
-            background: var(--bg-secondary);
-        }
-        
-        .change-table th {
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-            color: var(--text-primary);
-            border-bottom: 2px solid var(--border-color);
-            width: 12.5%; /* Distribute width evenly or adjust as needed */
-        }
-
-        /* Specific column widths */
-        .change-table th:nth-child(1) { width: 140px; } /* Time */
-        .change-table th:nth-child(2) { width: 100px; } /* Type */
-        .change-table th:nth-child(7) { width: 150px; } /* Caller */
-        .change-table th:nth-child(8) { width: 80px; } /* Security */
-        
-        .change-table td {
-            padding: 12px;
-            border-bottom: 1px solid var(--border-color);
-            word-break: break-word;
-            white-space: normal; /* Ensure wrapping */
-        }
-        
-        .change-table tbody tr.change-row {
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        
-        .change-table tbody tr.change-row:hover {
-            background: var(--bg-hover);
-        }
-        
-        .change-table tbody tr.expanded {
-            background: var(--bg-secondary);
-            border-bottom: none;
-        }
-        
-        /* Security Alerts table - optimized column widths */
-        #security-alerts-section .change-table th:nth-child(1) { width: 15%; } /* Time */
-        #security-alerts-section .change-table th:nth-child(2) { width: 10%; } /* Type */
-        #security-alerts-section .change-table th:nth-child(3) { width: 10%; } /* Alert */
-        #security-alerts-section .change-table th:nth-child(4) { width: 35%; } /* Resource */
-        #security-alerts-section .change-table th:nth-child(5) { width: 30%; } /* Caller */
-        
-        .change-details {
-            display: block; /* Managed by JS rendering */
-            padding: 15px;
-            background: var(--bg-secondary);
-            border-top: 1px solid var(--border-color);
-        }
-        
-        .operation-icon {
-            display: inline-block;
-            width: 24px;
-            height: 24px;
-            border-radius: 4px;
-            text-align: center;
-            line-height: 24px;
-            font-weight: 700;
-            font-size: 0.8rem;
-            margin-right: 8px;
-        }
-        
-        .operation-icon.create { background: rgba(0, 210, 106, 0.2); color: var(--accent-green); }
-        .operation-icon.modify { background: rgba(84, 160, 255, 0.2); color: var(--accent-blue); }
-        .operation-icon.delete { background: rgba(255, 107, 107, 0.2); color: var(--accent-red); }
-        .operation-icon.action { background: rgba(254, 202, 87, 0.2); color: var(--accent-yellow); }
-        .operation-icon.health { background: rgba(52, 152, 219, 0.2); color: var(--accent-blue); }
-        .operation-icon.incident { background: rgba(231, 76, 60, 0.2); color: #e74c3c; }
-        .operation-icon.resourcehealth { background: rgba(155, 89, 182, 0.2); color: #9b59b6; }
-        
-        .security-badge {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.8rem;
-            font-weight: 600;
-        }
-        
-        .security-badge.high {
-            background: rgba(255, 107, 107, 0.2);
-            color: var(--accent-red);
-        }
-        
-        .security-badge.medium {
-            background: rgba(254, 202, 87, 0.2);
-            color: var(--accent-yellow);
-        }
-
-        /* Pagination Styles */
-        .pagination {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 5px;
-            margin-top: 20px;
-        }
-        
-        .pagination button {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            padding: 8px 12px;
-            border-radius: 4px;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        
-        .pagination button:hover:not(:disabled) {
-            background: var(--bg-hover);
-        }
-        
-        .pagination button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        
-        .pagination .page-info {
-            color: var(--text-secondary);
-            font-size: 0.9rem;
-            margin: 0 10px;
-        }
-
-        .pagination .active {
-            background: var(--accent-primary);
-            color: white;
-            border-color: var(--accent-primary);
-        }
     </style>
 </head>
 <body>
@@ -449,7 +196,7 @@ $(Get-ReportStylesheet)
     
     <div class="container">
         <div class="page-header">
-            <h1>Change Tracking (14 days)</h1>
+            <h1>&#128202; Change Tracking (14 days)</h1>
             <div class="metadata">
                 <p><strong>Tenant:</strong> $TenantId</p>
                 <p><strong>Scanned:</strong> $timestamp</p>
@@ -459,55 +206,88 @@ $(Get-ReportStylesheet)
             </div>
         </div>
         
-        <div class="summary-cards">
-            <div class="summary-card create" onclick="setFilter('Type', 'Create')">
-                <div class="value">$creates</div>
-                <div class="label">Created</div>
-            </div>
-            <div class="summary-card modify" onclick="setFilter('Type', 'Update')">
-                <div class="value">$updates</div>
-                <div class="label">Updated</div>
-            </div>
-            <div class="summary-card delete" onclick="setFilter('Type', 'Delete')">
-                <div class="value">$deletes</div>
-                <div class="label">Deleted</div>
-            </div>
-            <div class="summary-card security" onclick="scrollToSecurity()">
-                <div class="value">$totalSecurityAlerts</div>
-                <div class="label">Security Alerts</div>
+        <div class="section-box">
+            <h2>Change Overview</h2>
+            <div class="summary-grid">
+                <div class="summary-card green-border" onclick="setFilter('Type', 'Create')">
+                    <div class="summary-card-value" id="summary-creates">$creates</div>
+                    <div class="summary-card-label">Created</div>
+                </div>
+                <div class="summary-card blue-border" onclick="setFilter('Type', 'Update')">
+                    <div class="summary-card-value" id="summary-updates">$updates</div>
+                    <div class="summary-card-label">Updated</div>
+                </div>
+                <div class="summary-card red-border" onclick="setFilter('Type', 'Delete')">
+                    <div class="summary-card-value" id="summary-deletes">$deletes</div>
+                    <div class="summary-card-label">Deleted</div>
+                </div>
+                <div class="summary-card orange-border" onclick="scrollToSecurity()">
+                    <div class="summary-card-value" id="summary-security">$totalSecurityAlerts</div>
+                    <div class="summary-card-label">Sensitive Operations</div>
+                </div>
             </div>
         </div>
         
-        <div class="trend-chart">
-            <h3 style="margin-top: 0; margin-bottom: 15px;">Changes Over Time (14 days)</h3>
-            <div style="height: 60px; display: flex; align-items: flex-end; gap: 2px;">
+        <div class="section-box">
+            <h2>Changes Over Time (14 days)</h2>
+            <div class="trend-chart" id="trend-chart-container">
+                <div class="chart-bars">
 "@
     
-    # Generate sparkline bars and labels - always show all 14 days
+    # Generate stacked bars and labels - always show all 14 days
     $barsHtml = ""
     $labelsHtml = ""
     
     # Calculate max count for scaling (use at least 1 to avoid division by zero)
-    $maxCount = ($changesByDay | Measure-Object -Property Count -Maximum).Maximum
+    $maxCount = ($changesByDay | Measure-Object -Property Total -Maximum).Maximum
     if ($maxCount -eq 0) { $maxCount = 1 }
+    
+    # Color mapping for change types
+    $typeColors = @{
+        'Create' = 'var(--accent-green)'
+        'Update' = 'var(--accent-blue)'
+        'Delete' = 'var(--accent-red)'
+        'Action' = 'var(--accent-orange)'
+    }
     
     $totalDays = $changesByDay.Count
     $i = 0
     
     foreach ($day in $changesByDay) {
-        # Calculate height (minimum 2px so zero days are still visible)
-        $height = if ($maxCount -gt 0) { 
-            $calculated = [math]::Round(($day.Count / $maxCount) * 100, 0)
-            if ($calculated -eq 0 -and $day.Count -eq 0) { 2 } else { $calculated }
-        } else { 
-            2 
-        }
-        
         $dateStr = $day.Date.ToString('yyyy-MM-dd')
         
-        # Use a slightly different color for zero days to make them visible but distinct
-        $barColor = if ($day.Count -eq 0) { 'var(--border-color)' } else { 'var(--accent-blue)' }
-        $barsHtml += "                <div style='flex: 1; background: $barColor; height: ${height}%; border-radius: 2px 2px 0 0; cursor: pointer;' title='${dateStr}: $($day.Count) changes' onclick='filterByDate(`"$dateStr`")'></div>`n"
+        # Calculate total height percentage for the container
+        $totalHeight = if ($day.Total -eq 0) {
+            2  # 2% for zero days
+        } else {
+            $calculated = [math]::Round(($day.Total / $maxCount) * 100, 0)
+            if ($calculated -lt 5) { 5 } else { $calculated }
+        }
+        
+        # Set height on the container
+        $barHtml = "                    <div class='chart-bar-stack' style='height: ${totalHeight}%;' onclick='filterByDate(`"$dateStr`")' title='${dateStr}: $($day.Total) changes'>`n"
+        
+        if ($day.Total -eq 0) {
+            # Empty day - show a thin border
+            $barHtml += "                        <div class='chart-bar-segment' style='background: var(--border-color); height: 100%;'></div>`n"
+        } else {
+            # Build segments for each type (bottom to top)
+            $segments = @()
+            foreach ($type in $allChangeTypes) {
+                $typeCount = $day.Types[$type]
+                if ($typeCount -gt 0) {
+                    $segmentHeight = [math]::Round(($typeCount / $day.Total) * 100, 1)
+                    $color = if ($typeColors.ContainsKey($type)) { $typeColors[$type] } else { 'var(--accent-blue)' }
+                    $segments += "                        <div class='chart-bar-segment' style='background: $color; height: ${segmentHeight}%;' title='$type : $typeCount'></div>`n"
+                }
+            }
+            
+            # Add segments
+            $barHtml += ($segments -join '')
+        }
+        
+        $barHtml += "                    </div>`n"
+        $barsHtml += $barHtml
         
         # Show labels for first, last, and every 7th day
         $showLabel = ($i -eq 0) -or ($i -eq ($totalDays - 1)) -or ($i % 7 -eq 0)
@@ -520,77 +300,158 @@ $(Get-ReportStylesheet)
         if ($i -eq 0) { $textAlign = "left" }
         elseif ($i -eq ($totalDays - 1)) { $textAlign = "right" }
         
-        $labelsHtml += "                <div style='flex: 1; text-align: $textAlign; visibility: $visibility; font-size: 0.65rem; white-space: nowrap; overflow: visible; min-width: 0;'>$dateLabel</div>`n"
+        $labelClass = "chart-label"
+        if ($textAlign -ne "center") {
+            $labelClass += " chart-label--$textAlign"
+        }
+        if (-not $showLabel) {
+            $labelClass += " chart-label--hidden"
+        }
+        $labelsHtml += "                    <div class='$labelClass'>$dateLabel</div>`n"
         
         $i++
     }
     $html += $barsHtml
     
     $html += @"
-            </div>
-            <div class="chart-labels" style="display: flex; gap: 2px;">
-                $labelsHtml
+                </div>
+                <div class="chart-labels">
+                    $labelsHtml
+                </div>
+                <div class="chart-legend">
+"@
+    
+    # Generate legend items for all change types that exist in data
+    foreach ($type in $allChangeTypes) {
+        $colorClass = switch ($type) {
+            'Create' { 'chart-legend-color--create' }
+            'Update' { 'chart-legend-color--update' }
+            'Delete' { 'chart-legend-color--delete' }
+            'Action' { 'chart-legend-color--action' }
+            default { 'chart-legend-color--update' }
+        }
+        $escapedType = Encode-Html $type
+        $html += "                    <div class='chart-legend-item'><div class='chart-legend-color $colorClass'></div><span>$escapedType</span></div>`n"
+    }
+    
+    $html += @"
+                </div>
             </div>
         </div>
         
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px;">
-            <div class="insights-panel">
-                <h3>Most Changed Resource Types</h3>
-                <ul class="insights-list">
+        <div class="section-box">
+            <h2>Top 5</h2>
+            <div class="insights-grid">
+                <div class="insights-panel">
+                    <h3>Changed Resource Types</h3>
+                    <ul class="insights-list" id="insights-resource-types">
 "@
     
     foreach ($resType in $topResourceTypes) {
         $escapedType = Encode-Html $resType.ResourceType
-        $html += "                    <li><strong>$escapedType</strong> ($($resType.Count) changes)</li>`n"
+        $html += "                        <li><strong>$escapedType</strong> ($($resType.Count) changes)</li>`n"
     }
     
     if ($topResourceTypes.Count -eq 0) {
-        $html += "                    <li style='color: var(--text-muted);'>No resource type data available</li>`n"
+        $html += "                        <li class='text-muted'>No resource type data available</li>`n"
     }
     
     $html += @"
-                </ul>
-            </div>
-            
-            <div class="insights-panel">
-                <h3>Changes by Category</h3>
-                <ul class="insights-list">
+                    </ul>
+                </div>
+                
+                <div class="insights-panel">
+                    <h3>Changes by Category</h3>
+                    <ul class="insights-list" id="insights-categories">
 "@
     
     $changesByCategory = $ChangeTrackingData | 
         Group-Object ResourceCategory | 
         Sort-Object Count -Descending | 
+        Select-Object -First 5 |
         ForEach-Object { [PSCustomObject]@{ Category = $_.Name; Count = $_.Count } }
     
     foreach ($cat in $changesByCategory) {
         $escapedCat = Encode-Html $cat.Category
-        $html += "                    <li><strong>$escapedCat</strong> ($($cat.Count) changes)</li>`n"
+        $html += "                        <li><strong>$escapedCat</strong> ($($cat.Count) changes)</li>`n"
     }
     
     if ($changesByCategory.Count -eq 0) {
-        $html += "                    <li style='color: var(--text-muted);'>No category data available</li>`n"
+        $html += "                        <li class='text-muted'>No category data available</li>`n"
     }
     
     $html += @"
-                </ul>
+                    </ul>
+                </div>
+                
+                <div class="insights-panel">
+                    <h3>Changes by Caller</h3>
+                    <ul class="insights-list" id="insights-callers">
+"@
+    
+    $changesByCaller = $ChangeTrackingData | 
+        Where-Object { $_.Caller } |
+        Group-Object Caller | 
+        Sort-Object Count -Descending | 
+        Select-Object -First 5 |
+        ForEach-Object { [PSCustomObject]@{ Caller = $_.Name; Count = $_.Count } }
+    
+    foreach ($caller in $changesByCaller) {
+        $escapedCaller = Encode-Html $caller.Caller
+        $html += "                        <li><strong>$escapedCaller</strong> ($($caller.Count) changes)</li>`n"
+    }
+    
+    if ($changesByCaller.Count -eq 0) {
+        $html += "                        <li class='text-muted'>No caller data available</li>`n"
+    }
+    
+    $html += @"
+                    </ul>
+                </div>
+                
+                <div class="insights-panel">
+                    <h3>Changes by Subscription</h3>
+                    <ul class="insights-list" id="insights-subscriptions">
+"@
+    
+    $changesBySubscription = $ChangeTrackingData | 
+        Where-Object { $_.SubscriptionName } |
+        Group-Object SubscriptionName | 
+        Sort-Object Count -Descending | 
+        Select-Object -First 5 |
+        ForEach-Object { [PSCustomObject]@{ Subscription = $_.Name; Count = $_.Count } }
+    
+    foreach ($sub in $changesBySubscription) {
+        $escapedSub = Encode-Html $sub.Subscription
+        $html += "                        <li><strong>$escapedSub</strong> ($($sub.Count) changes)</li>`n"
+    }
+    
+    if ($changesBySubscription.Count -eq 0) {
+        $html += "                        <li class='text-muted'>No subscription data available</li>`n"
+    }
+    
+    $html += @"
+                    </ul>
+                </div>
             </div>
         </div>
         
         $(if ($securityAlerts.Count -gt 0) {
             $alertsHtml = @"
-        <div class="insights-panel" id="security-alerts-section">
+        <div class="section-box" id="security-alerts-section">
+            <h2>Security-Sensitive Operations</h2>
             <details>
-                <summary style="cursor: pointer; outline: none; padding: 5px 0;">
-                    <h3 style="display: inline-block; margin: 0; font-size: 1.2rem;">Security-Sensitive Operations ($($securityAlerts.Count))</h3>
-                    <span style="font-size: 0.9rem; color: var(--text-muted); margin-left: 10px;">(Click to expand)</span>
+                <summary>
+                    <h3>Sensitive Operations ($($securityAlerts.Count))</h3>
+                    <span>(Click to expand)</span>
                 </summary>
-                <div style="margin-top: 15px; overflow-x: auto;">
-                    <table class="change-table">
+                <div>
+                    <table class="data-table">
                         <thead>
                             <tr>
                                 <th>Time</th>
                                 <th>Type</th>
-                                <th>Alert</th>
+                                <th>Sensitivity</th>
                                 <th>Resource</th>
                                 <th>Resource Type</th>
                             </tr>
@@ -605,10 +466,11 @@ $(Get-ReportStylesheet)
                     'Create' { '<span class="operation-icon create">+</span>' }
                     'Update' { '<span class="operation-icon modify">~</span>' }
                     'Delete' { '<span class="operation-icon delete">-</span>' }
+                    'Action' { '<span class="operation-icon action">></span>' }
                     default { '' }
                 }
                 
-                $escapedReason = Encode-Html $alert.SecurityReason
+                $escapedReason = if ($alert.SecurityReason) { Encode-Html ([string]$alert.SecurityReason) } else { '' }
                 $escapedResource = Encode-Html $alert.ResourceName
                 $escapedResId = Encode-Html $alert.ResourceId
                 $escapedResGroup = Encode-Html $alert.ResourceGroup
@@ -624,32 +486,33 @@ $(Get-ReportStylesheet)
                     }
                 }
                 
-                $securityBadge = "<span class='security-badge $alertClass'>$($alert.SecurityFlag.Substring(0,1).ToUpper() + $alert.SecurityFlag.Substring(1))</span>"
+                $badgeModifier = if ($alertClass -eq 'high') { 'danger' } else { 'warning' }
+                $securityBadge = "<span class='badge badge--$badgeModifier'>$($alert.SecurityFlag.Substring(0,1).ToUpper() + $alert.SecurityFlag.Substring(1))</span>"
                 
                 $alertsHtml += @"
-                            <tr class="security-row" onclick="toggleSecurityDetails(this)" style="cursor: pointer;">
+                            <tr class="security-row" onclick="toggleSecurityDetails(this)">
                                 <td>$timeStr</td>
                                 <td>$operationIcon $changeType</td>
                                 <td>$securityBadge</td>
                                 <td>$escapedResource</td>
                                 <td>$escapedResType</td>
                             </tr>
-                            <tr class="change-details-row" style="display:none;">
+                            <tr class="change-details-row">
                                 <td colspan="5">
-                                    <div class="change-details" style="display:block;">
-                                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+                                    <div class="change-details">
+                                        <div class="change-details-grid">
                                             <div>
-                                                <strong style="color: var(--accent-red);">Security Alert:</strong><br>
-                                                <span style="color: var(--accent-red); font-weight: bold;">$escapedReason</span>
+                                                <strong>Security Alert:</strong><br>
+                                                <span class="security-alert-text">$escapedReason</span>
                                             </div>
                                             <div>
                                                 <strong>Change Source:</strong><br>
-                                                <span style="font-family: 'Consolas', monospace; font-size: 0.9em;">$($alert.ChangeSource)</span>
+                                                <span class="monospace-medium">$($alert.ChangeSource)</span>
                                             </div>
                                             
                                             <div>
                                                 <strong>Resource ID:</strong><br>
-                                                <span style="font-family: 'Consolas', monospace; font-size: 0.85em; word-break: break-all;">$escapedResId</span>
+                                                <span class="monospace">$escapedResId</span>
                                             </div>
                                             <div>
                                                 <strong>Resource Group:</strong><br>
@@ -671,7 +534,9 @@ $(Get-ReportStylesheet)
             $alertsHtml
         } else { '' })
         
-        <div class="filter-section">
+        <div class="section-box">
+            <h2>Filters</h2>
+            <div class="filter-section">
             <div class="filter-group">
                 <label>Search:</label>
                 <input type="text" id="searchFilter" placeholder="Search changes...">
@@ -693,9 +558,14 @@ $(Get-ReportStylesheet)
                 <label>Type:</label>
                 <select id="typeFilter">
                     <option value="all">All Types</option>
-                    <option value="Create">Create</option>
-                    <option value="Update">Update</option>
-                    <option value="Delete">Delete</option>
+"@
+    
+    foreach ($changeType in $allChangeTypes) {
+        $escapedType = Encode-Html $changeType
+        $html += "                    <option value=`"$escapedType`">$escapedType</option>`n"
+    }
+    
+    $html += @"
                 </select>
             </div>
             <div class="filter-group">
@@ -714,14 +584,15 @@ $(Get-ReportStylesheet)
                 </select>
             </div>
             <div class="filter-group">
-                <label>Resource Group:</label>
-                <select id="resourceGroupFilter">
-                    <option value="all">All Resource Groups</option>
+                <label>Sensitivity:</label>
+                <select id="sensitivityFilter">
+                    <option value="all">All Sensitivity Levels</option>
 "@
     
-    foreach ($rg in $allResourceGroups) {
-        $escapedRg = Encode-Html $rg
-        $html += "                    <option value=`"$escapedRg`">$escapedRg</option>`n"
+    foreach ($sensitivity in $allSensitivityLevels) {
+        $escapedSensitivity = Encode-Html $sensitivity
+        $displayName = $sensitivity.Substring(0,1).ToUpper() + $sensitivity.Substring(1)
+        $html += "                    <option value=`"$escapedSensitivity`">$displayName</option>`n"
     }
     
     $html += @"
@@ -736,10 +607,16 @@ $(Get-ReportStylesheet)
                     <option value="Application">Application Only</option>
                 </select>
             </div>
+            </div>
+            <div class="filter-stats">
+                Showing <span id="visibleCount">$totalChanges</span> of <span id="totalCount">$totalChanges</span> changes
+            </div>
         </div>
         
-        <div id="table-container">
-            <table class="change-table" id="mainChangeTable">
+        <div class="section-box">
+            <h2>Change Log</h2>
+            <div id="table-container">
+            <table class="data-table" id="mainChangeTable">
                 <thead>
                     <tr>
                         <th>Time</th>
@@ -749,7 +626,7 @@ $(Get-ReportStylesheet)
                         <th>Resource</th>
                         <th>Category</th>
                         <th>Caller</th>
-                        <th>Security</th>
+                        <th>Sensitivity</th>
                     </tr>
                 </thead>
                 <tbody id="changeTableBody">
@@ -761,9 +638,10 @@ $(Get-ReportStylesheet)
                 <!-- Populated by JS -->
             </div>
             
-            <div id="noDataMessage" class="no-data" style="display:none; margin-top: 30px;">
+            <div id="noDataMessage" class="no-data">
                 <h2>No Changes Found</h2>
                 <p>No changes match the current filters.</p>
+            </div>
             </div>
         </div>
     </div>
@@ -795,12 +673,12 @@ $(Get-ReportStylesheet)
         function toggleSecurityDetails(row) {
             const detailsRow = row.nextElementSibling;
             if (detailsRow) {
-                if (detailsRow.style.display === 'none') {
-                    detailsRow.style.display = '';
-                    row.classList.add('expanded');
-                } else {
-                    detailsRow.style.display = 'none';
+                if (detailsRow.classList.contains('is-visible')) {
+                    detailsRow.classList.remove('is-visible');
                     row.classList.remove('expanded');
+                } else {
+                    detailsRow.classList.add('is-visible');
+                    row.classList.add('expanded');
                 }
             }
         }
@@ -823,6 +701,7 @@ $(Get-ReportStylesheet)
             if (lowerType === 'create') { icon = '+'; className = 'create'; }
             else if (lowerType === 'update') { icon = '~'; className = 'modify'; }
             else if (lowerType === 'delete') { icon = '-'; className = 'delete'; }
+            else if (lowerType === 'action') { icon = '>'; className = 'action'; }
             
             if (icon) {
                 return `<span class="operation-icon ${className}">${icon}</span>`;
@@ -838,17 +717,15 @@ $(Get-ReportStylesheet)
                 const props = JSON.parse(changedPropsJson);
                 if (!props || props.length === 0) return '';
                 
-                let html = '<div style="margin-top: 15px;"><strong>Changed Properties:</strong><br>';
-                html += '<table style="width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 0.9em;">';
-                html += '<thead><tr style="background: var(--bg-secondary);"><th style="padding: 8px; text-align: left; border: 1px solid var(--border-color);">Property</th><th style="padding: 8px; text-align: left; border: 1px solid var(--border-color);">From</th><th style="padding: 8px; text-align: left; border: 1px solid var(--border-color);">To</th><th style="padding: 8px; text-align: left; border: 1px solid var(--border-color);">Category</th></tr></thead>';
-                html += '<tbody>';
+                let html = '<div class="changed-properties-container"><strong>Changed Properties:</strong><br>';
+                html += '<table class="changed-properties-table"><thead><tr><th>Property</th><th>From</th><th>To</th><th>Category</th></tr></thead><tbody>';
                 
                 props.forEach(prop => {
                     const propPath = escapeHtml(prop.PropertyPath || '');
                     const prevValue = escapeHtml(String(prop.PreviousValue || ''));
                     const newValue = escapeHtml(String(prop.NewValue || ''));
                     const category = escapeHtml(prop.ChangeCategory || 'User');
-                    html += `<tr><td style="padding: 8px; border: 1px solid var(--border-color); font-family: 'Consolas', monospace;">${propPath}</td><td style="padding: 8px; border: 1px solid var(--border-color);">${prevValue}</td><td style="padding: 8px; border: 1px solid var(--border-color);">${newValue}</td><td style="padding: 8px; border: 1px solid var(--border-color);">${category}</td></tr>`;
+                    html += `<tr><td class="property-path">${propPath}</td><td>${prevValue}</td><td>${newValue}</td><td>${category}</td></tr>`;
                 });
                 
                 html += '</tbody></table></div>';
@@ -860,8 +737,8 @@ $(Get-ReportStylesheet)
         }
 
         function getSecurityBadge(flag) {
-            if (flag === 'high') return '<span class="security-badge high">High</span>';
-            if (flag === 'medium') return '<span class="security-badge medium">Medium</span>';
+            if (flag === 'high') return '<span class="badge badge--danger">High</span>';
+            if (flag === 'medium') return '<span class="badge badge--warning">Medium</span>';
             return '';
         }
         
@@ -877,14 +754,14 @@ $(Get-ReportStylesheet)
             
             if (pageData.length === 0) {
                 table.style.display = 'none';
-                noDataMessage.style.display = 'block';
+                noDataMessage.classList.add('is-visible');
                 pagination.style.display = 'none';
                 return;
             }
             
             table.style.display = '';
-            noDataMessage.style.display = 'none';
-            pagination.style.display = 'flex';
+            noDataMessage.classList.remove('is-visible');
+            pagination.style.display = '';
             
             // Generate Rows
             const fragment = document.createDocumentFragment();
@@ -902,7 +779,7 @@ $(Get-ReportStylesheet)
                     <td>${escapeHtml(item.rg)}</td>
                     <td>${escapeHtml(item.res)}</td>
                     <td>${escapeHtml(item.cat)}</td>
-                    <td>${callerDisplay}${item.clientType ? `<br><small style="color: var(--text-muted);">${escapeHtml(item.clientType)}</small>` : ''}</td>
+                    <td>${callerDisplay}${item.clientType ? `<br><small class="text-muted">${escapeHtml(item.clientType)}</small>` : ''}</td>
                     <td>${getSecurityBadge(item.sec)}</td>
                 `;
                 
@@ -917,13 +794,12 @@ $(Get-ReportStylesheet)
                 
                 const detailsTr = document.createElement('tr');
                 detailsTr.className = 'change-details-row';
-                detailsTr.style.display = 'none';
                 
                 // Build details content
-                let detailsContent = '<div class="change-details"><div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">';
+                let detailsContent = '<div class="change-details"><div class="change-details-grid">';
                 
                 // Resource ID
-                detailsContent += `<div><strong>Resource ID:</strong><br><span style="font-family: 'Consolas', monospace; font-size: 0.85em; word-break: break-all;">${escapeHtml(item.id)}</span></div>`;
+                detailsContent += `<div><strong>Resource ID:</strong><br><span class="monospace">${escapeHtml(item.id)}</span></div>`;
                 
                 // Resource Group
                 detailsContent += `<div><strong>Resource Group:</strong><br>${escapeHtml(item.rg)}</div>`;
@@ -933,7 +809,7 @@ $(Get-ReportStylesheet)
                 
                 // Operation (RBAC permission used) - show if available
                 if (item.operation) {
-                    detailsContent += `<div><strong>Operation:</strong><br><span style="font-family: 'Consolas', monospace; font-size: 0.9em;">${escapeHtml(item.operation)}</span></div>`;
+                    detailsContent += `<div><strong>Operation:</strong><br><span class="monospace-medium">${escapeHtml(item.operation)}</span></div>`;
                 }
                 
                 // Caller information
@@ -943,14 +819,14 @@ $(Get-ReportStylesheet)
                         callerInfo += ` (${escapeHtml(item.callerType)})`;
                     }
                     if (item.clientType) {
-                        callerInfo += `<br><small style="color: var(--text-muted);">via ${escapeHtml(item.clientType)}</small>`;
+                        callerInfo += `<br><small class="text-muted">via ${escapeHtml(item.clientType)}</small>`;
                     }
                     detailsContent += `<div><strong>Changed By:</strong><br>${callerInfo}</div>`;
                 }
                 
                 // Security Reason if present
                 if (item.sReason) {
-                    detailsContent += `<div><strong>Security Reason:</strong><br>${escapeHtml(item.sReason)}</div>`;
+                    detailsContent += `<div><strong>Security Reason:</strong><br><span class="security-alert-text">${escapeHtml(item.sReason)}</span></div>`;
                 }
                 
                 detailsContent += '</div>';
@@ -961,9 +837,9 @@ $(Get-ReportStylesheet)
                         detailsContent += renderChangedProperties(item.changedProps);
                     } else {
                         // Show message when change details aren't available
-                        detailsContent += '<div style="margin-top: 15px; padding: 12px; background: var(--bg-secondary); border-radius: 6px; border-left: 4px solid var(--accent-yellow);">';
-                        detailsContent += '<strong style="color: var(--accent-yellow);">Change Details Not Available</strong><br>';
-                        detailsContent += '<span style="color: var(--text-muted); font-size: 0.9em;">';
+                        detailsContent += '<div class="change-details-unavailable">';
+                        detailsContent += '<strong>Change Details Not Available</strong><br>';
+                        detailsContent += '<span>';
                         if (item.callerType === 'System') {
                             detailsContent += 'This is a system-initiated change. Property-level change details are not available for system changes in Resource Graph Change Analysis.';
                         } else {
@@ -986,12 +862,12 @@ $(Get-ReportStylesheet)
         function toggleDetails(row, item) {
             const detailsRow = row.nextElementSibling;
             if (detailsRow) {
-                if (detailsRow.style.display === 'none') {
-                    detailsRow.style.display = '';
-                    row.classList.add('expanded');
-                } else {
-                    detailsRow.style.display = 'none';
+                if (detailsRow.classList.contains('is-visible')) {
+                    detailsRow.classList.remove('is-visible');
                     row.classList.remove('expanded');
+                } else {
+                    detailsRow.classList.add('is-visible');
+                    row.classList.add('expanded');
                 }
             }
         }
@@ -1023,13 +899,264 @@ $(Get-ReportStylesheet)
             pagination.appendChild(nextBtn);
         }
         
+        // Update Summary Cards
+        function updateSummaryCards() {
+            const creates = filteredChanges.filter(item => item.type === 'Create').length;
+            const updates = filteredChanges.filter(item => item.type === 'Update').length;
+            const deletes = filteredChanges.filter(item => item.type === 'Delete').length;
+            const security = filteredChanges.filter(item => item.sec === 'high' || item.sec === 'medium').length;
+            
+            const createsEl = document.getElementById('summary-creates');
+            const updatesEl = document.getElementById('summary-updates');
+            const deletesEl = document.getElementById('summary-deletes');
+            const securityEl = document.getElementById('summary-security');
+            
+            if (createsEl) createsEl.textContent = creates;
+            if (updatesEl) updatesEl.textContent = updates;
+            if (deletesEl) deletesEl.textContent = deletes;
+            if (securityEl) securityEl.textContent = security;
+        }
+        
+        // Update Trend Chart
+        function updateTrendChart() {
+            // Group changes by day and type
+            const changesByDateAndType = {};
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            
+            // Get all unique types
+            const allTypes = [...new Set(filteredChanges.filter(item => item.type).map(item => item.type))].sort();
+            
+            filteredChanges.forEach(item => {
+                if (item.time && item.type) {
+                    try {
+                        const changeDate = new Date(item.time);
+                        changeDate.setHours(0, 0, 0, 0);
+                        const dateKey = changeDate.toISOString().split('T')[0];
+                        if (!changesByDateAndType[dateKey]) {
+                            changesByDateAndType[dateKey] = {};
+                        }
+                        if (!changesByDateAndType[dateKey][item.type]) {
+                            changesByDateAndType[dateKey][item.type] = 0;
+                        }
+                        changesByDateAndType[dateKey][item.type]++;
+                    } catch (e) {
+                        // Skip invalid dates
+                    }
+                }
+            });
+            
+            // Generate 14 days (from 13 days ago to today)
+            const days = [];
+            for (let i = 13; i >= 0; i--) {
+                const date = new Date(today);
+                date.setDate(date.getDate() - i);
+                const dateKey = date.toISOString().split('T')[0];
+                const dayData = { date: dateKey, types: {}, total: 0 };
+                allTypes.forEach(type => {
+                    const count = (changesByDateAndType[dateKey] && changesByDateAndType[dateKey][type]) || 0;
+                    dayData.types[type] = count;
+                    dayData.total += count;
+                });
+                days.push(dayData);
+            }
+            
+            // Calculate max for scaling
+            const maxCount = Math.max(...days.map(d => d.total), 1);
+            
+            // Color mapping
+            const typeColors = {
+                'Create': 'var(--accent-green)',
+                'Update': 'var(--accent-blue)',
+                'Delete': 'var(--accent-red)',
+                'Action': 'var(--accent-orange)'
+            };
+            
+            // Update chart bars
+            const chartBars = document.querySelector('#trend-chart-container .chart-bars');
+            const chartLabels = document.querySelector('#trend-chart-container .chart-labels');
+            const chartLegend = document.querySelector('#trend-chart-container .chart-legend');
+            
+            if (chartBars && chartLabels) {
+                chartBars.innerHTML = '';
+                chartLabels.innerHTML = '';
+                
+                // Update legend if it exists
+                if (chartLegend) {
+                    chartLegend.innerHTML = '';
+                    allTypes.forEach(type => {
+                        const colorClass = type === 'Create' ? 'chart-legend-color--create' :
+                                          type === 'Update' ? 'chart-legend-color--update' :
+                                          type === 'Delete' ? 'chart-legend-color--delete' :
+                                          type === 'Action' ? 'chart-legend-color--action' :
+                                          'chart-legend-color--update';
+                        const legendItem = document.createElement('div');
+                        legendItem.className = 'chart-legend-item';
+                        legendItem.innerHTML = `<div class="chart-legend-color ${colorClass}"></div><span>${escapeHtml(type)}</span>`;
+                        chartLegend.appendChild(legendItem);
+                    });
+                }
+                
+                days.forEach((day, index) => {
+                    // Calculate total height percentage for the container
+                    const totalHeight = day.total === 0 ? 2 : 
+                        Math.max(5, Math.round((day.total / maxCount) * 100));
+                    
+                    // Create stacked bar container
+                    const barStack = document.createElement('div');
+                    barStack.className = 'chart-bar-stack';
+                    barStack.style.height = totalHeight + '%';
+                    barStack.title = `${day.date}: ${day.total} changes`;
+                    barStack.onclick = () => filterByDate(day.date);
+                    
+                    if (day.total === 0) {
+                        // Empty day
+                        const segment = document.createElement('div');
+                        segment.className = 'chart-bar-segment';
+                        segment.style.background = 'var(--border-color)';
+                        segment.style.height = '100%';
+                        barStack.appendChild(segment);
+                    } else {
+                        // Create segments for each type
+                        allTypes.forEach(type => {
+                            const typeCount = day.types[type] || 0;
+                            if (typeCount > 0) {
+                                const segmentHeight = Math.round((typeCount / day.total) * 100 * 10) / 10;
+                                const segment = document.createElement('div');
+                                segment.className = 'chart-bar-segment';
+                                segment.style.background = typeColors[type] || 'var(--accent-blue)';
+                                segment.style.height = segmentHeight + '%';
+                                segment.title = `${type}: ${typeCount}`;
+                                barStack.appendChild(segment);
+                            }
+                        });
+                    }
+                    
+                    chartBars.appendChild(barStack);
+                    
+                    // Labels (first, last, every 7th)
+                    const showLabel = index === 0 || index === days.length - 1 || index % 7 === 0;
+                    const label = document.createElement('div');
+                    label.className = 'chart-label' + 
+                        (index === 0 ? ' chart-label--left' : '') +
+                        (index === days.length - 1 ? ' chart-label--right' : '') +
+                        (!showLabel ? ' chart-label--hidden' : '');
+                    label.textContent = day.date;
+                    chartLabels.appendChild(label);
+                });
+            }
+        }
+        
+        // Update Top 5 Insights
+        function updateTop5Insights() {
+            // Resource Types
+            const resourceTypes = {};
+            filteredChanges.forEach(item => {
+                if (item.resType) {
+                    resourceTypes[item.resType] = (resourceTypes[item.resType] || 0) + 1;
+                }
+            });
+            const topResourceTypes = Object.entries(resourceTypes)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5);
+            
+            const resTypesEl = document.getElementById('insights-resource-types');
+            if (resTypesEl) {
+                resTypesEl.innerHTML = '';
+                if (topResourceTypes.length === 0) {
+                    resTypesEl.innerHTML = '<li class="text-muted">No resource type data available</li>';
+                } else {
+                    topResourceTypes.forEach(([type, count]) => {
+                        const li = document.createElement('li');
+                        li.innerHTML = `<strong>${escapeHtml(type)}</strong> (${count} changes)`;
+                        resTypesEl.appendChild(li);
+                    });
+                }
+            }
+            
+            // Categories
+            const categories = {};
+            filteredChanges.forEach(item => {
+                if (item.cat) {
+                    categories[item.cat] = (categories[item.cat] || 0) + 1;
+                }
+            });
+            const topCategories = Object.entries(categories)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5);
+            
+            const categoriesEl = document.getElementById('insights-categories');
+            if (categoriesEl) {
+                categoriesEl.innerHTML = '';
+                if (topCategories.length === 0) {
+                    categoriesEl.innerHTML = '<li class="text-muted">No category data available</li>';
+                } else {
+                    topCategories.forEach(([cat, count]) => {
+                        const li = document.createElement('li');
+                        li.innerHTML = `<strong>${escapeHtml(cat)}</strong> (${count} changes)`;
+                        categoriesEl.appendChild(li);
+                    });
+                }
+            }
+            
+            // Callers
+            const callers = {};
+            filteredChanges.forEach(item => {
+                if (item.caller) {
+                    callers[item.caller] = (callers[item.caller] || 0) + 1;
+                }
+            });
+            const topCallers = Object.entries(callers)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5);
+            
+            const callersEl = document.getElementById('insights-callers');
+            if (callersEl) {
+                callersEl.innerHTML = '';
+                if (topCallers.length === 0) {
+                    callersEl.innerHTML = '<li class="text-muted">No caller data available</li>';
+                } else {
+                    topCallers.forEach(([caller, count]) => {
+                        const li = document.createElement('li');
+                        li.innerHTML = `<strong>${escapeHtml(caller)}</strong> (${count} changes)`;
+                        callersEl.appendChild(li);
+                    });
+                }
+            }
+            
+            // Subscriptions
+            const subscriptions = {};
+            filteredChanges.forEach(item => {
+                if (item.sub) {
+                    subscriptions[item.sub] = (subscriptions[item.sub] || 0) + 1;
+                }
+            });
+            const topSubscriptions = Object.entries(subscriptions)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5);
+            
+            const subscriptionsEl = document.getElementById('insights-subscriptions');
+            if (subscriptionsEl) {
+                subscriptionsEl.innerHTML = '';
+                if (topSubscriptions.length === 0) {
+                    subscriptionsEl.innerHTML = '<li class="text-muted">No subscription data available</li>';
+                } else {
+                    topSubscriptions.forEach(([sub, count]) => {
+                        const li = document.createElement('li');
+                        li.innerHTML = `<strong>${escapeHtml(sub)}</strong> (${count} changes)`;
+                        subscriptionsEl.appendChild(li);
+                    });
+                }
+            }
+        }
+        
         // Filtering
         function applyFilters() {
             const searchText = document.getElementById('searchFilter').value.toLowerCase();
             const subscriptionValue = document.getElementById('subscriptionFilter').value;
             const typeValue = document.getElementById('typeFilter').value;
             const categoryValue = document.getElementById('categoryFilter').value;
-            const resourceGroupValue = document.getElementById('resourceGroupFilter').value;
+            const sensitivityValue = document.getElementById('sensitivityFilter').value;
             const callerTypeValue = document.getElementById('callerTypeFilter').value;
             
             filteredChanges = allChanges.filter(item => {
@@ -1037,13 +1164,18 @@ $(Get-ReportStylesheet)
                 const subMatch = subscriptionValue === 'all' || item.subLower === subscriptionValue;
                 const typeMatch = typeValue === 'all' || item.type === typeValue;
                 const categoryMatch = categoryValue === 'all' || item.catLower === categoryValue.toLowerCase();
-                const rgMatch = resourceGroupValue === 'all' || item.rgLower === resourceGroupValue.toLowerCase();
+                const sensitivityMatch = sensitivityValue === 'all' || (item.sec && item.sec.toLowerCase() === sensitivityValue.toLowerCase());
                 const callerTypeMatch = callerTypeValue === 'all' || (item.callerType && item.callerType.toLowerCase() === callerTypeValue.toLowerCase());
                 
-                return searchMatch && subMatch && typeMatch && categoryMatch && rgMatch && callerTypeMatch;
+                return searchMatch && subMatch && typeMatch && categoryMatch && sensitivityMatch && callerTypeMatch;
             });
             
             currentPage = 1;
+            
+            // Update all sections based on filtered data
+            updateSummaryCards();
+            updateTrendChart();
+            updateTop5Insights();
             renderTable();
         }
         
@@ -1052,7 +1184,7 @@ $(Get-ReportStylesheet)
         document.getElementById('subscriptionFilter').addEventListener('change', applyFilters);
         document.getElementById('typeFilter').addEventListener('change', applyFilters);
         document.getElementById('categoryFilter').addEventListener('change', applyFilters);
-        document.getElementById('resourceGroupFilter').addEventListener('change', applyFilters);
+        document.getElementById('sensitivityFilter').addEventListener('change', applyFilters);
         document.getElementById('callerTypeFilter').addEventListener('change', applyFilters);
         
         // Global functions for Summary Cards
@@ -1113,3 +1245,4 @@ $(Get-ReportStylesheet)
         MediumSecurityFlags = $mediumSecurityFlags
     }
 }
+
