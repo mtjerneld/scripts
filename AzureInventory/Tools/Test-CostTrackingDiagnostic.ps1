@@ -73,3 +73,4 @@ if ($testData.DailyTrend) {
 
 Write-Host "`n=== END DIAGNOSTIC ===" -ForegroundColor Cyan
 
+

@@ -542,7 +542,16 @@ function Export-CostTrackingReport {
                 $catCost = [math]::Round($day.ByCategory[$category].CostLocal, 2)
                 if ($day.ByCategory[$category].BySubscription) {
                     foreach ($subEntry in $day.ByCategory[$category].BySubscription.GetEnumerator()) {
-                        $catSubBreakdown[$subEntry.Key] = [math]::Round($subEntry.Value.CostLocal, 2)
+                        # Handle both formats: direct number or object with CostLocal
+                        $subCost = if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
+                            [math]::Round($subEntry.Value.CostLocal, 2)
+                        } elseif ($subEntry.Value -is [PSCustomObject] -and $subEntry.Value.CostLocal) {
+                            [math]::Round($subEntry.Value.CostLocal, 2)
+                        } else {
+                            # Direct number value (legacy format)
+                            [math]::Round($subEntry.Value, 2)
+                        }
+                        $catSubBreakdown[$subEntry.Key] = $subCost
                     }
                 }
             }
@@ -581,7 +590,16 @@ function Export-CostTrackingReport {
                 }
                 if ($day.ByMeter[$meter].BySubscription) {
                     foreach ($subEntry in $day.ByMeter[$meter].BySubscription.GetEnumerator()) {
-                        $meterSubBreakdown[$subEntry.Key] = [math]::Round($subEntry.Value.CostLocal, 2)
+                        # Handle both formats: direct number or object with CostLocal
+                        $subCost = if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
+                            [math]::Round($subEntry.Value.CostLocal, 2)
+                        } elseif ($subEntry.Value -is [PSCustomObject] -and $subEntry.Value.CostLocal) {
+                            [math]::Round($subEntry.Value.CostLocal, 2)
+                        } else {
+                            # Direct number value (legacy format)
+                            [math]::Round($subEntry.Value, 2)
+                        }
+                        $meterSubBreakdown[$subEntry.Key] = $subCost
                     }
                 }
             }
@@ -607,7 +625,16 @@ function Export-CostTrackingReport {
                 }
                 if ($day.ByResource[$resName].BySubscription) {
                     foreach ($subEntry in $day.ByResource[$resName].BySubscription.GetEnumerator()) {
-                        $resSubBreakdown[$subEntry.Key] = [math]::Round($subEntry.Value.CostLocal, 2)
+                        # Handle both formats: direct number or object with CostLocal
+                        $subCost = if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
+                            [math]::Round($subEntry.Value.CostLocal, 2)
+                        } elseif ($subEntry.Value -is [PSCustomObject] -and $subEntry.Value.CostLocal) {
+                            [math]::Round($subEntry.Value.CostLocal, 2)
+                        } else {
+                            # Direct number value (legacy format)
+                            [math]::Round($subEntry.Value, 2)
+                        }
+                        $resSubBreakdown[$subEntry.Key] = $subCost
                     }
                 }
             }
@@ -625,6 +652,8 @@ function Export-CostTrackingReport {
     # Ensure we always have a valid JSON array, even if empty
     if ($rawDailyData -and $rawDailyData.Count -gt 0) {
         $rawDailyDataJson = $rawDailyData | ConvertTo-Json -Depth 6 -Compress
+        # Escape single quotes and backslashes for safe embedding in JavaScript string
+        $rawDailyDataJson = $rawDailyDataJson -replace '\\', '\\' -replace "'", "\'"
     } else {
         $rawDailyDataJson = "[]"
     }
@@ -1105,6 +1134,7 @@ $categoryHtml
             foreach ($subCatEntry in $sortedSubCats) {
                 $subCat = $subCatEntry.Value
                 $subCatName = if ($subCat.MeterSubCategory) { [System.Web.HttpUtility]::HtmlEncode($subCat.MeterSubCategory) } else { "N/A" }
+                $subCatNameEncoded = $subCatName
                 $subCatCostLocal = Format-NumberWithSeparator -Number $subCat.CostLocal
                 $subCatCostUSD = Format-NumberWithSeparator -Number $subCat.CostUSD
                 
@@ -1115,6 +1145,7 @@ $categoryHtml
                     foreach ($meterEntry in $sortedMeters) {
                         $meter = $meterEntry.Value
                         $meterName = if ($meter.Meter) { [System.Web.HttpUtility]::HtmlEncode($meter.Meter) } else { "Unknown" }
+                        $meterNameEncoded = $meterName
                         $meterCostLocal = Format-NumberWithSeparator -Number $meter.CostLocal
                         $meterCostUSD = Format-NumberWithSeparator -Number $meter.CostUSD
                         $meterCount = $meter.ItemCount
@@ -1135,12 +1166,13 @@ $categoryHtml
                             foreach ($resEntry in $sortedResources) {
                                 $res = $resEntry.Value
                                 $resName = if ($res.ResourceName) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceName) } else { "Unknown" }
+                                $resNameEncoded = $resName
                                 $resGroup = if ($res.ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceGroup) } else { "N/A" }
                                 $resSub = if ($res.SubscriptionName) { [System.Web.HttpUtility]::HtmlEncode($res.SubscriptionName) } else { "N/A" }
                                 $resCostLocalFormatted = Format-NumberWithSeparator -Number $res.CostLocal
                                 $resCostUSDFormatted = Format-NumberWithSeparator -Number $res.CostUSD
                                 $resourceRowsHtml += @"
-                                            <tr data-subscription="$resSub">
+                                            <tr data-subscription="$resSub" data-resource="$resNameEncoded" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" onclick="handleResourceSelection(this, event)" style="cursor: pointer;">
                                                 <td>$resName</td>
                                                 <td>$resGroup</td>
                                                 <td>$resSub</td>
@@ -1153,8 +1185,8 @@ $categoryHtml
                         
                         if ($hasResources) {
                             $meterCardsHtml += @"
-                            <div class="meter-card">
-                                <div class="meter-header" onclick="toggleMeter(this)" style="display: flex; align-items: center; justify-content: space-between;">
+                            <div class="meter-card" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName">
+                                <div class="meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="expand-arrow">&#9654;</span>
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterName</span>
                                     <div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
@@ -1184,8 +1216,8 @@ $resourceRowsHtml
 "@
                         } else {
                             $meterCardsHtml += @"
-                            <div class="meter-card no-expand">
-                                <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
+                            <div class="meter-card no-expand" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName">
+                                <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterName</span>
                                     <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocal (`$$meterCostUSD)</span>
                                     $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
@@ -1199,8 +1231,8 @@ $resourceRowsHtml
                 }
                 
                 $subCatHtml += @"
-                        <div class="subcategory-drilldown">
-                            <div class="expandable__header subcategory-header" onclick="toggleSubCategory(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
+                        <div class="subcategory-drilldown" data-subcategory="$subCatNameEncoded" data-category="$catName">
+                            <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catName" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$subCatName</span>
                                 <span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $subCatCostLocal (`$$subCatCostUSD)</span>
@@ -1214,8 +1246,8 @@ $meterCardsHtml
         }
         
         $categorySectionsHtml += @"
-                    <div class="category-card collapsed">
-                        <div class="category-header collapsed" onclick="toggleCategory(this, event)">
+                    <div class="category-card collapsed" data-category="$catName">
+                        <div class="category-header collapsed" data-category="$catName" onclick="handleCategorySelection(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$catName</span>
                             <span class="category-cost">$currency $catCostLocal (`$$catCostUSD)</span>
@@ -1323,7 +1355,7 @@ $subCatHtml
                                 $resGroupName = if ($resItems[0].ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($resItems[0].ResourceGroup) } else { "N/A" }
                                 
                                 $resourceRowsHtml += @"
-                                            <tr data-subscription="$subNameEncoded">
+                                            <tr data-subscription="$subNameEncoded" data-resource="$resNameEncoded" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" onclick="handleResourceSelection(this, event)" style="cursor: pointer;">
                                                 <td>$resNameEncoded</td>
                                                 <td>$resGroupName</td>
                                                 <td class="cost-value text-right">$currency $resCostLocalFormatted</td>
@@ -1335,8 +1367,8 @@ $subCatHtml
                         
                         if ($hasResources) {
                             $meterCardsHtml += @"
-                            <div class="meter-card">
-                                <div class="meter-header" onclick="toggleMeter(this)" style="display: flex; align-items: center; justify-content: space-between;">
+                            <div class="meter-card" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded">
+                                <div class="meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="expand-arrow">&#9654;</span>
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
@@ -1365,8 +1397,8 @@ $resourceRowsHtml
 "@
                         } else {
                             $meterCardsHtml += @"
-                            <div class="meter-card no-expand">
-                                <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
+                            <div class="meter-card no-expand" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded">
+                                <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
                                     $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
@@ -1379,8 +1411,8 @@ $resourceRowsHtml
                     }
                     
                     $subCatHtml += @"
-                        <div class="subcategory-drilldown">
-                            <div class="expandable__header subcategory-header" onclick="toggleSubCategory(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
+                        <div class="subcategory-drilldown" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded">
+                            <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$subCatNameEncoded</span>
                                 <span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $subCatCostLocalRounded (`$$subCatCostUSDRounded)</span>
@@ -1393,8 +1425,8 @@ $meterCardsHtml
                 }
                 
                 $categoryHtml += @"
-                        <div class="category-card collapsed">
-                            <div class="expandable__header category-header collapsed" onclick="toggleCategory(this, event)">
+                        <div class="category-card collapsed" data-category="$catNameEncoded" data-subscription="$subNameEncoded">
+                            <div class="expandable__header category-header collapsed" data-category="$catNameEncoded" data-subscription="$subNameEncoded" onclick="handleCategorySelection(this, event)">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="category-title">$catNameEncoded</span>
                                 <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
@@ -1408,7 +1440,7 @@ $subCatHtml
             
             $subscriptionSectionsHtml += @"
                     <div class="category-card subscription-card collapsed" data-subscription="$subNameEncoded">
-                        <div class="category-header collapsed" onclick="toggleCategory(this, event)">
+                        <div class="category-header collapsed" data-subscription="$subNameEncoded" onclick="if (!handleSubscriptionSelection(this, event)) return; toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$subNameEncoded</span>
                             <span class="category-cost">$currency $subCostLocalRounded (`$$subCostUSDRounded)</span>
@@ -1441,7 +1473,7 @@ $categoryHtml
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Azure Cost Tracking Report</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <style>
 $(Get-ReportStylesheet)
     </style>
@@ -1500,6 +1532,9 @@ $(Get-ReportStylesheet)
                 <select id="categoryFilter" onchange="filterChartCategory()">
                     <option value="all">All Categories</option>
                 </select>
+                <button id="clearChartSelections" onclick="clearAllChartSelections()" style="display: none; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-surface); color: var(--text); cursor: pointer; font-size: 0.9rem;">
+                    Clear Chart Selections
+                </button>
             </div>
             <div class="chart-container">
                 <canvas id="costChart"></canvas>
@@ -1597,7 +1632,10 @@ $datasetsByResourceJsonString
         ];
         
         // Raw daily data for cross-filtering
-        const rawDailyData = $rawDailyDataJson;
+        const rawDailyData = JSON.parse('$rawDailyDataJson');
+        
+        // Currency for formatting
+        const currency = "$currency";
         
         // Color palette
         const chartColors = [
@@ -1623,6 +1661,57 @@ $datasetsByResourceJsonString
         let currentView = 'total';
         let currentCategoryFilter = 'all';
         let selectedSubscriptions = new Set();
+        
+        // Chart selection state for filtering
+        const chartSelections = {
+            subscriptions: new Set(),
+            categories: new Map(), // category -> Set(subscriptions)
+            subcategories: new Map(), // subcategory -> Set({category, subscription})
+            meters: new Map(), // meter -> Set({subcategory, category, subscription})
+            resources: new Map() // resource -> Set({meter, subcategory, category, subscription})
+        };
+        
+        // Helper functions to extract identifiers from DOM elements
+        function getSubscriptionFromElement(element) {
+            const card = element.closest('[data-subscription]');
+            return card ? card.getAttribute('data-subscription') : null;
+        }
+        
+        function getCategoryFromElement(element) {
+            const card = element.closest('[data-category]');
+            return card ? card.getAttribute('data-category') : null;
+        }
+        
+        function getSubcategoryFromElement(element) {
+            const card = element.closest('[data-subcategory]');
+            return card ? card.getAttribute('data-subcategory') : null;
+        }
+        
+        function getMeterFromElement(element) {
+            const card = element.closest('[data-meter]');
+            return card ? card.getAttribute('data-meter') : null;
+        }
+        
+        function getResourceFromElement(element) {
+            const row = element.closest('[data-resource]');
+            return row ? row.getAttribute('data-resource') : null;
+        }
+        
+        // Helper function to create a key for sets in Maps
+        function createSelectionKey(...args) {
+            return args.filter(a => a != null).join('|');
+        }
+        
+        // Helper function to check if a selection key matches
+        function matchesSelectionKey(key, subscription, category, subcategory, meter) {
+            const parts = key.split('|');
+            let match = true;
+            if (subscription && parts.indexOf(subscription) === -1) match = false;
+            if (category && parts.indexOf(category) === -1) match = false;
+            if (subcategory && parts.indexOf(subcategory) === -1) match = false;
+            if (meter && parts.indexOf(meter) === -1) match = false;
+            return match;
+        }
         
         // Store original summary card values
         const originalSummaryValues = {
@@ -1789,7 +1878,7 @@ $datasetsByResourceJsonString
                             borderWidth: 1,
                             callbacks: {
                                 label: function(context) {
-                                    return context.dataset.label + ': $currency ' + context.parsed.y.toFixed(2);
+                                    return context.dataset.label + ': ' + currency + ' ' + context.parsed.y.toFixed(2);
                                 }
                             }
                         }
@@ -1816,7 +1905,7 @@ $datasetsByResourceJsonString
                             ticks: {
                                 color: '#888',
                                 callback: function(value) {
-                                    return '$currency ' + value.toFixed(0);
+                                    return currency + ' ' + value.toFixed(0);
                                 }
                             }
                         }
@@ -1870,6 +1959,224 @@ $datasetsByResourceJsonString
             return dayTotal || 0; // Ensure we always return a number
         }
         
+        // Filter raw daily data based on chart selections
+        function filterRawDailyDataBySelections(rawDailyData) {
+            // Check if there are any selections
+            const hasSelections = chartSelections.subscriptions.size > 0 ||
+                chartSelections.categories.size > 0 ||
+                chartSelections.subcategories.size > 0 ||
+                chartSelections.meters.size > 0 ||
+                chartSelections.resources.size > 0;
+            
+            if (!hasSelections) {
+                return rawDailyData; // Return original data if no selections
+            }
+            
+            // Create filtered copy
+            const filteredData = rawDailyData.map(day => {
+                const filteredDay = {
+                    date: day.date,
+                    categories: {},
+                    subscriptions: {},
+                    meters: {},
+                    resources: {},
+                    totalCostLocal: 0,
+                    totalCostUSD: 0
+                };
+                
+                // Filter by subscriptions
+                const selectedSubs = chartSelections.subscriptions.size > 0 ? 
+                    Array.from(chartSelections.subscriptions) : null;
+                
+                // Filter categories
+                const hasCategorySelections = chartSelections.categories.size > 0;
+                Object.keys(day.categories || {}).forEach(cat => {
+                    const catData = day.categories[cat];
+                    const catSubs = chartSelections.categories.get(cat);
+                    
+                    if (catSubs && catSubs.size > 0) {
+                        // This category IS selected - include it (filtered by selected subscriptions)
+                        const filteredBySub = {};
+                        let catTotal = 0;
+                        catSubs.forEach(sub => {
+                            if (sub === '') {
+                                // Empty string means "Cost by Meter Category" section - include ALL subscriptions for this category
+                                if (catData.bySubscription) {
+                                    Object.keys(catData.bySubscription).forEach(subKey => {
+                                        filteredBySub[subKey] = catData.bySubscription[subKey];
+                                        catTotal += catData.bySubscription[subKey];
+                                    });
+                                } else {
+                                    // No subscription breakdown, use total
+                                    catTotal = catData.total || 0;
+                                }
+                            } else if (catData.bySubscription && catData.bySubscription[sub]) {
+                                // Specific subscription selected
+                                filteredBySub[sub] = catData.bySubscription[sub];
+                                catTotal += catData.bySubscription[sub];
+                            }
+                        });
+                        if (catTotal > 0) {
+                            filteredDay.categories[cat] = { total: catTotal, bySubscription: filteredBySub };
+                        }
+                    } else if (!hasCategorySelections) {
+                        // No category selections active - include based on subscription filter only
+                        if (selectedSubs) {
+                            const filteredBySub = {};
+                            let catTotal = 0;
+                            selectedSubs.forEach(sub => {
+                                if (catData.bySubscription && catData.bySubscription[sub]) {
+                                    filteredBySub[sub] = catData.bySubscription[sub];
+                                    catTotal += catData.bySubscription[sub];
+                                }
+                            });
+                            if (catTotal > 0) {
+                                filteredDay.categories[cat] = { total: catTotal, bySubscription: filteredBySub };
+                            }
+                        } else {
+                            filteredDay.categories[cat] = catData;
+                        }
+                    }
+                    // else: category selections exist but this category is NOT selected - exclude it
+                });
+                
+                // Filter subscriptions
+                Object.keys(day.subscriptions || {}).forEach(sub => {
+                    if (selectedSubs && !selectedSubs.includes(sub)) {
+                        return; // Skip if subscription filter active and this sub not selected
+                    }
+                    const subData = day.subscriptions[sub];
+                    const filteredByCat = {};
+                    let subTotal = 0;
+                    
+                    Object.keys(subData.byCategory || {}).forEach(cat => {
+                        const catSubs = chartSelections.categories.get(cat);
+                        if (catSubs && (catSubs.has(sub) || catSubs.has(''))) {
+                            // This category is selected for this subscription OR selected from "Cost by Meter Category" (empty string)
+                            filteredByCat[cat] = subData.byCategory[cat];
+                            subTotal += subData.byCategory[cat];
+                        } else if (!hasCategorySelections) {
+                            // No category selections active - include all categories for this subscription
+                            filteredByCat[cat] = subData.byCategory[cat];
+                            subTotal += subData.byCategory[cat];
+                        }
+                        // else: category selections exist but this category is NOT selected for this subscription - exclude it
+                    });
+                    
+                    if (subTotal > 0 || (selectedSubs && selectedSubs.includes(sub))) {
+                        filteredDay.subscriptions[sub] = { total: subTotal, byCategory: filteredByCat };
+                    }
+                });
+                
+                // Filter meters
+                Object.keys(day.meters || {}).forEach(meter => {
+                    const meterData = day.meters[meter];
+                    const meterKeys = chartSelections.meters.get(meter);
+                    if (meterKeys && meterKeys.size > 0) {
+                        // This meter is selected
+                        let meterTotal = 0;
+                        const filteredByCat = {};
+                        const filteredBySub = {};
+                        
+                        meterKeys.forEach(key => {
+                            const parts = key.split('|');
+                            const subcat = parts[0];
+                            const cat = parts[1];
+                            const sub = parts[2];
+                            
+                            if (meterData.byCategory && meterData.byCategory[cat]) {
+                                filteredByCat[cat] = (filteredByCat[cat] || 0) + meterData.byCategory[cat];
+                                meterTotal += meterData.byCategory[cat];
+                            }
+                            if (meterData.bySubscription && meterData.bySubscription[sub]) {
+                                filteredBySub[sub] = (filteredBySub[sub] || 0) + meterData.bySubscription[sub];
+                            }
+                        });
+                        
+                        if (meterTotal > 0) {
+                            filteredDay.meters[meter] = { total: meterTotal, byCategory: filteredByCat, bySubscription: filteredBySub };
+                        }
+                    } else if (chartSelections.meters.size === 0) {
+                        // No meter selections, include if passes other filters
+                        filteredDay.meters[meter] = meterData;
+                    }
+                });
+                
+                // Filter resources
+                Object.keys(day.resources || {}).forEach(resource => {
+                    const resData = day.resources[resource];
+                    const resKeys = chartSelections.resources.get(resource);
+                    if (resKeys && resKeys.size > 0) {
+                        // This resource is selected
+                        let resTotal = 0;
+                        const filteredByCat = {};
+                        const filteredBySub = {};
+                        
+                        resKeys.forEach(key => {
+                            const parts = key.split('|');
+                            const meter = parts[0];
+                            const subcat = parts[1];
+                            const cat = parts[2];
+                            const sub = parts[3];
+                            
+                            if (resData.byCategory && resData.byCategory[cat]) {
+                                filteredByCat[cat] = (filteredByCat[cat] || 0) + resData.byCategory[cat];
+                                resTotal += resData.byCategory[cat];
+                            }
+                            if (resData.bySubscription && resData.bySubscription[sub]) {
+                                filteredBySub[sub] = (filteredBySub[sub] || 0) + resData.bySubscription[sub];
+                            }
+                        });
+                        
+                        if (resTotal > 0) {
+                            filteredDay.resources[resource] = { total: resTotal, byCategory: filteredByCat, bySubscription: filteredBySub };
+                        }
+                    } else if (chartSelections.resources.size === 0) {
+                        // No resource selections active - include if passes subscription/category/meter filters
+                        // Apply subscription filter if active
+                        if (selectedSubs) {
+                            const filteredBySub = {};
+                            let resTotal = 0;
+                            selectedSubs.forEach(sub => {
+                                if (resData.bySubscription && resData.bySubscription[sub]) {
+                                    filteredBySub[sub] = resData.bySubscription[sub];
+                                    resTotal += resData.bySubscription[sub];
+                                }
+                            });
+                            if (resTotal > 0) {
+                                filteredDay.resources[resource] = { 
+                                    total: resTotal, 
+                                    byCategory: resData.byCategory || {}, 
+                                    bySubscription: filteredBySub 
+                                };
+                            }
+                        } else if (!hasCategorySelections && chartSelections.meters.size === 0) {
+                            // No filters active - include all
+                            filteredDay.resources[resource] = resData;
+                        }
+                    }
+                    // else: resource selections exist but this resource is NOT selected - exclude it
+                });
+                
+                // Recalculate totals
+                let dayTotal = 0;
+                Object.values(filteredDay.categories).forEach(cat => {
+                    dayTotal += cat.total || 0;
+                });
+                filteredDay.totalCostLocal = dayTotal;
+                filteredDay.totalCostUSD = dayTotal; // Assuming same for simplicity
+                
+                return filteredDay;
+            });
+            
+            return filteredData;
+        }
+        
+        // Update chart with selections
+        function updateChartWithSelections() {
+            updateChart();
+        }
+        
         function updateChart() {
             // Ensure chart is initialized before updating
             if (!costChart) {
@@ -1881,6 +2188,99 @@ $datasetsByResourceJsonString
             if (!rawDailyData || !Array.isArray(rawDailyData) || rawDailyData.length === 0) {
                 console.warn('rawDailyData not available or empty, skipping chart update');
                 return;
+            }
+            
+            // Apply chart selections filter if any selections exist
+            let dataToUse = filterRawDailyDataBySelections(rawDailyData);
+            
+            // Also apply subscription checkbox filter if active (separate from chart selections)
+            // Note: Only apply this filter if subscription checkboxes are actually selected
+            // If no checkboxes are selected, we want to show all subscriptions
+            if (selectedSubscriptions.size > 0) {
+                dataToUse = dataToUse.map(day => {
+                    const filteredDay = {
+                        date: day.date,
+                        categories: {},
+                        subscriptions: {},
+                        meters: {},
+                        resources: {},
+                        totalCostLocal: 0,
+                        totalCostUSD: 0
+                    };
+                    
+                    // Filter categories by selected subscriptions
+                    Object.keys(day.categories || {}).forEach(cat => {
+                        const catData = day.categories[cat];
+                        const filteredBySub = {};
+                        let catTotal = 0;
+                        selectedSubscriptions.forEach(sub => {
+                            if (catData.bySubscription && catData.bySubscription[sub]) {
+                                filteredBySub[sub] = catData.bySubscription[sub];
+                                catTotal += catData.bySubscription[sub];
+                            }
+                        });
+                        if (catTotal > 0) {
+                            filteredDay.categories[cat] = { total: catTotal, bySubscription: filteredBySub };
+                        }
+                    });
+                    
+                    // Filter subscriptions - only include selected ones
+                    selectedSubscriptions.forEach(sub => {
+                        if (day.subscriptions && day.subscriptions[sub]) {
+                            filteredDay.subscriptions[sub] = day.subscriptions[sub];
+                        }
+                    });
+                    
+                    // Filter meters by selected subscriptions
+                    Object.keys(day.meters || {}).forEach(meter => {
+                        const meterData = day.meters[meter];
+                        const filteredBySub = {};
+                        let meterTotal = 0;
+                        selectedSubscriptions.forEach(sub => {
+                            if (meterData.bySubscription && meterData.bySubscription[sub]) {
+                                filteredBySub[sub] = meterData.bySubscription[sub];
+                                meterTotal += meterData.bySubscription[sub];
+                            }
+                        });
+                        if (meterTotal > 0) {
+                            filteredDay.meters[meter] = {
+                                total: meterTotal,
+                                byCategory: meterData.byCategory || {},
+                                bySubscription: filteredBySub
+                            };
+                        }
+                    });
+                    
+                    // Filter resources by selected subscriptions
+                    Object.keys(day.resources || {}).forEach(resource => {
+                        const resData = day.resources[resource];
+                        const filteredBySub = {};
+                        let resTotal = 0;
+                        selectedSubscriptions.forEach(sub => {
+                            if (resData.bySubscription && resData.bySubscription[sub]) {
+                                filteredBySub[sub] = resData.bySubscription[sub];
+                                resTotal += resData.bySubscription[sub];
+                            }
+                        });
+                        if (resTotal > 0) {
+                            filteredDay.resources[resource] = {
+                                total: resTotal,
+                                byCategory: resData.byCategory || {},
+                                bySubscription: filteredBySub
+                            };
+                        }
+                    });
+                    
+                    // Recalculate totals
+                    let dayTotal = 0;
+                    Object.values(filteredDay.categories).forEach(cat => {
+                        dayTotal += cat.total || 0;
+                    });
+                    filteredDay.totalCostLocal = dayTotal;
+                    filteredDay.totalCostUSD = dayTotal;
+                    
+                    return filteredDay;
+                });
             }
             
             const view = currentView;
@@ -1897,30 +2297,65 @@ $datasetsByResourceJsonString
             
             if (view === 'total') {
                 // Show only total (filtered by category and subscription)
-                const totalData = rawDailyData.map(day => {
+                const totalData = dataToUse.map(day => {
                     let dayTotal = 0;
+                    // Check if there are chart selections for categories
+                    const hasCategorySelections = chartSelections.categories.size > 0;
+                    
                     if (categoryFilter === 'all') {
                         // Sum all categories for selected subscriptions
                         Object.entries(day.categories || {}).forEach(([cat, catData]) => {
-                            if (selectedSubscriptions.size === 0) {
-                                dayTotal += catData.total || 0;
-                            } else {
-                                selectedSubscriptions.forEach(sub => {
-                                    dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
-                                });
+                            const catSubs = chartSelections.categories.get(cat);
+                            if (catSubs && catSubs.size > 0) {
+                                // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
+                                if (catSubs.has('')) {
+                                    // Empty string means "Cost by Meter Category" - include all subscriptions
+                                    dayTotal += catData.total || 0;
+                                } else {
+                                    // Specific subscriptions selected - sum only those
+                                    catSubs.forEach(sub => {
+                                        dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
+                                    });
+                                }
+                            } else if (!hasCategorySelections) {
+                                // No category selections - apply subscription filter only
+                                if (selectedSubscriptions.size === 0) {
+                                    dayTotal += catData.total || 0;
+                                } else {
+                                    selectedSubscriptions.forEach(sub => {
+                                        dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
+                                    });
+                                }
                             }
+                            // else: category selections exist but this category is NOT selected - skip it
                         });
                     } else {
                         // Single category
                         const catData = day.categories && day.categories[categoryFilter];
                         if (catData) {
-                            if (selectedSubscriptions.size === 0) {
-                                dayTotal = catData.total || 0;
-                            } else {
-                                selectedSubscriptions.forEach(sub => {
-                                    dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
-                                });
+                            const catSubs = chartSelections.categories.get(categoryFilter);
+                            if (catSubs && catSubs.size > 0) {
+                                // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
+                                if (catSubs.has('')) {
+                                    // Empty string means "Cost by Meter Category" - include all subscriptions
+                                    dayTotal = catData.total || 0;
+                                } else {
+                                    // Specific subscriptions selected - sum only those
+                                    catSubs.forEach(sub => {
+                                        dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
+                                    });
+                                }
+                            } else if (!hasCategorySelections) {
+                                // No category selections - apply subscription filter only
+                                if (selectedSubscriptions.size === 0) {
+                                    dayTotal = catData.total || 0;
+                                } else {
+                                    selectedSubscriptions.forEach(sub => {
+                                        dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
+                                    });
+                                }
                             }
+                            // else: category selections exist but this category is NOT selected - dayTotal stays 0
                         }
                     }
                     return dayTotal;
@@ -1933,15 +2368,15 @@ $datasetsByResourceJsonString
                     borderWidth: 1
                 }];
             } else if (view === 'stacked-category') {
-                datasets = buildFilteredDatasets('categories', categoryFilter, false);
+                datasets = buildFilteredDatasets('categories', categoryFilter, false, dataToUse);
             } else if (view === 'stacked-subscription') {
-                datasets = buildFilteredDatasets('subscriptions', categoryFilter, false);
+                datasets = buildFilteredDatasets('subscriptions', categoryFilter, false, dataToUse);
             } else if (view === 'stacked-meter') {
-                datasets = buildFilteredDatasets('meters', categoryFilter, true);
+                datasets = buildFilteredDatasets('meters', categoryFilter, true, dataToUse);
             } else if (view === 'stacked-resource') {
-                datasets = buildFilteredDatasets('resources', categoryFilter, true);
+                datasets = buildFilteredDatasets('resources', categoryFilter, true, dataToUse);
             } else {
-                datasets = buildFilteredDatasets('categories', categoryFilter, false);
+                datasets = buildFilteredDatasets('categories', categoryFilter, false, dataToUse);
             }
             
             costChart.data.labels = chartLabels;
@@ -1949,10 +2384,13 @@ $datasetsByResourceJsonString
             costChart.update();
         }
         
-        function buildFilteredDatasets(dimension, categoryFilter, includeOther) {
+        function buildFilteredDatasets(dimension, categoryFilter, includeOther, dataSource) {
+            // Use provided dataSource or fall back to rawDailyData
+            const data = dataSource || rawDailyData;
+            
             // Get all unique keys for this dimension (excluding "Other" which we handle separately)
             const allKeys = new Set();
-            rawDailyData.forEach(day => {
+            data.forEach(day => {
                 Object.keys(day[dimension] || {}).forEach(key => {
                     if (key !== 'Other') allKeys.add(key);
                 });
@@ -1971,8 +2409,8 @@ $datasetsByResourceJsonString
                     return;
                 }
                 
-                let totalCost = 0;
-                rawDailyData.forEach((day, dayIndex) => {
+                    let totalCost = 0;
+                data.forEach((day, dayIndex) => {
                     const dimData = day[dimension] && day[dimension][key];
                     if (!dimData) return;
                     
@@ -1981,19 +2419,50 @@ $datasetsByResourceJsonString
                     // Apply filters based on dimension type
                     if (dimension === 'categories') {
                         // When dimension is categories, key IS the category name
-                        // Apply subscription filter only
-                        if (selectedSubscriptions.size === 0) {
-                            value = dimData.total || 0;
-                        } else {
-                            selectedSubscriptions.forEach(sub => {
-                                value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
-                            });
+                        // Check if this category is selected via chart selections
+                        const catSubs = chartSelections.categories.get(key);
+                        if (catSubs && catSubs.size > 0) {
+                            // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
+                            if (catSubs.has('')) {
+                                // Empty string means "Cost by Meter Category" - include all subscriptions
+                                value = dimData.total || 0;
+                            } else {
+                                // Specific subscriptions selected - sum only those
+                                catSubs.forEach(sub => {
+                                    value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                });
+                            }
+                        } else if (chartSelections.categories.size === 0) {
+                            // No category selections - apply subscription filter only
+                            if (selectedSubscriptions.size === 0) {
+                                value = dimData.total || 0;
+                            } else {
+                                selectedSubscriptions.forEach(sub => {
+                                    value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                });
+                            }
                         }
+                        // else: category selections exist but this category is NOT selected - value stays 0
                     } else if (dimension === 'subscriptions') {
-                        // When dimension is subscriptions, apply category filter
-                        if (categoryFilter === 'all') {
+                        // When dimension is subscriptions, apply category filter and chart selections
+                        // Check if there are category selections active
+                        const hasCategorySelections = chartSelections.categories.size > 0;
+                        
+                        if (hasCategorySelections) {
+                            // Category selections are active - only include categories that are selected
+                            let selectedCatTotal = 0;
+                            chartSelections.categories.forEach((subs, cat) => {
+                                // Check if this subscription is selected for this category, or if category is selected from "Cost by Meter Category" (empty string)
+                                if (subs.has(key) || subs.has('')) {
+                                    selectedCatTotal += (dimData.byCategory && dimData.byCategory[cat]) || 0;
+                                }
+                            });
+                            value = selectedCatTotal;
+                        } else if (categoryFilter === 'all') {
+                            // No category selections, no category filter - use total
                             value = dimData.total || 0;
                         } else {
+                            // Category filter active - get value for this category
                             value = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
                         }
                     } else {
@@ -2050,7 +2519,7 @@ $datasetsByResourceJsonString
             let colorIndex = 0;
             
             topKeys.forEach(key => {
-                const data = rawDailyData.map((day, dayIndex) => {
+                const keyData = data.map((day, dayIndex) => {
                     const dimData = day[dimension] && day[dimension][key];
                     if (!dimData) return 0;
                     
@@ -2068,10 +2537,25 @@ $datasetsByResourceJsonString
                             });
                         }
                     } else if (dimension === 'subscriptions') {
-                        // When dimension is subscriptions, apply category filter
-                        if (categoryFilter === 'all') {
+                        // When dimension is subscriptions, apply category filter and chart selections
+                        // Check if there are category selections active
+                        const hasCategorySelections = chartSelections.categories.size > 0;
+                        
+                        if (hasCategorySelections) {
+                            // Category selections are active - only include categories that are selected
+                            let selectedCatTotal = 0;
+                            chartSelections.categories.forEach((subs, cat) => {
+                                // Check if this subscription is selected for this category, or if category is selected from "Cost by Meter Category" (empty string)
+                                if (subs.has(key) || subs.has('')) {
+                                    selectedCatTotal += (dimData.byCategory && dimData.byCategory[cat]) || 0;
+                                }
+                            });
+                            value = selectedCatTotal;
+                        } else if (categoryFilter === 'all') {
+                            // No category selections, no category filter - use total
                             value = dimData.total || 0;
                         } else {
+                            // Category filter active - get value for this category
                             value = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
                         }
                     } else {
@@ -2116,12 +2600,12 @@ $datasetsByResourceJsonString
                 });
                 
                 // Only include if there's non-zero data
-                if (data.some(v => v > 0)) {
+                if (keyData.some(v => v > 0)) {
                     // Calculate total cost for sorting
-                    const totalCost = data.reduce((sum, val) => sum + val, 0);
+                    const totalCost = keyData.reduce((sum, val) => sum + val, 0);
                     datasets.push({
                         label: key,
-                        data: data,
+                        data: keyData,
                         totalCost: totalCost, // Store for sorting
                         backgroundColor: chartColors[colorIndex % chartColors.length],
                         borderColor: chartColors[colorIndex % chartColors.length],
@@ -2136,7 +2620,7 @@ $datasetsByResourceJsonString
             
             // Add "Other" for meters and resources (at the top, before sorted items)
             if (includeOther) {
-                const otherDataCalc = rawDailyData.map((day, dayIndex) => {
+                const otherDataCalc = data.map((day, dayIndex) => {
                     // Use the filtered day total (already calculated based on filters)
                     const dayTotal = getFilteredDayTotal(day, categoryFilter, selectedSubscriptions);
                     
@@ -2673,6 +3157,626 @@ $datasetsByResourceJsonString
             }
         }
         
+        // Internal selection functions (no update calls)
+        function _selectSubscriptionInternal(subscription) {
+            if (!subscription) return;
+            chartSelections.subscriptions.add(subscription);
+        }
+        
+        function _selectCategoryInternal(category, subscription) {
+            if (!category) return;
+            // Normalize subscription: use empty string for null/undefined (Cost by Meter Category section)
+            const subKey = subscription || '';
+            if (!chartSelections.categories.has(category)) {
+                chartSelections.categories.set(category, new Set());
+            }
+            chartSelections.categories.get(category).add(subKey);
+        }
+        
+        function _selectSubcategoryInternal(subcategory, category, subscription) {
+            if (!subcategory) return;
+            const key = createSelectionKey(category, subscription || '');
+            if (!chartSelections.subcategories.has(subcategory)) {
+                chartSelections.subcategories.set(subcategory, new Set());
+            }
+            chartSelections.subcategories.get(subcategory).add(key);
+        }
+        
+        function _selectMeterInternal(meter, subcategory, category, subscription) {
+            if (!meter) return;
+            const key = createSelectionKey(subcategory, category, subscription);
+            if (!chartSelections.meters.has(meter)) {
+                chartSelections.meters.set(meter, new Set());
+            }
+            chartSelections.meters.get(meter).add(key);
+        }
+        
+        function _selectResourceInternal(resource, meter, subcategory, category, subscription) {
+            if (!resource) return;
+            const key = createSelectionKey(meter, subcategory, category, subscription);
+            if (!chartSelections.resources.has(resource)) {
+                chartSelections.resources.set(resource, new Set());
+            }
+            chartSelections.resources.get(resource).add(key);
+        }
+        
+        // Helper functions to select with children (using specific selectors)
+        function _selectCategoryWithChildren(category, subscription) {
+            _selectCategoryInternal(category, subscription);
+            
+            // Find the category card - handle both with and without subscription context
+            let categoryCard = null;
+            if (subscription) {
+                const selector = '.category-card[data-category="' + category + '"][data-subscription="' + subscription + '"]';
+                categoryCard = document.querySelector(selector);
+            } else {
+                // Cost by Meter Category section - no subscription attribute
+                const selector = '.category-card[data-category="' + category + '"]:not([data-subscription])';
+                categoryCard = document.querySelector(selector);
+            }
+            
+            if (categoryCard) {
+                const categoryContent = categoryCard.querySelector('.category-content');
+                if (categoryContent) {
+                    categoryContent.querySelectorAll(':scope > .subcategory-drilldown[data-subcategory]').forEach(subcatEl => {
+                        const subcategory = subcatEl.getAttribute('data-subcategory');
+                        if (subcategory) {
+                            _selectSubcategoryWithChildren(subcategory, category, subscription);
+                        }
+                    });
+                }
+            }
+        }
+        
+        function _selectSubcategoryWithChildren(subcategory, category, subscription) {
+            _selectSubcategoryInternal(subcategory, category, subscription);
+            
+            // Find meters within this subcategory (direct children only) - handle both cases
+            let subcatEl = null;
+            if (subscription) {
+                const selector = '.subcategory-drilldown[data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]';
+                subcatEl = document.querySelector(selector);
+            } else {
+                // Cost by Meter Category section - no subscription attribute
+                const selector = '.subcategory-drilldown[data-subcategory="' + subcategory + '"][data-category="' + category + '"]:not([data-subscription])';
+                subcatEl = document.querySelector(selector);
+            }
+            
+            if (subcatEl) {
+                const subcatContent = subcatEl.querySelector('.subcategory-content');
+                if (subcatContent) {
+                    subcatContent.querySelectorAll(':scope > .meter-card[data-meter]').forEach(meterEl => {
+                        const meter = meterEl.getAttribute('data-meter');
+                        if (meter) {
+                            _selectMeterWithChildren(meter, subcategory, category, subscription);
+                        }
+                    });
+                }
+            }
+        }
+        
+        function _selectMeterWithChildren(meter, subcategory, category, subscription) {
+            _selectMeterInternal(meter, subcategory, category, subscription);
+            
+            // Find resources within this meter (direct children only) - handle both cases
+            let meterEl = null;
+            if (subscription) {
+                const selector = '.meter-card[data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]';
+                meterEl = document.querySelector(selector);
+            } else {
+                // Cost by Meter Category section - no subscription attribute
+                const selector = '.meter-card[data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"]:not([data-subscription])';
+                meterEl = document.querySelector(selector);
+            }
+            
+            if (meterEl) {
+                const meterContent = meterEl.querySelector('.meter-content');
+                if (meterContent) {
+                    meterContent.querySelectorAll('tbody tr[data-resource]').forEach(resEl => {
+                        const resource = resEl.getAttribute('data-resource');
+                        if (resource) {
+                            _selectResourceInternal(resource, meter, subcategory, category, subscription);
+                        }
+                    });
+                }
+            }
+        }
+        
+        // Hierarchical selection functions (public API - calls update once)
+        function selectSubscription(subscription) {
+            if (!subscription) return;
+            _selectSubscriptionInternal(subscription);
+            
+            // Only select category-cards that are DIRECT children of this subscription
+            const subscriptionCard = document.querySelector('.subscription-card[data-subscription="' + subscription + '"]');
+            if (subscriptionCard) {
+                const subscriptionContent = subscriptionCard.querySelector('.category-content');
+                if (subscriptionContent) {
+                    subscriptionContent.querySelectorAll(':scope > .category-card[data-category]').forEach(catCard => {
+                        const category = catCard.getAttribute('data-category');
+                        if (category) {
+                            _selectCategoryWithChildren(category, subscription);
+                        }
+                    });
+                }
+            }
+            
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        function deselectSubscription(subscription) {
+            if (!subscription) return;
+            chartSelections.subscriptions.delete(subscription);
+            
+            // Remove all categories, subcategories, meters, and resources for this subscription
+            const categoriesToRemove = [];
+            chartSelections.categories.forEach((subs, cat) => {
+                if (subs.has(subscription)) {
+                    subs.delete(subscription);
+                    if (subs.size === 0) {
+                        categoriesToRemove.push(cat);
+                    }
+                }
+            });
+            categoriesToRemove.forEach(cat => chartSelections.categories.delete(cat));
+            
+            const subcatsToRemove = [];
+            chartSelections.subcategories.forEach((keys, subcat) => {
+                const newKeys = new Set();
+                keys.forEach(key => {
+                    if (!key.includes(subscription)) {
+                        newKeys.add(key);
+                    }
+                });
+                if (newKeys.size === 0) {
+                    subcatsToRemove.push(subcat);
+                } else {
+                    chartSelections.subcategories.set(subcat, newKeys);
+                }
+            });
+            subcatsToRemove.forEach(subcat => chartSelections.subcategories.delete(subcat));
+            
+            const metersToRemove = [];
+            chartSelections.meters.forEach((keys, meter) => {
+                const newKeys = new Set();
+                keys.forEach(key => {
+                    if (!key.includes(subscription)) {
+                        newKeys.add(key);
+                    }
+                });
+                if (newKeys.size === 0) {
+                    metersToRemove.push(meter);
+                } else {
+                    chartSelections.meters.set(meter, newKeys);
+                }
+            });
+            metersToRemove.forEach(meter => chartSelections.meters.delete(meter));
+            
+            const resourcesToRemove = [];
+            chartSelections.resources.forEach((keys, resource) => {
+                const newKeys = new Set();
+                keys.forEach(key => {
+                    if (!key.includes(subscription)) {
+                        newKeys.add(key);
+                    }
+                });
+                if (newKeys.size === 0) {
+                    resourcesToRemove.push(resource);
+                } else {
+                    chartSelections.resources.set(resource, newKeys);
+                }
+            });
+            resourcesToRemove.forEach(resource => chartSelections.resources.delete(resource));
+            
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        function selectCategory(category, subscription) {
+            if (!category) return;
+            _selectCategoryWithChildren(category, subscription);
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        function deselectCategory(category, subscription) {
+            if (!category) return;
+            // Normalize subscription: use empty string for null/undefined (Cost by Meter Category section)
+            const subKey = subscription || '';
+            const subs = chartSelections.categories.get(category);
+            if (subs) {
+                subs.delete(subKey);
+                if (subs.size === 0) {
+                    chartSelections.categories.delete(category);
+                }
+            }
+            
+            // Remove all subcategories, meters, and resources for this category/subscription
+            const subcatsToRemove = [];
+            chartSelections.subcategories.forEach((keys, subcat) => {
+                const newKeys = new Set();
+                keys.forEach(key => {
+                    const keyParts = key.split('|');
+                    if (!(keyParts.includes(category) && keyParts.includes(subscription))) {
+                        newKeys.add(key);
+                    }
+                });
+                if (newKeys.size === 0) {
+                    subcatsToRemove.push(subcat);
+                } else {
+                    chartSelections.subcategories.set(subcat, newKeys);
+                }
+            });
+            subcatsToRemove.forEach(subcat => chartSelections.subcategories.delete(subcat));
+            
+            const metersToRemove = [];
+            chartSelections.meters.forEach((keys, meter) => {
+                const newKeys = new Set();
+                keys.forEach(key => {
+                    const keyParts = key.split('|');
+                    if (!(keyParts.includes(category) && keyParts.includes(subscription))) {
+                        newKeys.add(key);
+                    }
+                });
+                if (newKeys.size === 0) {
+                    metersToRemove.push(meter);
+                } else {
+                    chartSelections.meters.set(meter, newKeys);
+                }
+            });
+            metersToRemove.forEach(meter => chartSelections.meters.delete(meter));
+            
+            const resourcesToRemove = [];
+            chartSelections.resources.forEach((keys, resource) => {
+                const newKeys = new Set();
+                keys.forEach(key => {
+                    const keyParts = key.split('|');
+                    if (!(keyParts.includes(category) && keyParts.includes(subscription))) {
+                        newKeys.add(key);
+                    }
+                });
+                if (newKeys.size === 0) {
+                    resourcesToRemove.push(resource);
+                } else {
+                    chartSelections.resources.set(resource, newKeys);
+                }
+            });
+            resourcesToRemove.forEach(resource => chartSelections.resources.delete(resource));
+            
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        function selectSubcategory(subcategory, category, subscription) {
+            if (!subcategory) return;
+            _selectSubcategoryWithChildren(subcategory, category, subscription);
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        function deselectSubcategory(subcategory, category, subscription) {
+            if (!subcategory) return;
+            const key = createSelectionKey(category, subscription || '');
+            const keys = chartSelections.subcategories.get(subcategory);
+            if (keys) {
+                keys.delete(key);
+                if (keys.size === 0) {
+                    chartSelections.subcategories.delete(subcategory);
+                }
+            }
+            
+            // Remove all meters and resources for this subcategory
+            const metersToRemove = [];
+            chartSelections.meters.forEach((keys, meter) => {
+                const newKeys = new Set();
+                keys.forEach(k => {
+                    const keyParts = k.split('|');
+                    if (!(keyParts.includes(subcategory) && keyParts.includes(category) && (!subscription || keyParts.includes(subscription)))) {
+                        newKeys.add(k);
+                    }
+                });
+                if (newKeys.size === 0) {
+                    metersToRemove.push(meter);
+                } else {
+                    chartSelections.meters.set(meter, newKeys);
+                }
+            });
+            metersToRemove.forEach(meter => chartSelections.meters.delete(meter));
+            
+            const resourcesToRemove = [];
+            chartSelections.resources.forEach((keys, resource) => {
+                const newKeys = new Set();
+                keys.forEach(k => {
+                    const keyParts = k.split('|');
+                    if (!(keyParts.includes(subcategory) && keyParts.includes(category) && (!subscription || keyParts.includes(subscription)))) {
+                        newKeys.add(k);
+                    }
+                });
+                if (newKeys.size === 0) {
+                    resourcesToRemove.push(resource);
+                } else {
+                    chartSelections.resources.set(resource, newKeys);
+                }
+            });
+            resourcesToRemove.forEach(resource => chartSelections.resources.delete(resource));
+            
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        function selectMeter(meter, subcategory, category, subscription) {
+            if (!meter) return;
+            _selectMeterWithChildren(meter, subcategory, category, subscription);
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        function deselectMeter(meter, subcategory, category, subscription) {
+            if (!meter) return;
+            const key = createSelectionKey(subcategory, category, subscription);
+            const keys = chartSelections.meters.get(meter);
+            if (keys) {
+                keys.delete(key);
+                if (keys.size === 0) {
+                    chartSelections.meters.delete(meter);
+                }
+            }
+            
+            // Remove all resources for this meter
+            const resourcesToRemove = [];
+            chartSelections.resources.forEach((keys, resource) => {
+                const newKeys = new Set();
+                keys.forEach(k => {
+                    const keyParts = k.split('|');
+                    if (!(keyParts.includes(meter) && keyParts.includes(subcategory) && keyParts.includes(category) && (!subscription || keyParts.includes(subscription)))) {
+                        newKeys.add(k);
+                    }
+                });
+                if (newKeys.size === 0) {
+                    resourcesToRemove.push(resource);
+                } else {
+                    chartSelections.resources.set(resource, newKeys);
+                }
+            });
+            resourcesToRemove.forEach(resource => chartSelections.resources.delete(resource));
+            
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        function selectResource(resource, meter, subcategory, category, subscription) {
+            if (!resource) return;
+            _selectResourceInternal(resource, meter, subcategory, category, subscription);
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        function deselectResource(resource, meter, subcategory, category, subscription) {
+            if (!resource) return;
+            const key = createSelectionKey(meter, subcategory, category, subscription);
+            const keys = chartSelections.resources.get(resource);
+            if (keys) {
+                keys.delete(key);
+                if (keys.size === 0) {
+                    chartSelections.resources.delete(resource);
+                }
+            }
+            
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        // Visual feedback functions
+        function updateChartSelectionsVisual() {
+            // Remove all chart-selected classes
+            document.querySelectorAll('.chart-selected').forEach(el => {
+                el.classList.remove('chart-selected');
+            });
+            
+            // Add chart-selected class to selected elements
+            chartSelections.subscriptions.forEach(sub => {
+                document.querySelectorAll('[data-subscription="' + sub + '"].subscription-card').forEach(el => {
+                    el.classList.add('chart-selected');
+                });
+            });
+            
+            chartSelections.categories.forEach((subs, cat) => {
+                subs.forEach(sub => {
+                    if (sub) {
+                        // Cost by Subscription section - has subscription attribute
+                        document.querySelectorAll('[data-category="' + cat + '"][data-subscription="' + sub + '"].category-card').forEach(el => {
+                            el.classList.add('chart-selected');
+                        });
+                    } else {
+                        // Cost by Meter Category section - no subscription attribute
+                        document.querySelectorAll('[data-category="' + cat + '"]:not([data-subscription]).category-card').forEach(el => {
+                            el.classList.add('chart-selected');
+                        });
+                    }
+                });
+            });
+            
+            chartSelections.subcategories.forEach((keys, subcat) => {
+                keys.forEach(key => {
+                    const parts = key.split('|');
+                    const category = parts[0];
+                    const subscription = parts[1];
+                    const selector = subscription ? '[data-subcategory="' + subcat + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]' : '[data-subcategory="' + subcat + '"][data-category="' + category + '"]';
+                    document.querySelectorAll(selector).forEach(el => {
+                        el.classList.add('chart-selected');
+                    });
+                });
+            });
+            
+            chartSelections.meters.forEach((keys, meter) => {
+                keys.forEach(key => {
+                    const parts = key.split('|');
+                    const subcategory = parts[0];
+                    const category = parts[1];
+                    const subscription = parts[2];
+                    const selector = subscription ? '[data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]' : '[data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"]';
+                    document.querySelectorAll(selector).forEach(el => {
+                        el.classList.add('chart-selected');
+                    });
+                });
+            });
+            
+            chartSelections.resources.forEach((keys, resource) => {
+                keys.forEach(key => {
+                    const parts = key.split('|');
+                    const meter = parts[0];
+                    const subcategory = parts[1];
+                    const category = parts[2];
+                    const subscription = parts[3];
+                    const selector = subscription ? '[data-resource="' + resource + '"][data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]' : '[data-resource="' + resource + '"][data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"]';
+                    document.querySelectorAll(selector).forEach(el => {
+                        el.classList.add('chart-selected');
+                    });
+                });
+            });
+            
+            // Show/hide clear button
+            const clearBtn = document.getElementById('clearChartSelections');
+            if (clearBtn) {
+                const hasSelections = chartSelections.subscriptions.size > 0 ||
+                    chartSelections.categories.size > 0 ||
+                    chartSelections.subcategories.size > 0 ||
+                    chartSelections.meters.size > 0 ||
+                    chartSelections.resources.size > 0;
+                clearBtn.style.display = hasSelections ? 'block' : 'none';
+            }
+        }
+        
+        // Clear all selections
+        function clearAllChartSelections() {
+            chartSelections.subscriptions.clear();
+            chartSelections.categories.clear();
+            chartSelections.subcategories.clear();
+            chartSelections.meters.clear();
+            chartSelections.resources.clear();
+            updateChartSelectionsVisual();
+            updateChartWithSelections();
+        }
+        
+        // Ctrl+Click event handlers
+        function handleSubscriptionSelection(element, event) {
+            if (event && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                event.stopPropagation();
+                const subscription = getSubscriptionFromElement(element);
+                if (subscription) {
+                    if (chartSelections.subscriptions.has(subscription)) {
+                        deselectSubscription(subscription);
+                    } else {
+                        selectSubscription(subscription);
+                    }
+                }
+                return false;
+            }
+            // If not Ctrl+Click, allow normal toggle behavior
+            return true;
+        }
+        
+        function handleCategorySelection(element, event) {
+            if (event && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                event.stopPropagation();
+                const category = getCategoryFromElement(element);
+                const subscription = getSubscriptionFromElement(element);
+                // Normalize subscription: use empty string for null/undefined (Cost by Meter Category section)
+                const subKey = subscription || '';
+                if (category) {
+                    const key = createSelectionKey(category, subKey);
+                    const isSelected = chartSelections.categories.has(category) && 
+                                     chartSelections.categories.get(category).has(subKey);
+                    if (isSelected) {
+                        deselectCategory(category, subscription);
+                    } else {
+                        selectCategory(category, subscription);
+                    }
+                }
+                return false;
+            }
+            // If not Ctrl+Click, allow normal toggle behavior
+            toggleCategory(element, event);
+            return false;
+        }
+        
+        function handleSubcategorySelection(element, event) {
+            if (event && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                event.stopPropagation();
+                const subcategory = getSubcategoryFromElement(element);
+                const category = getCategoryFromElement(element);
+                const subscription = getSubscriptionFromElement(element);
+                if (subcategory) {
+                    const key = createSelectionKey(category, subscription);
+                    const isSelected = chartSelections.subcategories.has(subcategory) && 
+                                     chartSelections.subcategories.get(subcategory).has(key);
+                    if (isSelected) {
+                        deselectSubcategory(subcategory, category, subscription);
+                    } else {
+                        selectSubcategory(subcategory, category, subscription);
+                    }
+                }
+                return false;
+            }
+            // If not Ctrl+Click, allow normal toggle behavior
+            toggleSubCategory(element, event);
+            return false;
+        }
+        
+        function handleMeterSelection(element, event) {
+            if (event && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                event.stopPropagation();
+                const meter = getMeterFromElement(element);
+                const subcategory = getSubcategoryFromElement(element);
+                const category = getCategoryFromElement(element);
+                const subscription = getSubscriptionFromElement(element);
+                if (meter) {
+                    const key = createSelectionKey(subcategory, category, subscription);
+                    const isSelected = chartSelections.meters.has(meter) && 
+                                     chartSelections.meters.get(meter).has(key);
+                    if (isSelected) {
+                        deselectMeter(meter, subcategory, category, subscription);
+                    } else {
+                        selectMeter(meter, subcategory, category, subscription);
+                    }
+                }
+                return false;
+            }
+            // If not Ctrl+Click, allow normal toggle behavior
+            toggleMeter(element);
+            return false;
+        }
+        
+        function handleResourceSelection(element, event) {
+            if (event && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                event.stopPropagation();
+                const resource = getResourceFromElement(element);
+                const meter = getMeterFromElement(element);
+                const subcategory = getSubcategoryFromElement(element);
+                const category = getCategoryFromElement(element);
+                const subscription = getSubscriptionFromElement(element);
+                if (resource) {
+                    const key = createSelectionKey(meter, subcategory, category, subscription);
+                    const isSelected = chartSelections.resources.has(resource) && 
+                                     chartSelections.resources.get(resource).has(key);
+                    if (isSelected) {
+                        deselectResource(resource, meter, subcategory, category, subscription);
+                    } else {
+                        selectResource(resource, meter, subcategory, category, subscription);
+                    }
+                }
+                return false;
+            }
+            // If not Ctrl+Click, allow normal behavior (no toggle for rows)
+            return true;
+        }
+        
         function toggleCategory(element, event) {
             // Stop event propagation to prevent parent category cards from toggling
             if (event) {
@@ -2793,22 +3897,83 @@ $datasetsByResourceJsonString
             document.querySelectorAll('.category-card:not(.subscription-card):not(.resource-card)').forEach(card => {
                 const cardText = card.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || cardText.includes(searchText);
-                if (matchesSearch) {
-                    card.classList.remove('filtered-out');
-                } else {
-                    card.classList.add('filtered-out');
+                
+                // Check if this category card has any resources from selected subscriptions
+                let matchesSubscription = selectedSubscriptions.size === 0;
+                if (selectedSubscriptions.size > 0 && !matchesSubscription) {
+                    // Check if any resource rows within this category match selected subscriptions
+                    const categoryContent = card.querySelector('.category-content');
+                    if (categoryContent) {
+                        const visibleResourceRows = categoryContent.querySelectorAll('tr[data-subscription]');
+                        if (visibleResourceRows.length > 0) {
+                            visibleResourceRows.forEach(row => {
+                                const rowSub = row.getAttribute('data-subscription');
+                                if (rowSub && selectedSubscriptions.has(rowSub)) {
+                                    matchesSubscription = true;
+                                }
+                            });
+                        } else {
+                            // Check subcategories and meters for subscription match
+                            const subcats = categoryContent.querySelectorAll('.subcategory-drilldown');
+                            subcats.forEach(subcat => {
+                                const subcatSub = subcat.getAttribute('data-subscription');
+                                if (subcatSub && selectedSubscriptions.has(subcatSub)) {
+                                    matchesSubscription = true;
+                                } else {
+                                    // Check meters within subcategory
+                                    const meters = subcat.querySelectorAll('.meter-card[data-subscription]');
+                                    meters.forEach(meter => {
+                                        const meterSub = meter.getAttribute('data-subscription');
+                                        if (meterSub && selectedSubscriptions.has(meterSub)) {
+                                            matchesSubscription = true;
+                                        }
+                                    });
+                                }
+                            });
+                        }
+                    }
                 }
+                
+                card.classList.toggle('filtered-out', !matchesSearch || !matchesSubscription);
             });
             
             // Filter subcategory drilldowns (nested in category cards)
             document.querySelectorAll('.subcategory-drilldown').forEach(subcat => {
                 const subcatText = subcat.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || subcatText.includes(searchText);
-                if (matchesSearch) {
-                    subcat.classList.remove('filtered-out');
-                } else {
-                    subcat.classList.add('filtered-out');
+                
+                // Check subscription match - subcategories in "Cost by Meter Category" don't have data-subscription
+                // but subcategories in "Cost by Subscription" do
+                let matchesSubscription = selectedSubscriptions.size === 0;
+                if (selectedSubscriptions.size > 0 && !matchesSubscription) {
+                    const subcatSub = subcat.getAttribute('data-subscription');
+                    if (subcatSub) {
+                        // Has subscription attribute - check directly
+                        matchesSubscription = selectedSubscriptions.has(subcatSub);
+                    } else {
+                        // No subscription attribute - check if any meters/resources within match
+                        const meters = subcat.querySelectorAll('.meter-card[data-subscription]');
+                        if (meters.length > 0) {
+                            meters.forEach(meter => {
+                                const meterSub = meter.getAttribute('data-subscription');
+                                if (meterSub && selectedSubscriptions.has(meterSub)) {
+                                    matchesSubscription = true;
+                                }
+                            });
+                        } else {
+                            // Check resource rows
+                            const resourceRows = subcat.querySelectorAll('tr[data-subscription]');
+                            resourceRows.forEach(row => {
+                                const rowSub = row.getAttribute('data-subscription');
+                                if (rowSub && selectedSubscriptions.has(rowSub)) {
+                                    matchesSubscription = true;
+                                }
+                            });
+                        }
+                    }
                 }
+                
+                subcat.classList.toggle('filtered-out', !matchesSearch || !matchesSubscription);
             });
             
             // Filter meter cards (nested in categories/subcategories)
@@ -2862,6 +4027,17 @@ $datasetsByResourceJsonString
                     const catMatches = cat.textContent.toLowerCase().includes(searchText);
                     cat.classList.toggle('filtered-out', !catMatches && visibleSubcats.length === 0);
                 }
+            });
+            
+            // Filter "Top 20 Cost Increase Drivers" cards by subscription
+            document.querySelectorAll('.resource-card.increased-cost-card').forEach(card => {
+                const subscription = card.getAttribute('data-subscription');
+                const matchesSubscription = selectedSubscriptions.size === 0 || 
+                    (subscription && selectedSubscriptions.has(subscription));
+                const cardText = card.textContent.toLowerCase();
+                const matchesSearch = searchText === '' || cardText.includes(searchText);
+                
+                card.classList.toggle('filtered-out', !matchesSubscription || !matchesSearch);
             });
             
             // Recalculate and reorder Top 20 resources (this also applies search filter to resource cards)

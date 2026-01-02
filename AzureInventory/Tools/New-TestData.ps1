@@ -509,7 +509,7 @@ function New-TestCostTrackingData {
     )
     
     $bySubscription = @{
-        'Sub-Prod-001' = @{
+        'sub-prod-001' = @{
             Name = 'Sub-Prod-001'
             SubscriptionId = 'sub-prod-001'
             CostLocal = 12500.50
@@ -517,7 +517,7 @@ function New-TestCostTrackingData {
             Currency = 'USD'
             ItemCount = 15
         }
-        'Sub-Dev-002' = @{
+        'sub-dev-002' = @{
             Name = 'Sub-Dev-002'
             SubscriptionId = 'sub-dev-002'
             CostLocal = 3200.75
@@ -525,7 +525,7 @@ function New-TestCostTrackingData {
             Currency = 'USD'
             ItemCount = 8
         }
-        'Sub-Test-003' = @{
+        'sub-test-003' = @{
             Name = 'Sub-Test-003'
             SubscriptionId = 'sub-test-003'
             CostLocal = 850.25
@@ -632,7 +632,15 @@ function New-TestCostTrackingData {
     $dailyTrend = @()
     $categories = @('Virtual Machines', 'Storage', 'Networking', 'SQL Database', 'App Service')
     $subscriptions = @('Sub-Prod-001', 'Sub-Dev-002', 'Sub-Test-003')
-    $meters = @('D1 v2', 'Standard_LRS', 'Data Transfer', 'DTU', 'Basic')
+    # Meters must match categoryMeters used in RawData so Ctrl+click filtering works
+    # (chart shows meters from DailyTrend.ByMeter, tables show meters from RawData - they must be consistent)
+    $meters = @(
+        'D2s v3', 'D4s v3', 'Standard_B2s', 'Standard_D2s_v3',           # Virtual Machines
+        'Standard_LRS', 'Standard_GRS', 'Premium_LRS', 'Hot Tier',       # Storage
+        'Data Transfer', 'VPN Gateway', 'Load Balancer', 'Public IP',   # Networking
+        'DTU - S2', 'DTU - S3', 'vCore', 'Elastic Pool',                 # SQL Database
+        'Basic B1', 'Standard S1', 'Premium P1', 'Free F1'               # App Service
+    )
     
     # Track resource costs over time to create realistic increases
     $halfwayPoint = [math]::Floor($DayCount / 2)
@@ -657,19 +665,28 @@ function New-TestCostTrackingData {
                 CostLocal = $catCost
                 CostUSD = $catCost
                 BySubscription = @{
-                    'Sub-Prod-001' = [math]::Round($catCost * 0.6, 2)
-                    'Sub-Dev-002' = [math]::Round($catCost * 0.3, 2)
-                    'Sub-Test-003' = [math]::Round($catCost * 0.1, 2)
+                    'Sub-Prod-001' = @{
+                        CostLocal = [math]::Round($catCost * 0.6, 2)
+                        CostUSD = [math]::Round($catCost * 0.6, 2)
+                    }
+                    'Sub-Dev-002' = @{
+                        CostLocal = [math]::Round($catCost * 0.3, 2)
+                        CostUSD = [math]::Round($catCost * 0.3, 2)
+                    }
+                    'Sub-Test-003' = @{
+                        CostLocal = [math]::Round($catCost * 0.1, 2)
+                        CostUSD = [math]::Round($catCost * 0.1, 2)
+                    }
                 }
             }
         }
         
-        # Build subscription breakdown
-        $bySubscription = @{}
+        # Build subscription breakdown for this day (use different variable name to avoid overwriting top-level $bySubscription)
+        $dayBySubscription = @{}
         $subCosts = @(0.6, 0.3, 0.1) # Distribution percentages
         foreach ($subIndex in 0..($subscriptions.Count - 1)) {
             $subCost = [math]::Round($baseCost * $subCosts[$subIndex], 2)
-            $bySubscription[$subscriptions[$subIndex]] = @{
+            $dayBySubscription[$subscriptions[$subIndex]] = @{
                 CostLocal = $subCost
                 CostUSD = $subCost
                 ByCategory = @{}
@@ -677,101 +694,132 @@ function New-TestCostTrackingData {
             # Populate category breakdown for this subscription
             foreach ($catIndex in 0..($categories.Count - 1)) {
                 $catCost = [math]::Round($baseCost * $categoryCosts[$catIndex] * $subCosts[$subIndex], 2)
-                $bySubscription[$subscriptions[$subIndex]].ByCategory[$categories[$catIndex]] = @{
+                $dayBySubscription[$subscriptions[$subIndex]].ByCategory[$categories[$catIndex]] = @{
                     CostLocal = $catCost
                     CostUSD = $catCost
                 }
             }
         }
         
-        # Build meter breakdown (simplified - top 5 meters)
+        # Build meter breakdown for all meters
+        # Map meters to their correct categories (meters are grouped by 4 per category)
+        $meterToCategory = @{
+            'D2s v3' = 'Virtual Machines'; 'D4s v3' = 'Virtual Machines'; 'Standard_B2s' = 'Virtual Machines'; 'Standard_D2s_v3' = 'Virtual Machines'
+            'Standard_LRS' = 'Storage'; 'Standard_GRS' = 'Storage'; 'Premium_LRS' = 'Storage'; 'Hot Tier' = 'Storage'
+            'Data Transfer' = 'Networking'; 'VPN Gateway' = 'Networking'; 'Load Balancer' = 'Networking'; 'Public IP' = 'Networking'
+            'DTU - S2' = 'SQL Database'; 'DTU - S3' = 'SQL Database'; 'vCore' = 'SQL Database'; 'Elastic Pool' = 'SQL Database'
+            'Basic B1' = 'App Service'; 'Standard S1' = 'App Service'; 'Premium P1' = 'App Service'; 'Free F1' = 'App Service'
+        }
         $byMeter = @{}
-        $meterCosts = @(0.30, 0.25, 0.20, 0.15, 0.10)
         foreach ($meterIndex in 0..($meters.Count - 1)) {
-            $meterCost = [math]::Round($baseCost * $meterCosts[$meterIndex], 2)
-            $byMeter[$meters[$meterIndex]] = @{
+            $meterName = $meters[$meterIndex]
+            $meterCategory = $meterToCategory[$meterName]
+            # Distribute costs across meters: higher index = lower cost (creates natural ranking)
+            $costFactor = 0.15 - ($meterIndex * 0.006)  # Range from ~0.15 to ~0.03
+            $meterCost = [math]::Round($baseCost * [math]::Max(0.02, $costFactor), 2)
+            $byMeter[$meterName] = @{
                 CostLocal = $meterCost
                 CostUSD = $meterCost
                 ByCategory = @{
-                    $categories[$meterIndex % $categories.Count] = @{
+                    $meterCategory = @{
                         CostLocal = $meterCost
                         CostUSD = $meterCost
                     }
                 }
                 BySubscription = @{
-                    'Sub-Prod-001' = [math]::Round($meterCost * 0.6, 2)
-                    'Sub-Dev-002' = [math]::Round($meterCost * 0.3, 2)
-                    'Sub-Test-003' = [math]::Round($meterCost * 0.1, 2)
+                    'Sub-Prod-001' = @{
+                        CostLocal = [math]::Round($meterCost * 0.6, 2)
+                        CostUSD = [math]::Round($meterCost * 0.6, 2)
+                    }
+                    'Sub-Dev-002' = @{
+                        CostLocal = [math]::Round($meterCost * 0.3, 2)
+                        CostUSD = [math]::Round($meterCost * 0.3, 2)
+                    }
+                    'Sub-Test-003' = @{
+                        CostLocal = [math]::Round($meterCost * 0.1, 2)
+                        CostUSD = [math]::Round($meterCost * 0.1, 2)
+                    }
                 }
             }
         }
         
         # Build resource breakdown using subscription-specific resources
+        # Include multiple resources per subscription to match real data patterns
         $byResource = @{}
         $resourceIndex = 0
         foreach ($subName in $subscriptions) {
             $subResources = $subscriptionResources[$subName]
-            # Add top resources from each subscription
-            if ($subResources.VMs.Count -gt 0) {
-                $vmName = $subResources.VMs[0]
-                $baseVmCost = $baseCost * 0.15 * (0.6 - ($resourceIndex * 0.1))
+            # Add multiple VMs from each subscription (up to 3-4 per subscription)
+            $vmsToAdd = [math]::Min($subResources.VMs.Count, 4)
+            for ($vmIdx = 0; $vmIdx -lt $vmsToAdd; $vmIdx++) {
+                $vmName = $subResources.VMs[$vmIdx]
+                $baseVmCost = $baseCost * 0.15 * (0.6 - ($resourceIndex * 0.05) - ($vmIdx * 0.05))
                 # Create increasing trend for some resources in second half (recent days have higher costs)
-                # Since loop goes from high $i (old) to low $i (new), we want low $i values to have higher costs
                 if ($i -lt $halfwayPoint) {
                     $daysFromHalfway = $halfwayPoint - $i
-                    $trendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * (0.4 + ($resourceIndex * 0.2))  # 40-80% increase
+                    $trendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * (0.4 + ($resourceIndex * 0.1) + ($vmIdx * 0.1))
                     $baseVmCost = $baseVmCost * $trendMultiplier
                 }
                 $vmCost = [math]::Round($baseVmCost, 2)
-                $byResource[$vmName] = @{
-                    CostLocal = $vmCost
-                    CostUSD = $vmCost
-                    ByCategory = @{
-                        'Virtual Machines' = @{
-                            CostLocal = $vmCost
-                            CostUSD = $vmCost
+                if ($vmCost -gt 0.01) {
+                    $byResource[$vmName] = @{
+                        CostLocal = $vmCost
+                        CostUSD = $vmCost
+                        ByCategory = @{
+                            'Virtual Machines' = @{
+                                CostLocal = $vmCost
+                                CostUSD = $vmCost
+                            }
                         }
-                    }
-                    BySubscription = @{
-                        $subName = $vmCost
+                        BySubscription = @{
+                            $subName = @{
+                                CostLocal = $vmCost
+                                CostUSD = $vmCost
+                            }
+                        }
                     }
                 }
             }
-            if ($subResources.Storage.Count -gt 0) {
-                $storName = $subResources.Storage[0]
-                $baseStorCost = $baseCost * 0.12 * (0.6 - ($resourceIndex * 0.1))
-                # Create increasing trend for storage resources in second half (less aggressive, recent days have higher costs)
-                # Since loop goes from high $i (old) to low $i (new), we want low $i values to have higher costs
+            # Add storage resources
+            $storToAdd = [math]::Min($subResources.Storage.Count, 2)
+            for ($storIdx = 0; $storIdx -lt $storToAdd; $storIdx++) {
+                $storName = $subResources.Storage[$storIdx]
+                $baseStorCost = $baseCost * 0.12 * (0.6 - ($resourceIndex * 0.05) - ($storIdx * 0.05))
                 if ($i -lt $halfwayPoint) {
                     $daysFromHalfway = $halfwayPoint - $i
-                    $trendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * (0.2 + ($resourceIndex * 0.1))  # 20-40% increase
+                    $trendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * (0.2 + ($resourceIndex * 0.05) + ($storIdx * 0.05))
                     $baseStorCost = $baseStorCost * $trendMultiplier
                 }
                 $storCost = [math]::Round($baseStorCost, 2)
-                $byResource[$storName] = @{
-                    CostLocal = $storCost
-                    CostUSD = $storCost
-                    ByCategory = @{
-                        'Storage' = @{
-                            CostLocal = $storCost
-                            CostUSD = $storCost
+                if ($storCost -gt 0.01) {
+                    $byResource[$storName] = @{
+                        CostLocal = $storCost
+                        CostUSD = $storCost
+                        ByCategory = @{
+                            'Storage' = @{
+                                CostLocal = $storCost
+                                CostUSD = $storCost
+                            }
                         }
-                    }
-                    BySubscription = @{
-                        $subName = $storCost
+                        BySubscription = @{
+                            $subName = @{
+                                CostLocal = $storCost
+                                CostUSD = $storCost
+                            }
+                        }
                     }
                 }
             }
             $resourceIndex++
         }
         
-        $dailyTrend += [PSCustomObject]@{
+        $dailyTrend += @{
             Date = $date
             DateString = $dateString
             TotalCostLocal = [math]::Round($baseCost, 2)
             TotalCostUSD = [math]::Round($baseCost, 2)
             ByCategory = $byCategory
-            BySubscription = $bySubscription
+            BySubscription = $dayBySubscription
             ByMeter = $byMeter
             ByResource = $byResource
         }
@@ -863,6 +911,9 @@ function New-TestCostTrackingData {
         }
     }
     
+    # Collect all unique resource names from rawData
+    $allUniqueResourceNames = $rawData | Select-Object -ExpandProperty ResourceName -Unique | Sort-Object
+    
     $costData = @{
         GeneratedAt = Get-Date
         PeriodStart = (Get-Date).AddDays(-$DayCount)
@@ -876,6 +927,7 @@ function New-TestCostTrackingData {
         TopResources = $topResources
         DailyTrend = $dailyTrend
         RawData = $rawData
+        AllUniqueResourceNames = $allUniqueResourceNames
         SubscriptionCount = 3
     }
     
@@ -2073,17 +2125,40 @@ function Test-SingleReport {
         return
     }
     
-    # Always reload module to ensure latest version is used
-    Write-Host "Loading module functions..." -ForegroundColor Yellow
-    $initScript = Join-Path (Split-Path $PSScriptRoot -Parent) "Init-Local.ps1"
-    if (Test-Path $initScript) {
-        . $initScript
+    # Check if required export functions are available (don't reload - user should run Init-Local.ps1 first)
+    if ($ReportType -eq 'All') {
+        $requiredFunctions = @('Export-SecurityReport', 'Export-VMBackupReport', 'Export-ChangeTrackingReport', 
+                              'Export-CostTrackingReport', 'Export-EOLReport', 'Export-NetworkInventoryReport', 
+                              'Export-RBACReport', 'Export-AdvisorReport', 'Export-DashboardReport')
+        $missingFunctions = @()
+        foreach ($func in $requiredFunctions) {
+            if (-not (Get-Command $func -ErrorAction SilentlyContinue)) {
+                $missingFunctions += $func
+            }
+        }
+        if ($missingFunctions.Count -gt 0) {
+            Write-Error "Required functions not available: $($missingFunctions -join ', '). Please run 'Init-Local.ps1' first."
+            return
+        }
     } else {
-        Write-Error "Init-Local.ps1 not found. Please ensure you're running from the correct directory."
-        return
+        $requiredFunction = switch ($ReportType) {
+            'Security' { 'Export-SecurityReport' }
+            'VMBackup' { 'Export-VMBackupReport' }
+            'ChangeTracking' { 'Export-ChangeTrackingReport' }
+            'CostTracking' { 'Export-CostTrackingReport' }
+            'EOL' { 'Export-EOLReport' }
+            'NetworkInventory' { 'Export-NetworkInventoryReport' }
+            'RBAC' { 'Export-RBACReport' }
+            'Advisor' { 'Export-AdvisorReport' }
+            'Dashboard' { 'Export-DashboardReport' }
+        }
+        if (-not (Get-Command $requiredFunction -ErrorAction SilentlyContinue)) {
+            Write-Error "Function $requiredFunction not available. Please run 'Init-Local.ps1' first."
+            return
+        }
     }
     
-    # Verify the required functions are available
+    # Verify the required functions are available (after reload if needed)
     if ($ReportType -eq 'All') {
         $requiredFunctions = @(
             'Export-SecurityReport',
@@ -2103,7 +2178,7 @@ function Test-SingleReport {
             }
         }
         if ($missingFunctions.Count -gt 0) {
-            Write-Error "Required functions not available after loading Init-Local.ps1: $($missingFunctions -join ', ')"
+            Write-Error "Required functions not available: $($missingFunctions -join ', '). Please run Init-Local.ps1 first."
             return
         }
     } else {
@@ -2120,7 +2195,7 @@ function Test-SingleReport {
         }
         
         if (-not (Get-Command $requiredFunction -ErrorAction SilentlyContinue)) {
-            Write-Error "Function $requiredFunction not available after loading Init-Local.ps1"
+            Write-Error "Function $requiredFunction not available. Please run Init-Local.ps1 first."
             return
         }
     }

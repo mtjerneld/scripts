@@ -440,3 +440,17 @@ h3[onclick],
     color: var(--text-secondary);
 }
 
+/* Chart selection highlighting */
+.category-card.chart-selected,
+.subcategory-drilldown.chart-selected,
+.meter-card.chart-selected,
+.data-table tbody tr.chart-selected {
+    background-color: rgba(84, 160, 255, 0.15) !important;
+    border-left: 3px solid var(--accent-blue) !important;
+}
+
+.subscription-card.chart-selected {
+    background-color: rgba(84, 160, 255, 0.15) !important;
+    border-left: 3px solid var(--accent-blue) !important;
+}
+
