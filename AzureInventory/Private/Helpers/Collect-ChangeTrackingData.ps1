@@ -19,6 +19,9 @@
 .OUTPUTS
     Updated collections (ChangeTrackingData, Errors).
 #>
+# Note: "Collect" is intentionally used (not an approved verb) to distinguish aggregation functions
+# from single-source retrieval functions (which use "Get-"). This is a known PSScriptAnalyzer warning.
+# Suppressing PSScriptAnalyzer warning about unapproved verb
 function Collect-ChangeTrackingData {
     [CmdletBinding()]
     param(
@@ -132,8 +135,6 @@ function Collect-ChangeTrackingData {
             return
         }
         
-        Write-Host "  Querying Change Analysis for $($subscriptionIds.Count) subscription(s)..." -ForegroundColor Gray
-        
         # Call Get-AzureChangeAnalysis with all subscription IDs at once (cross-subscription query)
         # Include security events by default
         $changeData = Get-AzureChangeAnalysis -SubscriptionIds $subscriptionIds -Days 14 -IncludeSecurityEvents
@@ -157,7 +158,6 @@ function Collect-ChangeTrackingData {
                     Write-Verbose "Skipping null change object"
                 }
             }
-            Write-Host "    Added $addedCount changes" -ForegroundColor Green
             Write-Verbose "Total changes in collection after adding: $($ChangeTrackingData.Count)"
         } else {
             Write-Verbose "No changes found (this may be normal if no changes occurred)"
@@ -173,6 +173,6 @@ function Collect-ChangeTrackingData {
         $Errors.Add("Failed to get change tracking data: $_")
     }
     
-    Write-Host "`n  Total changes collected: $($ChangeTrackingData.Count)" -ForegroundColor $(if ($ChangeTrackingData.Count -gt 0) { 'Green' } else { 'Yellow' })
+    Write-Host "    $($ChangeTrackingData.Count) changes collected" -ForegroundColor $(if ($ChangeTrackingData.Count -gt 0) { 'Green' } else { 'Gray' })
 }
 

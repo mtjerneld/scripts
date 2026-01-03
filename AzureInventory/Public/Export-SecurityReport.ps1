@@ -65,17 +65,8 @@ function Export-SecurityReport {
         
         $totalFindings = $findings.Count
         
-        # Calculate compliance score
-        if ($AuditResult.ComplianceScores) {
-            $securityScore = [math]::Round($AuditResult.ComplianceScores.OverallScore, 1)
-            $totalChecks = $AuditResult.ComplianceScores.TotalChecks
-            $passedChecks = $AuditResult.ComplianceScores.PassedChecks
-        } else {
-            # Fallback to simple calculation if ComplianceScores not available
-            $totalChecks = $findings.Count
-            $passedChecks = @($findings | Where-Object { $_.Status -eq 'PASS' }).Count
-            $securityScore = if ($totalChecks -gt 0) { [math]::Round(($passedChecks / $totalChecks) * 100, 1) } else { 0 }
-        }
+        # Note: Compliance score is calculated later (line 116) from findings to ensure consistency
+        # This section is kept for potential future use or logging, but values are recalculated below
         
         # Deprecated components are now tracked on the dedicated EOL report, not on the Security page
         $deprecatedCount = 0
@@ -114,6 +105,18 @@ $(Get-ReportNavigation -ActivePage "Security")
         $totalChecks = $findings.Count
         $passedChecks = @($findings | Where-Object { $_.Status -eq 'PASS' }).Count
         $overallScore = if ($totalChecks -gt 0) { [math]::Round(($passedChecks / $totalChecks) * 100, 1) } else { 0 }
+
+        # Calculate unique resources and control types for accurate reporting
+        $uniqueResources = @($findings | Select-Object -ExpandProperty ResourceId -Unique).Count
+        $uniqueControlTypes = @($findings | Select-Object -ExpandProperty ControlId -Unique).Count
+        # Fallback to ResourceName if ResourceId is empty
+        if ($uniqueResources -eq 0) {
+            $uniqueResources = @($findings | Select-Object -ExpandProperty ResourceName -Unique).Count
+        }
+        # Fallback to ControlName if ControlId is empty
+        if ($uniqueControlTypes -eq 0) {
+            $uniqueControlTypes = @($findings | Select-Object -ExpandProperty ControlName -Unique).Count
+        }
         
         # Always calculate L1 and L2 scores from findings for consistency
         $l1Findings = $findings | Where-Object { $_.CisLevel -eq "L1" }
@@ -263,10 +266,13 @@ $(Get-ReportNavigation -ActivePage "Security")
                      data-searchable="$allSearchableText"
                      data-total-checks="$totalChecks"
                      data-passed-checks="$passedChecks"
-                     data-overall-score="$overallScore">
+                     data-overall-score="$overallScore"
+                     data-unique-resources="$uniqueResources"
+                     data-unique-controls="$uniqueControlTypes">
                     <div class="score-label">All Controls</div>
                     <div class="score-value">$overallScore%</div>
                     <div class="score-details">$passedChecks / $totalChecks checks passed</div>
+                    <div class="score-context">$uniqueResources resources evaluated against $uniqueControlTypes control types</div>
                 </div>
                 <div class="score-card l1-score $l1ScoreColor" 
                      data-subscription="$l1SubscriptionNames"
@@ -1244,9 +1250,10 @@ $(Get-ReportScript -ScriptType "SecurityReport")
         
         # Return metadata for Dashboard consumption
         # Note: Dashboard will calculate TotalFailedFindings by summing severity counts
+        # Use $overallScore (always calculated from findings) to match what's displayed in the report
         $result = @{
             OutputPath = $OutputPath
-            SecurityScore = $securityScore
+            SecurityScore = $overallScore
             TotalChecks = $totalChecks
             PassedChecks = $passedChecks
             CriticalCount = $criticalValue

@@ -486,6 +486,23 @@ function Export-CostTrackingReport {
     # Also prepare raw data with category breakdown for filtering
     $rawDailyData = @()
     
+    # Build a resource-to-meters map from RawData for precise filtering
+    # This works with the standard production data format (RawData list) without needing custom data structures in DailyTrend
+    $globalResMetersMap = @{}
+    if ($rawData.Count -gt 0) {
+        foreach ($row in $rawData) {
+            $resName = $row.ResourceName
+            $meter = $row.Meter
+            
+            if ($resName -and $meter) {
+                if (-not $globalResMetersMap.ContainsKey($resName)) {
+                    $globalResMetersMap[$resName] = [System.Collections.Generic.HashSet[string]]::new()
+                }
+                [void]$globalResMetersMap[$resName].Add($meter)
+            }
+        }
+    }
+    
     foreach ($category in $allCategories) {
         $chartDatasetsByCategory[$category] = @()
     }
@@ -659,23 +676,6 @@ function Export-CostTrackingReport {
         # Add "Other" for meters
         $dayData.meters["Other"] = @{ total = [math]::Round([math]::Max(0, $dayMeterOtherCost), 2); byCategory = @{}; bySubscription = @{} }
         
-        # Pre-process meters to find which resources use which meters
-        $resMetersMap = @{}
-        if ($day.ByMeter) {
-            foreach ($meterEntry in $day.ByMeter.GetEnumerator()) {
-                $meterName = $meterEntry.Key
-                if ($meterEntry.Value.Resources) {
-                    foreach ($resEntry in $meterEntry.Value.Resources.GetEnumerator()) {
-                        $resName = $resEntry.Key
-                        if (-not $resMetersMap.ContainsKey($resName)) {
-                            $resMetersMap[$resName] = @()
-                        }
-                        $resMetersMap[$resName] += $meterName
-                    }
-                }
-            }
-        }
-
         # By Resource (with category and subscription breakdown)
         foreach ($resName in $allResourceNames) {
             $resCostLocal = 0
@@ -738,7 +738,8 @@ function Export-CostTrackingReport {
                 }
             }
             $chartDatasetsByResource[$resName] += $resCostLocal
-            $resMeters = if ($resMetersMap.ContainsKey($resName)) { $resMetersMap[$resName] } else { @() }
+            # Use global map derived from RawData
+            $resMeters = if ($globalResMetersMap.ContainsKey($resName)) { @($globalResMetersMap[$resName]) } else { @() }
             $dayData.resources[$resName] = @{ total = $resCostLocal; totalUSD = $resCostUSD; byCategory = $resCatBreakdown; bySubscription = $resSubBreakdown; meters = $resMeters }
         }
         
@@ -959,20 +960,12 @@ function Export-CostTrackingReport {
                 $meterItems = $meterGroup.Group
                 $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
                 $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
-                $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
-                $meterUnitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
-                $meterUnitOfMeasure = if ($meterUnitOfMeasureGroups.Count -gt 0) {
-                    ($meterUnitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
-                } else { "" }
-                $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
-                $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
+                
                 $meterCostLocalRounded = Format-NumberWithSeparator -Number $meterCostLocal
                 $meterCostUSDRounded = Format-NumberWithSeparator -Number $meterCostUSD
                 $meterNameEncoded = [System.Web.HttpUtility]::HtmlEncode($meterName)
                 $meterCount = $meterItems.Count
-                $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
-                $unitPriceDisplay = if ($meterUnitPrice -gt 0) { Format-NumberWithSeparator -Number $meterUnitPrice } else { "" }
-                $unitPriceUSDDisplay = if ($meterUnitPriceUSD -gt 0) { Format-NumberWithSeparator -Number $meterUnitPriceUSD } else { "" }
+                
                 $topResourceMeterIdCounter++
                 
                 $meterCardsHtml += @"
@@ -980,8 +973,6 @@ function Export-CostTrackingReport {
                                 <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
-                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
-                                    $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                             </div>
@@ -1082,28 +1073,17 @@ $categoryHtml
                 $meterItems = $meterGroup.Group
                 $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
                 $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
-                $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
-                $meterUnitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
-                $meterUnitOfMeasure = if ($meterUnitOfMeasureGroups.Count -gt 0) {
-                    ($meterUnitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
-                } else { "" }
-                $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
-                $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
+                
                 $meterCostLocalRounded = Format-NumberWithSeparator -Number $meterCostLocal
                 $meterCostUSDRounded = Format-NumberWithSeparator -Number $meterCostUSD
                 $meterNameEncoded = [System.Web.HttpUtility]::HtmlEncode($meterName)
                 $meterCount = $meterItems.Count
-                $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
-                $unitPriceDisplay = if ($meterUnitPrice -gt 0) { Format-NumberWithSeparator -Number $meterUnitPrice } else { "" }
-                $unitPriceUSDDisplay = if ($meterUnitPriceUSD -gt 0) { Format-NumberWithSeparator -Number $meterUnitPriceUSD } else { "" }
                 
                 $meterCardsHtml += @"
                             <div class="meter-card no-expand">
                                 <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
-                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
-                                    $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                             </div>
@@ -1188,13 +1168,6 @@ $categoryHtml
                     $meterItems = $meterGroup.Group
                     $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
                     $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
-                    $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
-                    $meterUnitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
-                    $meterUnitOfMeasure = if ($meterUnitOfMeasureGroups.Count -gt 0) {
-                        ($meterUnitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
-                    } else { "" }
-                    $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
-                    $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
                     $meterCount = $meterItems.Count
                     
                     # Build Resources structure
@@ -1218,10 +1191,6 @@ $categoryHtml
                         Meter = $meterName
                         CostLocal = $meterCostLocal
                         CostUSD = $meterCostUSD
-                        Quantity = $meterQuantity
-                        UnitOfMeasure = $meterUnitOfMeasure
-                        UnitPrice = $meterUnitPrice
-                        UnitPriceUSD = $meterUnitPriceUSD
                         ItemCount = $meterCount
                         Resources = $resources
                     }
@@ -1271,11 +1240,6 @@ $categoryHtml
                         $meterCostLocal = Format-NumberWithSeparator -Number $meter.CostLocal
                         $meterCostUSD = Format-NumberWithSeparator -Number $meter.CostUSD
                         $meterCount = $meter.ItemCount
-                        $meterQuantity = if ($meter.Quantity) { $meter.Quantity } else { 0 }
-                        $meterUnitOfMeasure = if ($meter.UnitOfMeasure) { [System.Web.HttpUtility]::HtmlEncode($meter.UnitOfMeasure) } else { "" }
-                        $meterUnitPrice = if ($meter.UnitPrice) { Format-NumberWithSeparator -Number $meter.UnitPrice } else { "" }
-                        $meterUnitPriceUSD = if ($meter.UnitPriceUSD) { Format-NumberWithSeparator -Number $meter.UnitPriceUSD } else { "" }
-                        $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
                         $meterIdCounter++
                         
                         # Build resource rows if available
@@ -1313,8 +1277,6 @@ $categoryHtml
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterName</span>
                                     <div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
                                         <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap;">$currency $meterCostLocal (`$$meterCostUSD)</span>
-                                        $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
-                                        $(if ($meterUnitPrice) { "<span class='meter-unit-price'>Unit: $currency $meterUnitPrice (`$$meterUnitPriceUSD)</span>" } else { "" })
                                         <span class="meter-count">$meterCount records</span>
                                     </div>
                                 </div>
@@ -1330,7 +1292,7 @@ $categoryHtml
                                             </tr>
                                         </thead>
                                         <tbody>
-$resourceRowsHtml
+                                            $resourceRowsHtml
                                         </tbody>
                                     </table>
                                 </div>
@@ -1342,8 +1304,6 @@ $resourceRowsHtml
                                 <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterName</span>
                                     <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocal (`$$meterCostUSD)</span>
-                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
-                                    $(if ($meterUnitPrice) { "<span class='meter-unit-price'>Unit: $currency $meterUnitPrice (`$$meterUnitPriceUSD)</span>" } else { "" })
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                             </div>
@@ -1443,20 +1403,12 @@ $subCatHtml
                         $meterItems = $meterGroup.Group
                         $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
                         $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
-                        $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
-                        $meterUnitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
-                        $meterUnitOfMeasure = if ($meterUnitOfMeasureGroups.Count -gt 0) {
-                            ($meterUnitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
-                        } else { "" }
-                        $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
-                        $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
+                        
                         $meterCostLocalRounded = Format-NumberWithSeparator -Number $meterCostLocal
                         $meterCostUSDRounded = Format-NumberWithSeparator -Number $meterCostUSD
                         $meterNameEncoded = [System.Web.HttpUtility]::HtmlEncode($meterName)
                         $meterCount = $meterItems.Count
-                        $quantityDisplay = Format-QuantityWithUnit -Quantity $meterQuantity -UnitOfMeasure $meterUnitOfMeasure
-                        $unitPriceDisplay = if ($meterUnitPrice -gt 0) { Format-NumberWithSeparator -Number $meterUnitPrice } else { "" }
-                        $unitPriceUSDDisplay = if ($meterUnitPriceUSD -gt 0) { Format-NumberWithSeparator -Number $meterUnitPriceUSD } else { "" }
+                        
                         $subscriptionMeterIdCounter++
                         
                         # Group by resource within meter
@@ -1495,8 +1447,6 @@ $subCatHtml
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
                                         <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
-                                        $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
-                                        $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
                                         <span class="meter-count">$meterCount records</span>
                                     </div>
                                 </div>
@@ -1511,7 +1461,7 @@ $subCatHtml
                                             </tr>
                                         </thead>
                                         <tbody>
-$resourceRowsHtml
+                                            $resourceRowsHtml
                                         </tbody>
                                     </table>
                                 </div>
@@ -1523,8 +1473,6 @@ $resourceRowsHtml
                                 <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
-                                    $(if ($quantityDisplay) { "<span class='meter-quantity'>$quantityDisplay</span>" } else { "" })
-                                    $(if ($unitPriceDisplay) { "<span class='meter-unit-price'>Unit: $currency $unitPriceDisplay (`$$unitPriceUSDDisplay)</span>" } else { "" })
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                             </div>

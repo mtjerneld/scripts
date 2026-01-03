@@ -84,27 +84,6 @@ function Export-RBACReport {
         }
     }
 
-    function Parse-ScopeName {
-        param([string]$ScopeFriendlyName)
-        # ScopeFriendlyName format: "MG: name", "Sub: name", "RG: name", "Resource: name", "Tenant Root"
-        if ($ScopeFriendlyName -match '^MG:\s*(.+)$') {
-            return $Matches[1]
-        }
-        elseif ($ScopeFriendlyName -match '^Sub:\s*(.+)$') {
-            return $Matches[1]
-        }
-        elseif ($ScopeFriendlyName -match '^RG:\s*(.+)$') {
-            return $Matches[1]
-        }
-        elseif ($ScopeFriendlyName -match '^Resource:\s*(.+)$') {
-            return $Matches[1]
-        }
-        elseif ($ScopeFriendlyName -eq 'Tenant Root') {
-            return 'Tenant Root'
-        }
-        return $ScopeFriendlyName
-    }
-
     function Format-AffectedSubscriptions {
         param(
             [array]$Subscriptions,
@@ -134,7 +113,7 @@ function Export-RBACReport {
         }
     }
 
-    function Build-PrincipalCard {
+    function New-PrincipalCardHtml {
         param([object]$Principal)
         
         # Icon based on type
@@ -281,7 +260,7 @@ function Export-RBACReport {
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $stats = $RBACData.Statistics
     $metadata = $RBACData.Metadata
-    $assignments = $RBACData.Assignments
+    # $assignments = $RBACData.Assignments # Unused
     $orphanedAssignments = $RBACData.OrphanedAssignments
     $customRoles = $RBACData.CustomRoles
     $displayTenantId = if ($TenantId -ne "Unknown") { $TenantId } else { $metadata.TenantId }
@@ -482,7 +461,7 @@ $(Get-ReportNavigation -ActivePage "RBAC")
     # Principal Access Section (principal cards)
     $principalsHtml = if ($RBACData.Principals) {
         foreach ($principal in $RBACData.Principals) {
-            Build-PrincipalCard -Principal $principal
+            New-PrincipalCardHtml -Principal $principal
         } -join "`n"
     } else {
         "<p>No principals found.</p>"
@@ -691,8 +670,6 @@ $(Get-ReportNavigation -ActivePage "RBAC")
         foreach ($role in $customRoles) {
             $actionsCount = if ($role.Actions) { $role.Actions.Count } else { 0 }
             $dataActionsCount = if ($role.DataActions) { $role.DataActions.Count } else { 0 }
-            $notActionsCount = if ($role.NotActions) { $role.NotActions.Count } else { 0 }
-            $notDataActionsCount = if ($role.NotDataActions) { $role.NotDataActions.Count } else { 0 }
             $assignmentCount = if ($role.AssignmentCount) { $role.AssignmentCount } else { 0 }
             $safeRoleId = ($role.Id -replace '[^a-zA-Z0-9\-]', '-')
             $roleCardId = "role-$safeRoleId"
@@ -926,8 +903,11 @@ $(Get-ReportNavigation -ActivePage "RBAC")
 
     # Write output
     [System.IO.File]::WriteAllText($OutputPath, $html, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "Report generated: $OutputPath" -ForegroundColor Green
 
-    return $OutputPath
+    # Return metadata for Dashboard consumption
+    return @{
+        OutputPath = $OutputPath
+        Statistics = $RBACData.Statistics
+    }
 }
 

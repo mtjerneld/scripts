@@ -173,6 +173,13 @@
     margin-top: 0.5rem;
 }
 
+.score-card .score-context {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+    font-style: italic;
+}
+
 .card--score.score-excellent .card__value,
 .score-card.score-excellent .score-value {
     color: var(--success);

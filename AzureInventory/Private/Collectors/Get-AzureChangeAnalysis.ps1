@@ -56,7 +56,6 @@ function Get-AzureChangeAnalysis {
     Import-Module Az.ResourceGraph -ErrorAction SilentlyContinue | Out-Null
     
     try {
-        Write-Host "  Retrieving Change Analysis for $($SubscriptionIds.Count) subscription(s)..." -ForegroundColor Cyan
         
         # Build Resource Graph query
         # Note: resourcechanges table uses nested properties structure
@@ -121,9 +120,6 @@ resourcechanges
                     }
                     
                     Write-Verbose "Retrieved $itemCount changes (page $pageCount, total: $($allQueryResults.Count))"
-                    if ($pageCount % 10 -eq 0 -and $itemCount -gt 0) {
-                        Write-Host "    Progress: $pageCount pages, $($allQueryResults.Count) changes collected..." -ForegroundColor Gray
-                    }
                 } elseif ($graphResult -is [Array]) {
                     # Direct array return (backward compatibility)
                     foreach ($item in $graphResult) {
@@ -152,12 +148,7 @@ resourcechanges
         
         $queryResult = $allQueryResults
         
-        if ($null -eq $queryResult -or $queryResult.Count -eq 0) {
-            Write-Host "    No changes found in Resource Graph" -ForegroundColor Yellow
-        }
-        else {
-            Write-Host "    Found $($queryResult.Count) changes from Resource Graph" -ForegroundColor Green
-        }
+        Write-Verbose "Found $($queryResult.Count) changes from Resource Graph"
         
         # Build subscription ID to name mapping
         # Suppress warnings for subscriptions in other tenants
@@ -303,7 +294,6 @@ resourcechanges
         # Add security events from Activity Log if requested
         # Note: Only RBAC role assignments are queried from Activity Log, as they are not tracked in Resource Graph Change Analysis
         if ($IncludeSecurityEvents) {
-            Write-Host "  Retrieving RBAC role assignment events from Activity Log (filtered at API level)..." -ForegroundColor Cyan
             $securityChanges = Get-SecurityEventsFromActivityLog -SubscriptionIds $SubscriptionIds -Days $Days
             if ($securityChanges -and $securityChanges.Count -gt 0) {
                 Write-Host "    Found $($securityChanges.Count) security events" -ForegroundColor Green
@@ -312,11 +302,11 @@ resourcechanges
                 }
             }
             else {
-                Write-Host "    No security events found" -ForegroundColor Yellow
+                Write-Verbose "No security events found"
             }
         }
         
-        Write-Host "    Total changes collected: $($changes.Count)" -ForegroundColor $(if ($changes.Count -gt 0) { 'Green' } else { 'Yellow' })
+        Write-Verbose "Total changes collected: $($changes.Count)"
     }
     catch {
         Write-Warning "Failed to retrieve Change Analysis: $_"

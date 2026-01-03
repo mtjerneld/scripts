@@ -501,7 +501,6 @@ function Get-AzureRBACInventory {
             [string]$TenantId
         )
         
-        Write-Host "Fetching Management Group hierarchy via subscriptions..." -ForegroundColor Cyan
         
         # Initialize result
         $result = @{
@@ -626,7 +625,6 @@ resourcecontainers
             
             $mgCount = $allMgs.Count
             $subCount = $result.SubscriptionToAncestors.Count
-            Write-Host "  Mapped $subCount subscriptions across $mgCount Management Groups" -ForegroundColor Gray
         }
         catch {
             $result.Error = $_.Exception.Message
@@ -1039,7 +1037,6 @@ resourcecontainers
 
     #region Main Collection Logic
 
-    Write-Host "Starting RBAC Inventory Collection..." -ForegroundColor Cyan
     $startTime = Get-Date
 
     # Get current context
@@ -1049,7 +1046,6 @@ resourcecontainers
     }
 
     $currentTenantId = if ($TenantId) { $TenantId } else { $context.Tenant.Id }
-    Write-Host "Tenant: $currentTenantId" -ForegroundColor Gray
     
     # Initialize Graph token (will be set below)
     $script:graphToken = $null
@@ -1061,8 +1057,6 @@ resourcecontainers
     } else {
         Get-AzSubscription -TenantId $currentTenantId | Where-Object { $_.State -eq 'Enabled' }
     }
-
-    Write-Host "Found $($subscriptions.Count) subscription(s) to scan" -ForegroundColor Gray
 
     # Build subscription name map for friendly scope names
     $subscriptionNameMap = @{}
@@ -1091,7 +1085,6 @@ resourcecontainers
     $script:managementGroupNameMap = @{}
 
     # Build Management Group name map for friendly scope names
-    Write-Host "Collecting Management Groups..." -ForegroundColor Gray
     $managementGroupNameMap = @{}
     try {
         # Get all management groups
@@ -1127,7 +1120,6 @@ resourcecontainers
             Write-Verbose "Could not retrieve Tenant Root Group explicitly: $_"
         }
         
-        Write-Host "  Found $($managementGroupNameMap.Count) Management Group(s)" -ForegroundColor Gray
     }
     catch {
         Write-Verbose "Could not retrieve Management Groups: $_"
@@ -1148,22 +1140,21 @@ resourcecontainers
     # Try to get Microsoft Graph access token once for all principal resolutions
     # This avoids getting a new token for each principal lookup
     # Note: We don't test the token here - individual lookups will try it and fall back gracefully if it fails
-    Write-Host "Checking Microsoft Graph API access for principal name resolution..." -ForegroundColor Gray
     try {
         $tokenResult = Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com" -ErrorAction Stop
         if ($tokenResult -and $tokenResult.Token) {
             $script:graphToken = $tokenResult.Token
             $script:graphTokenAvailable = $true
-            Write-Host "  Graph API token obtained - will attempt principal name resolution" -ForegroundColor Green
+            Write-Verbose "Graph API token obtained - will attempt principal name resolution"
         }
         else {
-            Write-Host "  Could not obtain Graph API token - will use fallback methods" -ForegroundColor Yellow
+            Write-Verbose "Could not obtain Graph API token - will use fallback methods"
             $script:graphTokenAvailable = $false
         }
     }
     catch {
         # Token not available - principal lookups will use Get-AzAD* cmdlets as fallback
-        Write-Host "  Graph API token not available - will use fallback methods for principal names" -ForegroundColor Yellow
+        Write-Verbose "Graph API token not available - will use fallback methods for principal names"
         $script:graphToken = $null
         $script:graphTokenAvailable = $false
     }
@@ -1197,7 +1188,6 @@ resourcecontainers
 
     # Collect role assignments per subscription
     foreach ($sub in $subscriptions) {
-        Write-Host "`nProcessing subscription: $($sub.Name)" -ForegroundColor Yellow
         
         try {
             Set-AzContext -SubscriptionId $sub.Id -TenantId $currentTenantId -ErrorAction Stop | Out-Null
@@ -1309,7 +1299,7 @@ resourcecontainers
                             }
                         }
                         
-                        Write-Host "  Found $($assignments.Count) role assignments (via REST API)" -ForegroundColor Gray
+                        Write-Verbose "Found $($assignments.Count) role assignments (via REST API)"
                     }
                 }
             }
@@ -1322,7 +1312,7 @@ resourcecontainers
                     if ($null -eq $assignments) {
                         $assignments = @()
                     }
-                    Write-Host "  Found $($assignments.Count) role assignments (via Get-AzRoleAssignment)" -ForegroundColor Gray
+                    Write-Verbose "Found $($assignments.Count) role assignments (via Get-AzRoleAssignment)"
                 }
                 catch {
                     $errorMsg = $_.Exception.Message
@@ -1480,7 +1470,6 @@ resourcecontainers
     }
 
     # Deduplicate assignments by (PrincipalId, RoleDefinitionId, Scope)
-    Write-Host "`nDeduplicating assignments..." -ForegroundColor Cyan
     $uniqueAssignments = $allAssignments | 
         Group-Object -Property PrincipalId, RoleDefinitionId, Scope |
         ForEach-Object {
@@ -1495,10 +1484,7 @@ resourcecontainers
             $first
         }
 
-    Write-Host "  Unique assignments: $($uniqueAssignments.Count) (from $($allAssignments.Count) total)" -ForegroundColor Gray
-
     # Build assignment rows for flat table display
-    Write-Host "`nBuilding assignment view..." -ForegroundColor Cyan
 
     $assignmentRows = $uniqueAssignments | ForEach-Object {
         $tierInfo = Get-AccessTier -RoleName $_.RoleDefinitionName
@@ -1572,7 +1558,6 @@ resourcecontainers
 
     # Combine duplicate inherited assignments (Tenant Root and Management Groups)
     # This handles cases where multiple assignments exist at the same scope but should be shown as one row
-    Write-Host "`nCombining duplicate inherited assignments..." -ForegroundColor Cyan
     $assignmentRowsList = [System.Collections.Generic.List[object]]::new()
     
     # Separate inherited scopes (Root and Management Groups) from direct assignments
@@ -1677,10 +1662,8 @@ resourcecontainers
     }
     
     $assignmentRows = $assignmentRowsList.ToArray()
-    Write-Host "  Combined inherited scope duplicates - assignment rows: $($assignmentRows.Count)" -ForegroundColor Gray
 
     # Mark redundant assignments using hierarchy-based detection
-    Write-Host "`nDetecting redundant assignments..." -ForegroundColor Cyan
     $principalGroups = $assignmentRows | Group-Object PrincipalId
     foreach ($group in $principalGroups) {
         $assignments = $group.Group
@@ -1688,10 +1671,7 @@ resourcecontainers
         $assignments = Find-RedundantAssignments -Assignments $assignments -HierarchyMap $hierarchyMap
     }
 
-    Write-Host "  Assignment rows: $($assignmentRows.Count)" -ForegroundColor Gray
-
     # Group assignments by principal for principal-centric view
-    Write-Host "`nGrouping assignments by principal..." -ForegroundColor Cyan
     $principalGroups = $assignmentRows | Group-Object PrincipalId
 
     $principalsList = [System.Collections.Generic.List[object]]::new()
@@ -1761,10 +1741,7 @@ resourcecontainers
     }
     $principals = $principalsList | Sort-Object PrincipalDisplayName
 
-    Write-Host "  Grouped into $($principals.Count) principals" -ForegroundColor Gray
-
     # Enhance custom roles with usage tracking
-    Write-Host "`nTracking custom role usage..." -ForegroundColor Cyan
     $customRoleUsage = $uniqueAssignments |
         Where-Object { $_.RoleDefinitionId } |
         Group-Object RoleDefinitionId
@@ -1798,7 +1775,6 @@ resourcecontainers
     $duration = $endTime - $startTime
 
     # Build role-based access matrix (top roles by name)
-    Write-Host "`nBuilding role-based access matrix..." -ForegroundColor Cyan
     $roleCounts = $assignmentRows | Group-Object Role | 
         Sort-Object { $_.Count } -Descending | 
         Select-Object -First 10
@@ -1846,10 +1822,7 @@ resourcecontainers
         CustomRoleCount = $allCustomRoles.Count
     }
 
-    Write-Host "`nCollection complete!" -ForegroundColor Green
-    Write-Host "Duration: $($duration.TotalSeconds.ToString('F1')) seconds" -ForegroundColor Gray
-    Write-Host "Total Assignments: $($assignmentRows.Count)" -ForegroundColor Gray
-    Write-Host "Unique Principals: $($newStats.TotalPrincipals)" -ForegroundColor Gray
+    Write-Host "    $($assignmentRows.Count) assignments | $($newStats.TotalPrincipals) principals" -ForegroundColor Green
 
     #endregion
 

@@ -914,33 +914,6 @@ function New-TestCostTrackingData {
             $resourceIndex++
         }
         
-        # Link resources to meters for "Stacked by Meter" functionality
-        # This ensures that the resource-to-meter mapping exists for the report generation logic
-        foreach ($resName in $byResource.Keys) {
-            $resData = $byResource[$resName]
-            # Get resource category (take first one found from ByCategory keys)
-            $resCategory = $resData.ByCategory.Keys | Select-Object -First 1
-            
-            if ($resCategory) {
-                # Find meters with matching category
-                foreach ($meterName in $byMeter.Keys) {
-                    $meterData = $byMeter[$meterName]
-                    if ($meterData.ByCategory.ContainsKey($resCategory)) {
-                        # This meter belongs to the same category as the resource
-                        # Add resource to meter's Resources list
-                        if (-not $meterData.ContainsKey('Resources')) {
-                            $meterData['Resources'] = @{}
-                        }
-                        # Add resource if not exists
-                        if (-not $meterData.Resources.ContainsKey($resName)) {
-                            # Just a marker that this resource uses this meter
-                            $meterData.Resources[$resName] = 1
-                        }
-                    }
-                }
-            }
-        }
-        
         # Calculate total cost for this day (sum of all categories)
         $dayTotalCost = 0
         $dayTotalCostUSD = 0
@@ -1062,10 +1035,8 @@ function New-TestCostTrackingData {
                     $rgName = "rg-$($subName.ToLower())-$($resourceKey.ToLower())"
                     
                     if ($resCost -gt 0.01) {
-                        # Generate consistent Quantity and UnitPrice: Quantity × UnitPrice = CostLocal
-                        $resQuantity = [math]::Round((Get-Random -Minimum 10 -Maximum 500), 2)
-                        $resUnitPrice = if ($resQuantity -gt 0) { [math]::Round($resCost / $resQuantity, 4) } else { 0 }
-                        $resUnitPriceUSD = if ($resQuantity -gt 0) { [math]::Round(($resCost / $exchangeRate) / $resQuantity, 4) } else { 0 }
+                        # Live data collector does not return Quantity/UnitOfMeasure
+                        # To match production behavior, we exclude them from test data too
 
                         $rawData += [PSCustomObject]@{
                             SubscriptionId = $subId
@@ -1080,10 +1051,6 @@ function New-TestCostTrackingData {
                             CostLocal = $resCost
                             CostUSD = [math]::Round($resCost / $exchangeRate, 2)
                             Currency = $currencyCode
-                            Quantity = $resQuantity
-                            UnitOfMeasure = if ($catName -eq 'Storage') { "GB" } elseif ($catName -eq 'Virtual Machines') { "Hours" } else { "Count" }
-                            UnitPrice = $resUnitPrice
-                            UnitPriceUSD = $resUnitPriceUSD
                         }
                         $entryCount++
                     }
@@ -1228,12 +1195,14 @@ function New-TestEOLData {
                         elseif ($resourceType -like '*servers*') { "sql-eol-$i" }
                         else { "resource-eol-$i" }
         
-        $actionRequired = "Upgrade to supported version: $component replacement. Review migration guide for detailed steps."
-        $migrationGuide = "https://learn.microsoft.com/en-us/azure/migration-guide/$component"
-        $references = @(
-            "https://learn.microsoft.com/en-us/azure/migration-guide/$component",
-            "https://learn.microsoft.com/en-us/lifecycle/products/$component"
-        )
+        # ActionRequired should include a URL (like real data format) - this will be converted to "Review retirement notice" link
+        # Real EOL data only has a Link field, no separate migration guide
+        $retirementNoticeUrl = "https://azure.microsoft.com/updates/$($component.ToLower().Replace(' ', '-'))-retirement-notice/"
+        $actionRequired = "Review retirement notice: $retirementNoticeUrl"
+        # No separate migration guide - real data only has the retirement notice link
+        $migrationGuide = ""
+        # References can be empty or contain the same link
+        $references = @()
         
         $finding = [PSCustomObject]@{
             Id = [guid]::NewGuid().ToString()

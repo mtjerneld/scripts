@@ -4,7 +4,7 @@
 
 @{
     RootModule = 'AzureSecurityAudit.psm1'
-    ModuleVersion = '1.0.0'
+    ModuleVersion = '3.0.0'
     GUID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
     Author = 'Azure Security Team'
     CompanyName = 'Unknown'
@@ -16,13 +16,16 @@
     
     # Functions to export from this module
     FunctionsToExport = @(
-        'Invoke-AzureSecurityAudit',
+        'Start-AzureGovernanceAudit',
         'Export-SecurityReport',
         'Export-VMBackupReport',
         'Export-AdvisorReport',
         'Export-ChangeTrackingReport',
         'Export-DashboardReport',
         'Export-NetworkInventoryReport',
+        'Export-EOLReport',
+        'Export-RBACReport',
+        'Export-CostTrackingReport',
         'Connect-AuditEnvironment',
         'Invoke-AzureArchitectAgent'
     )
@@ -34,7 +37,7 @@
     VariablesToExport = @()
     
     # Aliases to export from this module
-    AliasesToExport = @()
+    AliasesToExport = @('Invoke-AzureSecurityAudit')
     
     # Note: Required modules are checked at runtime by Connect-AuditEnvironment
     # Install with: Install-Module Az -Force

@@ -40,7 +40,7 @@ function Get-AzureAdvisorRecommendations {
     $recommendations = [System.Collections.Generic.List[PSObject]]::new()
     
     try {
-        Write-Host "  Retrieving Advisor recommendations for $SubscriptionName..." -ForegroundColor Cyan
+        Write-Verbose "Retrieving Advisor recommendations for $SubscriptionName..."
         
         $advisorRecs = $null
         
@@ -54,7 +54,7 @@ function Get-AzureAdvisorRecommendations {
                     $advisorData = $response.Content | ConvertFrom-Json
                     if ($advisorData.value) {
                         $advisorRecs = $advisorData.value
-                        Write-Host "    Found $($advisorRecs.Count) recommendations via REST API" -ForegroundColor Green
+                        Write-Verbose "Found $($advisorRecs.Count) recommendations via REST API"
                     }
                 }
             }
@@ -67,12 +67,12 @@ function Get-AzureAdvisorRecommendations {
         if (-not $advisorRecs) {
             if (Get-Command -Name Get-AzAdvisorRecommendation -ErrorAction SilentlyContinue) {
                 $advisorRecs = Get-AzAdvisorRecommendation -ErrorAction Stop
-                Write-Host "    Found $($advisorRecs.Count) recommendations via Az.Advisor" -ForegroundColor Green
+                Write-Verbose "Found $($advisorRecs.Count) recommendations via Az.Advisor"
             }
         }
         
         if (-not $advisorRecs -or $advisorRecs.Count -eq 0) {
-            Write-Host "    No recommendations found" -ForegroundColor Yellow
+            Write-Verbose "No recommendations found"
             return $recommendations
         }
         
@@ -89,7 +89,7 @@ function Get-AzureAdvisorRecommendations {
             }
         }
         
-        Write-Host "    Processed $($recommendations.Count) recommendations" -ForegroundColor Green
+        Write-Verbose "Processed $($recommendations.Count) recommendations"
     }
     catch {
         Write-Warning "Failed to retrieve Advisor recommendations for $SubscriptionName : $_"

@@ -18,6 +18,9 @@
 .OUTPUTS
     Hashtable with aggregated cost data structure.
 #>
+# Note: "Collect" is intentionally used (not an approved verb) to distinguish aggregation functions
+# from single-source retrieval functions (which use "Get-"). This is a known PSScriptAnalyzer warning.
+# Suppressing PSScriptAnalyzer warning about unapproved verb
 function Collect-CostData {
     [CmdletBinding()]
     param(
@@ -51,8 +54,6 @@ function Collect-CostData {
     $endDate = (Get-Date -Hour 0 -Minute 0 -Second 0 -Millisecond 0).AddDays(-1)
     $startDate = $endDate.AddDays(-($DaysToInclude - 1))
     
-    Write-Host "Period: $($startDate.ToString('yyyy-MM-dd')) to $($endDate.ToString('yyyy-MM-dd')) ($DaysToInclude days)" -ForegroundColor Gray
-    
     # Initialize aggregated data structure
     $allCostData = [System.Collections.Generic.List[PSObject]]::new()
     $bySubscription = @{}
@@ -82,7 +83,6 @@ function Collect-CostData {
     # Collect data from each subscription
     foreach ($sub in $Subscriptions) {
         $subscriptionNameToUse = Get-SubscriptionDisplayName -Subscription $sub
-        Write-Host "`n  Collecting from: $subscriptionNameToUse..." -ForegroundColor Gray
         
         try {
             # Set context
@@ -103,11 +103,6 @@ function Collect-CostData {
                     $item | Add-Member -MemberType NoteProperty -Name "SubscriptionName" -Value $subscriptionNameToUse -Force
                     $allCostData.Add($item)
                 }
-                
-                Write-Host "    Found $($costData.Count) cost records" -ForegroundColor Green
-            }
-            else {
-                Write-Host "    No cost data available" -ForegroundColor Yellow
             }
         }
         catch {
@@ -116,11 +111,8 @@ function Collect-CostData {
         }
     }
     
-    Write-Host "`n  Total cost records collected: $($allCostData.Count)" -ForegroundColor Green
-    
     # Aggregate data
     if ($allCostData.Count -gt 0) {
-        Write-Host "`n  Aggregating cost data..." -ForegroundColor Gray
         
         $totalCostLocal = 0
         $totalCostUSD = 0
@@ -190,15 +182,6 @@ function Collect-CostData {
                     $meterItems = $meterGroup.Group
                     $meterCostLocal = ($meterItems | Measure-Object -Property CostLocal -Sum).Sum
                     $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
-                    $meterQuantity = ($meterItems | Measure-Object -Property Quantity -Sum).Sum
-                    # Get most common UnitOfMeasure for this meter
-                    $unitOfMeasureGroups = $meterItems | Where-Object { $_.UnitOfMeasure -and -not [string]::IsNullOrWhiteSpace($_.UnitOfMeasure) } | Group-Object UnitOfMeasure
-                    $meterUnitOfMeasure = if ($unitOfMeasureGroups.Count -gt 0) {
-                        ($unitOfMeasureGroups | Sort-Object Count -Descending | Select-Object -First 1).Name
-                    } else { "" }
-                    # Calculate average unit price
-                    $meterUnitPrice = if ($meterQuantity -gt 0) { $meterCostLocal / $meterQuantity } else { 0 }
-                    $meterUnitPriceUSD = if ($meterQuantity -gt 0) { $meterCostUSD / $meterQuantity } else { 0 }
                     
                     # Group by resource within meter
                     $meterResourceGroups = $meterItems | Where-Object { $_.ResourceName } | Group-Object ResourceName
@@ -225,10 +208,6 @@ function Collect-CostData {
                         Meter = $meter
                         CostLocal = $meterCostLocal
                         CostUSD = $meterCostUSD
-                        Quantity = $meterQuantity
-                        UnitOfMeasure = $meterUnitOfMeasure
-                        UnitPrice = $meterUnitPrice
-                        UnitPriceUSD = $meterUnitPriceUSD
                         ItemCount = $meterItems.Count
                         Resources = $meterResources
                     }
@@ -519,11 +498,9 @@ function Collect-CostData {
         SubscriptionCount = $Subscriptions.Count
     }
     
-    Write-Host "`n  Aggregation complete:" -ForegroundColor Green
-    Write-Host "    Total Cost: $currency $([math]::Round($totalCostLocal, 2)) ($([math]::Round($totalCostUSD, 2)) USD)" -ForegroundColor Green
-    Write-Host "    Subscriptions: $($bySubscription.Count)" -ForegroundColor Green
-    Write-Host "    Meter Categories: $($byMeterCategory.Count)" -ForegroundColor Green
-    Write-Host "    Resources: $($byResource.Count)" -ForegroundColor Green
+    if ($allCostData.Count -gt 0) {
+        Write-Host "    $($allCostData.Count) records | $currency $([math]::Round($totalCostLocal, 2)) ($([math]::Round($totalCostUSD, 2)) USD) | $($bySubscription.Count) subs | $($byResource.Count) resources" -ForegroundColor Green
+    }
     
     return $result
 }

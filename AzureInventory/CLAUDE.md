@@ -4,29 +4,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AzureSecurityAudit is a PowerShell module for automated Azure security posture assessments against CIS Azure Foundations Benchmark v2.0+ controls. It supports multi-subscription scanning, optional AI-powered analysis via OpenAI, and generates HTML/JSON reports.
+AzureSecurityAudit is a PowerShell module for comprehensive Azure governance audits including security posture (CIS Azure Foundations Benchmark v2.0+), cost tracking, RBAC analysis, network inventory, change tracking, VM backup status, EOL tracking, and Azure Advisor recommendations. Supports multi-subscription scanning, optional AI-powered analysis via OpenAI, and generates HTML/JSON reports.
 
 ## Commands
 
 ```powershell
-# Import module
+# Import module (or use Init-Local.ps1 for development)
 Import-Module .\AzureSecurityAudit.psd1 -Force
 
-# Connect to Azure (interactive or via .env file)
-Connect-AuditEnvironment
-Connect-AuditEnvironment -EnvFile ".env"
+# Connect to Azure
+Connect-AuditEnvironment                      # Interactive login
+Connect-AuditEnvironment -EnvFile ".env"      # Service principal via .env
 
-# Run security audit
-Invoke-AzureSecurityAudit                                    # Full audit, all subscriptions
-Invoke-AzureSecurityAudit -Categories Storage, SQL, Network  # Specific categories
-Invoke-AzureSecurityAudit -IncludeLevel2                     # Include L2 CIS controls
-Invoke-AzureSecurityAudit -AI                                # Enable AI analysis
-Invoke-AzureSecurityAudit -ExportJson -PassThru              # Export JSON, return result object
+# Run governance audit (main command)
+Start-AzureGovernanceAudit                    # Full audit, all reports, live data
+Start-AzureGovernanceAudit -Mode Test         # Full audit with mock data (development)
+Start-AzureGovernanceAudit -AI                # Enable AI analysis
+Start-AzureGovernanceAudit -ReportType CostTracking              # Single report
+Start-AzureGovernanceAudit -ReportType Security, RBAC -AI        # Multiple reports
+Start-AzureGovernanceAudit -Mode Test -SaveDataPayload           # Save JSON datasets
+Start-AzureGovernanceAudit -Help                                  # Show all options
+
+# Legacy alias (backward compatible)
+Invoke-AzureSecurityAudit                     # Alias for Start-AzureGovernanceAudit
 
 # Run Pester tests
 Invoke-Pester -Path .\Tests\
-Invoke-Pester -Path .\Tests\ConvertTo-SecurityAIInsights.Tests.ps1
 ```
+
+### Report Types
+- **Security** - CIS Benchmark compliance findings
+- **VMBackup** - VM backup status and protection
+- **ChangeTracking** - Recent Azure changes with security flags
+- **CostTracking** - Cost analysis by subscription/category/resource
+- **EOL** - End-of-life tracking for Azure components
+- **NetworkInventory** - VNets, subnets, NSGs, peerings
+- **RBAC** - Role assignments and permissions analysis
+- **Advisor** - Azure Advisor recommendations
+- **Dashboard** - Summary dashboard (index.html)
 
 ## Architecture
 
@@ -35,18 +50,19 @@ Invoke-Pester -Path .\Tests\ConvertTo-SecurityAIInsights.Tests.ps1
 - **AzureSecurityAudit.psd1**: Module manifest defining exported functions
 
 ### Key Directories
-- **Public/**: Exported cmdlets (Invoke-AzureSecurityAudit, Connect-AuditEnvironment, Export-*Report, Invoke-AzureArchitectAgent)
+- **Public/**: Exported cmdlets (Start-AzureGovernanceAudit, Connect-AuditEnvironment, Export-*Report, Invoke-AzureArchitectAgent)
 - **Private/Scanners/**: Per-service scanner functions (Get-Azure*Findings.ps1) - each returns security findings for a resource type
-- **Private/Collectors/**: Data collection functions (Advisor, RBAC, Cost, Network, ChangeTracking)
+- **Private/Collectors/**: Data collection functions (Advisor, RBAC, Cost, Network, ChangeTracking, VMBackup, EOL)
 - **Private/Helpers/**: Shared utilities, AI insight converters (ConvertTo-*AIInsights.ps1), report generation
 - **Config/**: ControlDefinitions.json (CIS control metadata), ResourceTypeMapping.json
+- **Tools/**: Development utilities (New-TestData.ps1 for mock data generation)
 
 ### Data Flow
-1. `Invoke-AzureSecurityAudit` orchestrates the scan
-2. Calls scanner functions per category (Storage, AppService, VM, ARC, Monitor, Network, SQL, KeyVault)
+1. `Start-AzureGovernanceAudit` orchestrates the scan (or use `-Mode Test` for mock data)
+2. For Security: calls scanner functions per category (Storage, AppService, VM, ARC, Monitor, Network, SQL, KeyVault)
 3. Each scanner uses `New-SecurityFinding` helper to create standardized finding objects
-4. Collectors gather supplementary data (Advisor recommendations, RBAC, costs, network topology)
-5. `Generate-AuditReports` creates HTML reports
+4. Collectors gather supplementary data (Advisor, RBAC, costs, network, change tracking, VM backup, EOL)
+5. Export-*Report functions generate individual HTML reports
 6. If `-AI` flag: ConvertTo-*AIInsights functions transform data, Invoke-AzureArchitectAgent calls OpenAI
 
 ### Control Definitions
@@ -77,7 +93,7 @@ function Get-Azure{Service}Findings {
 ### AI Integration
 - AI insights use ConvertTo-*AIInsights helpers to prepare JSON payloads
 - Invoke-AzureArchitectAgent sends combined payload to OpenAI
-- API key via `OPENAI_API_KEY` env var or `-OpenAIKey` parameter
+- API key via `OPENAI_API_KEY` environment variable (set in .env file)
 
 ### Authentication
 Service principal credentials can be stored in `.env` file:

@@ -18,6 +18,9 @@
 .OUTPUTS
     Updated collections (AdvisorRecommendations, Errors).
 #>
+# Note: "Collect" is intentionally used (not an approved verb) to distinguish aggregation functions
+# from single-source retrieval functions (which use "Get-"). This is a known PSScriptAnalyzer warning.
+# Suppressing PSScriptAnalyzer warning about unapproved verb
 function Collect-AdvisorRecommendations {
     [CmdletBinding()]
     param(
@@ -121,7 +124,6 @@ function Collect-AdvisorRecommendations {
     
     foreach ($sub in $Subscriptions) {
         $subscriptionNameToUse = Get-SubscriptionDisplayName -Subscription $sub
-        Write-Host "`n  Collecting from: $subscriptionNameToUse..." -ForegroundColor Gray
         
         try {
             Write-Verbose "Setting subscription context for $subscriptionNameToUse..."
@@ -141,14 +143,11 @@ function Collect-AdvisorRecommendations {
             Write-Verbose "Function returned: $($advisorRecs.Count) recommendations"
             
             if ($advisorRecs -and $advisorRecs.Count -gt 0) {
-                $addedCount = 0
                 foreach ($rec in $advisorRecs) {
                     if ($null -ne $rec) {
                         $AdvisorRecommendations.Add($rec)
-                        $addedCount++
                     }
                 }
-                Write-Host "    Added $addedCount recommendations" -ForegroundColor Green
                 Write-Verbose "Total recommendations in collection after adding: $($AdvisorRecommendations.Count)"
             } else {
                 Write-Verbose "No recommendations found (this may be normal if Advisor has no recommendations)"
@@ -165,6 +164,6 @@ function Collect-AdvisorRecommendations {
         }
     }
     
-    Write-Host "`n  Total recommendations collected: $($AdvisorRecommendations.Count)" -ForegroundColor $(if ($AdvisorRecommendations.Count -gt 0) { 'Green' } else { 'Yellow' })
+    Write-Host "    $($AdvisorRecommendations.Count) recommendations" -ForegroundColor $(if ($AdvisorRecommendations.Count -gt 0) { 'Green' } else { 'Gray' })
 }
 

@@ -59,6 +59,9 @@ function Export-DashboardReport {
         [Parameter(Mandatory = $false)]
         [hashtable]$RBACReportData = $null,
 
+        [Parameter(Mandatory = $false)]
+        [hashtable]$EOLReportData = $null,
+
         [Parameter(Mandatory = $true)]
         [string]$OutputPath,
         
@@ -87,28 +90,32 @@ function Export-DashboardReport {
         $totalFailedFindings = 0
     }
     
-    # Get failed findings for display in report links
-    $findings = if ($AuditResult.Findings) { @($AuditResult.Findings) } else { @() }
-    $failedFindings = @($findings | Where-Object { $_.Status -eq 'FAIL' })
-
-    # EOL / Deprecated components metrics (from EOLSummary on AuditResult or defaults)
-    $eolTotalFindings   = 0
-    $eolComponentCount  = 0
-    $eolCriticalCount   = 0
-    $eolHighCount       = 0
-    $eolMediumCount     = 0
-    $eolLowCount        = 0
-    $eolSoonestDeadline = $null
-    
-    if ($AuditResult.PSObject.Properties.Name -contains 'EOLSummary' -and $AuditResult.EOLSummary) {
-        $eolSummary = $AuditResult.EOLSummary
-        if ($eolSummary.TotalFindings)   { $eolTotalFindings  = $eolSummary.TotalFindings }
-        if ($eolSummary.ComponentCount)  { $eolComponentCount = $eolSummary.ComponentCount }
-        if ($eolSummary.CriticalCount)   { $eolCriticalCount  = $eolSummary.CriticalCount }
-        if ($eolSummary.HighCount)       { $eolHighCount      = $eolSummary.HighCount }
-        if ($eolSummary.MediumCount)     { $eolMediumCount    = $eolSummary.MediumCount }
-        if ($eolSummary.LowCount)        { $eolLowCount       = $eolSummary.LowCount }
-        if ($eolSummary.SoonestDeadline) { $eolSoonestDeadline = $eolSummary.SoonestDeadline }
+    # EOL / Deprecated components metrics - use pre-calculated data from EOL Report if available
+    if ($EOLReportData) {
+        $eolTotalFindings   = $EOLReportData.TotalFindings
+        $eolCriticalCount    = $EOLReportData.CriticalCount
+        $eolHighCount       = $EOLReportData.HighCount
+        $eolMediumCount     = $EOLReportData.MediumCount
+        $eolLowCount        = $EOLReportData.LowCount
+        $eolSoonestDeadline = $EOLReportData.SoonestDeadline
+    } else {
+        # Fallback: Calculate from EOLSummary on AuditResult or defaults
+        $eolTotalFindings   = 0
+        $eolCriticalCount   = 0
+        $eolHighCount       = 0
+        $eolMediumCount     = 0
+        $eolLowCount        = 0
+        $eolSoonestDeadline = $null
+        
+        if ($AuditResult.PSObject.Properties.Name -contains 'EOLSummary' -and $AuditResult.EOLSummary) {
+            $eolSummary = $AuditResult.EOLSummary
+            if ($eolSummary.TotalFindings)   { $eolTotalFindings  = $eolSummary.TotalFindings }
+            if ($eolSummary.CriticalCount)   { $eolCriticalCount  = $eolSummary.CriticalCount }
+            if ($eolSummary.HighCount)       { $eolHighCount      = $eolSummary.HighCount }
+            if ($eolSummary.MediumCount)     { $eolMediumCount    = $eolSummary.MediumCount }
+            if ($eolSummary.LowCount)        { $eolLowCount       = $eolSummary.LowCount }
+            if ($eolSummary.SoonestDeadline) { $eolSoonestDeadline = $eolSummary.SoonestDeadline }
+        }
     }
     $eolSoonestDeadlineText = if ($eolSoonestDeadline) { $eolSoonestDeadline } else { "N/A" }
     
@@ -118,6 +125,12 @@ function Export-DashboardReport {
                                elseif ($eolMediumCount -gt 0) { 'var(--accent-blue)' }
                                elseif ($eolLowCount -gt 0) { 'var(--accent-green)' }
                                else { '#888' }
+    
+    # Calculate score colors using Security page rules (>=90: success, >=75: blue, >=50: warning, <50: danger)
+    $securityScoreColor = if ($securityScore -ge 90) { 'var(--success)' }
+                          elseif ($securityScore -ge 75) { 'var(--accent-blue)' }
+                          elseif ($securityScore -ge 50) { 'var(--warning)' }
+                          else { 'var(--danger)' }
     
     # VM Backup metrics - use pre-calculated data from VM Backup Report if available
     if ($VMBackupReportData) {
@@ -134,6 +147,12 @@ function Export-DashboardReport {
         $backupRate = if ($totalVMs -gt 0) { [math]::Round(($protectedVMs / $totalVMs) * 100, 1) } else { 0 }
         $runningVMs = @($VMInventory | Where-Object { $_.PowerState -eq 'running' }).Count
     }
+    
+    # Calculate backup rate color using Security page rules (>=90: success, >=75: blue, >=50: warning, <50: danger)
+    $backupRateColor = if ($backupRate -ge 90) { 'var(--success)' }
+                       elseif ($backupRate -ge 75) { 'var(--accent-blue)' }
+                       elseif ($backupRate -ge 50) { 'var(--warning)' }
+                       else { 'var(--danger)' }
     
     # Advisor metrics - use pre-calculated data from Advisor Report if available
     if ($AdvisorReportData) {
@@ -186,25 +205,20 @@ function Export-DashboardReport {
     if ($NetworkInventoryReportData) {
         $networkVNetCount = $NetworkInventoryReportData.VNetCount
         $networkDeviceCount = $NetworkInventoryReportData.DeviceCount
-        $networkPeeringCount = if ($NetworkInventoryReportData.PeeringCount) { $NetworkInventoryReportData.PeeringCount } else { 0 }
         $networkS2SConnections = if ($NetworkInventoryReportData.S2SConnectionCount) { $NetworkInventoryReportData.S2SConnectionCount } else { 0 }
         $networkERConnections = if ($NetworkInventoryReportData.ERConnectionCount) { $NetworkInventoryReportData.ERConnectionCount } else { 0 }
         $networkDisconnectedConnections = if ($NetworkInventoryReportData.DisconnectedConnections) { $NetworkInventoryReportData.DisconnectedConnections } else { 0 }
         $networkSubnetsMissingNSG = if ($NetworkInventoryReportData.SubnetsMissingNSG) { $NetworkInventoryReportData.SubnetsMissingNSG } else { 0 }
         $networkSecurityRisks = if ($NetworkInventoryReportData.SecurityRisks) { $NetworkInventoryReportData.SecurityRisks } else { 0 }
-        $networkVirtualWANHubs = if ($NetworkInventoryReportData.VirtualWANHubCount) { $NetworkInventoryReportData.VirtualWANHubCount } else { 0 }
-        $networkAzureFirewalls = if ($NetworkInventoryReportData.AzureFirewallCount) { $NetworkInventoryReportData.AzureFirewallCount } else { 0 }
     } else {
         $networkVNetCount = if ($AuditResult.NetworkInventory) { $AuditResult.NetworkInventory.Count } else { 0 }
         $networkDeviceCount = 0
-        $networkPeeringCount = 0
         $networkS2SConnections = 0
         $networkERConnections = 0
         $networkDisconnectedConnections = 0
         $networkSubnetsMissingNSG = 0
         $networkSecurityRisks = 0
         if ($AuditResult.NetworkInventory) {
-            $uniquePeerings = [System.Collections.Generic.HashSet[string]]::new()
             foreach ($vnet in $AuditResult.NetworkInventory) {
                 foreach ($subnet in $vnet.Subnets) {
                     $networkDeviceCount += $subnet.ConnectedDevices.Count
@@ -223,12 +237,6 @@ function Export-DashboardReport {
                     if ($subnet.NsgRisks) {
                         $networkSecurityRisks += $subnet.NsgRisks.Count
                     }
-                }
-                # Count peerings
-                foreach ($peering in $vnet.Peerings) {
-                    $vnetPair = @($vnet.Name, $peering.RemoteVnetName) | Sort-Object
-                    $peeringKey = "$($vnetPair[0])|$($vnetPair[1])"
-                    [void]$uniquePeerings.Add($peeringKey)
                 }
                 # Count connections
                 foreach ($gateway in $vnet.Gateways) {
@@ -250,7 +258,6 @@ function Export-DashboardReport {
                     }
                 }
             }
-            $networkPeeringCount = $uniquePeerings.Count
         }
     }
     
@@ -284,13 +291,61 @@ function Export-DashboardReport {
     $costTotalLocalFormatted = [math]::Round($costTotalLocal, 0).ToString("N0") -replace ',', ' '
     $costTotalUSDFormatted = [math]::Round($costTotalUSD, 0).ToString("N0") -replace ',', ' '
     
-    # RBAC/IAM metrics
-    $rbacTotalPrincipals = 0
-    $rbacPrivileged = 0
-    if ($AuditResult.RBACInventory) {
-        $rbacStats = $AuditResult.RBACInventory.Statistics
+    # RBAC/IAM metrics - use pre-calculated data from RBAC Report if available
+    if ($RBACReportData -and $RBACReportData.Statistics) {
+        $rbacStats = $RBACReportData.Statistics
         $rbacTotalPrincipals = $rbacStats.TotalPrincipals
         $rbacPrivileged = $rbacStats.ByRiskTier.Privileged
+        
+        # Get TotalAssignments - prefer Statistics, but calculate from Principals if missing or invalid
+        $rbacTotalAssignments = 0
+        if ($rbacStats.PSObject.Properties.Name -contains 'TotalAssignments' -and $rbacStats.TotalAssignments -gt 0) {
+            $rbacTotalAssignments = $rbacStats.TotalAssignments
+        }
+        
+        # If TotalAssignments is 0 or less than privileged count (invalid), calculate from Principals
+        if ($rbacTotalAssignments -eq 0 -or $rbacTotalAssignments -lt $rbacPrivileged) {
+            if ($AuditResult.RBACInventory -and $AuditResult.RBACInventory.Principals) {
+                $calculatedTotal = ($AuditResult.RBACInventory.Principals | Measure-Object -Property AssignmentCount -Sum).Sum
+                if ($calculatedTotal -gt 0) {
+                    $rbacTotalAssignments = $calculatedTotal
+                }
+            } elseif ($AuditResult.RBACInventory -and $AuditResult.RBACInventory.Assignments) {
+                $rbacTotalAssignments = $AuditResult.RBACInventory.Assignments.Count
+            }
+        }
+        
+        $rbacCustomRoleCount = if ($rbacStats.PSObject.Properties.Name -contains 'CustomRoleCount') { $rbacStats.CustomRoleCount } else { 0 }
+    } else {
+        # Fallback: Calculate from RBACInventory on AuditResult
+        $rbacTotalPrincipals = 0
+        $rbacPrivileged = 0
+        $rbacTotalAssignments = 0
+        $rbacCustomRoleCount = 0
+        if ($AuditResult.RBACInventory) {
+            $rbacStats = $AuditResult.RBACInventory.Statistics
+            $rbacTotalPrincipals = $rbacStats.TotalPrincipals
+            $rbacPrivileged = $rbacStats.ByRiskTier.Privileged
+            
+            # Get TotalAssignments - prefer Statistics, but calculate from Principals if missing or invalid
+            if ($rbacStats.PSObject.Properties.Name -contains 'TotalAssignments' -and $rbacStats.TotalAssignments -gt 0) {
+                $rbacTotalAssignments = $rbacStats.TotalAssignments
+            }
+            
+            # If TotalAssignments is 0 or less than privileged count (invalid), calculate from Principals
+            if ($rbacTotalAssignments -eq 0 -or $rbacTotalAssignments -lt $rbacPrivileged) {
+                if ($AuditResult.RBACInventory.Principals) {
+                    $calculatedTotal = ($AuditResult.RBACInventory.Principals | Measure-Object -Property AssignmentCount -Sum).Sum
+                    if ($calculatedTotal -gt 0) {
+                        $rbacTotalAssignments = $calculatedTotal
+                    }
+                } elseif ($AuditResult.RBACInventory.Assignments) {
+                    $rbacTotalAssignments = $AuditResult.RBACInventory.Assignments.Count
+                }
+            }
+            
+            $rbacCustomRoleCount = if ($rbacStats.PSObject.Properties.Name -contains 'CustomRoleCount') { $rbacStats.CustomRoleCount } else { 0 }
+        }
     }
     
     # Subscription count
@@ -331,7 +386,7 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="card-body">
                     <div class="score-display">
                         <div class="score-circle" style="--score: $securityScore;">
-                            <span class="score-value">$securityScore%</span>
+                            <span class="score-value" style="color: $securityScoreColor; font-size: 2rem !important;">$securityScore%</span>
                             <span class="score-label">Compliance</span>
                         </div>
                     </div>
@@ -366,7 +421,7 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="card-body">
                     <div class="score-display">
                         <div class="score-circle" style="--score: $backupRate; --accent-green: #54a0ff;">
-                            <span class="score-value" style="color: var(--accent-blue);">$backupRate%</span>
+                            <span class="score-value" style="color: $backupRateColor; font-size: 2rem !important;">$backupRate%</span>
                             <span class="score-label">Protected</span>
                         </div>
                     </div>
@@ -397,7 +452,7 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="card-body">
                     <div class="score-display">
                         <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, var(--bg-surface), var(--bg-hover));">
-                            <span class="score-value" style="color: $advisorHighestSeverityColor; font-size: 2rem;">$advisorCount</span>
+                            <span class="score-value" style="color: $advisorHighestSeverityColor; font-size: 2rem !important;">$advisorCount</span>
                             <span class="score-label">Recommendations</span>
                         </div>
                     </div>
@@ -427,7 +482,7 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 <div class="card-body">
                     <div class="score-display">
                         <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, var(--bg-surface), var(--bg-hover));">
-                            <span class="score-value" style="color: #3498db; font-size: 2rem;">$networkVNetCount</span>
+                            <span class="score-value" style="color: #3498db; font-size: 2rem !important;">$networkVNetCount</span>
                             <span class="score-label">VNets</span>
                         </div>
                     </div>
@@ -435,20 +490,6 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                         <span class="metric-label">Connected Devices</span>
                         <span class="metric-value">$networkDeviceCount</span>
                     </div>
-                    <div class="metric-row">
-                        <span class="metric-label">Peerings</span>
-                        <span class="metric-value">$networkPeeringCount</span>
-                    </div>
-                    <div class="metric-row">
-                        <span class="metric-label">Connections</span>
-                        <span class="metric-value">$($networkS2SConnections + $networkERConnections) ($networkS2SConnections S2S, $networkERConnections ER)</span>
-                    </div>
-                    $(if ($networkVirtualWANHubs -gt 0) {
-                        "<div class='metric-row'><span class='metric-label'>Virtual WAN Hubs</span><span class='metric-value'>$networkVirtualWANHubs</span></div>"
-                    })
-                    $(if ($networkAzureFirewalls -gt 0) {
-                        "<div class='metric-row'><span class='metric-label'>Azure Firewalls</span><span class='metric-value'>$networkAzureFirewalls</span></div>"
-                    })
                     $(if ($networkSecurityRisks -gt 0) {
 @"
                     <div class="metric-row">
@@ -509,13 +550,9 @@ $(if ($networkSubnetsMissingNSG -gt 0) {
                 <div class="card-body">
                     <div class="score-display">
                         <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, var(--bg-surface), var(--bg-hover));">
-                            <span class="score-value" style="color: $eolHighestSeverityColor; font-size: 2rem;">$eolTotalFindings</span>
+                            <span class="score-value" style="color: $eolHighestSeverityColor; font-size: 2rem !important;">$eolTotalFindings</span>
                             <span class="score-label">Total Findings</span>
                         </div>
-                    </div>
-                    <div class="metric-row">
-                        <span class="metric-label">Components</span>
-                        <span class="metric-value">$eolComponentCount</span>
                     </div>
                     <div class="metric-row">
                         <span class="metric-label">Critical</span>
@@ -539,66 +576,64 @@ $(if ($networkSubnetsMissingNSG -gt 0) {
                     </div>
                 </div>
             </div>
-        </div>
-        
-        <h2 style="margin-bottom: 20px; font-size: 1.3rem;">Detailed Reports</h2>
-        <div class="report-links">
-            <a href="security.html" class="report-link">
-                <div class="report-icon security">&sect;</div>
-                <div class="report-info">
-                    <h3>Security Audit Report</h3>
-                    <p>$($failedFindings.Count) issues across $(@($failedFindings | Select-Object -ExpandProperty Category -Unique).Count) categories</p>
+            
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Change Tracking</span>
+                    <a href="change-tracking.html" class="card-link">View Details &rarr;</a>
                 </div>
-            </a>
-            <a href="eol.html" class="report-link">
-                <div class="report-icon" style="background: rgba(231, 76, 60, 0.15); color: #ff6b6b;">&#9888;</div>
-                <div class="report-info">
-                    <h3>EOL / Deprecated Components</h3>
-                    <p>$eolTotalFindings resources | $eolComponentCount components | Next deadline: $eolSoonestDeadlineText</p>
+                <div class="card-body">
+                    <div class="score-display">
+                        <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, rgba(84, 160, 255, 0.15), rgba(84, 160, 255, 0.05));">
+                            <span class="score-value" style="color: var(--accent-blue); font-size: 2rem !important;">$changeTrackingTotal</span>
+                            <span class="score-label">Total Changes</span>
+                        </div>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Security Alerts</span>
+                        <span class="metric-value" style="color: var(--accent-yellow);">$changeTrackingSecurityAlerts</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Creates</span>
+                        <span class="metric-value">$(if ($ChangeTrackingReportData) { $ChangeTrackingReportData.Creates } else { 0 })</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Updates</span>
+                        <span class="metric-value">$(if ($ChangeTrackingReportData) { $ChangeTrackingReportData.Updates } else { 0 })</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Deletes</span>
+                        <span class="metric-value">$(if ($ChangeTrackingReportData) { $ChangeTrackingReportData.Deletes } else { 0 })</span>
+                    </div>
                 </div>
-            </a>
-            <a href="vm-backup.html" class="report-link">
-                <div class="report-icon backup">&equiv;</div>
-                <div class="report-info">
-                    <h3>VM Backup Overview</h3>
-                    <p>$totalVMs VMs | $protectedVMs protected | $unprotectedVMs unprotected</p>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">RBAC/IAM Inventory</span>
+                    <a href="rbac.html" class="card-link">View Details &rarr;</a>
                 </div>
-            </a>
-            <a href="network.html" class="report-link">
-                <div class="report-icon" style="background: rgba(52, 152, 219, 0.15); color: #3498db;">&infin;</div>
-                <div class="report-info">
-                    <h3>Network Inventory</h3>
-                    <p>$networkVNetCount Virtual Networks | $networkDeviceCount Connected Devices</p>
+                <div class="card-body">
+                    <div class="score-display">
+                        <div class="score-circle" style="--score: 0; background: linear-gradient(135deg, rgba(155, 89, 182, 0.15), rgba(155, 89, 182, 0.05));">
+                            <span class="score-value" style="color: var(--accent-purple); font-size: 2rem !important;">$rbacTotalPrincipals</span>
+                            <span class="score-label">Principals</span>
+                        </div>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Privileged Assignments</span>
+                        <span class="metric-value" style="color: var(--accent-red);">$rbacPrivileged</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Total Assignments</span>
+                        <span class="metric-value">$rbacTotalAssignments</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Custom Roles</span>
+                        <span class="metric-value">$rbacCustomRoleCount</span>
+                    </div>
                 </div>
-            </a>
-            <a href="advisor.html" class="report-link">
-                <div class="report-icon advisor" style="background: rgba(254, 202, 87, 0.15); color: var(--accent-yellow);">&loz;</div>
-                <div class="report-info">
-                    <h3>Azure Advisor</h3>
-                    <p>$advisorCount recommendations | $advisorHighCount high impact</p>
-                </div>
-            </a>
-            <a href="change-tracking.html" class="report-link">
-                <div class="report-icon" style="background: rgba(84, 160, 255, 0.15); color: var(--accent-blue);">&crarr;</div>
-                <div class="report-info">
-                    <h3>Change Tracking</h3>
-                    <p>$changeTrackingTotal changes | $changeTrackingSecurityAlerts security alerts</p>
-                </div>
-            </a>
-            <a href="cost-tracking.html" class="report-link">
-                <div class="report-icon" style="background: rgba(46, 204, 113, 0.15); color: var(--accent-green);">&curren;</div>
-                <div class="report-info">
-                    <h3>Cost Tracking</h3>
-                    <p>$costCurrency $costTotalLocalFormatted ($costDays days) | $costSubscriptionCount subscriptions</p>
-                </div>
-            </a>
-            <a href="rbac.html" class="report-link">
-                <div class="report-icon" style="background: rgba(155, 89, 182, 0.15); color: var(--accent-purple);">🔐</div>
-                <div class="report-info">
-                    <h3>RBAC/IAM Inventory</h3>
-                    <p>$rbacTotalPrincipals principals | $rbacPrivileged privileged assignments</p>
-                </div>
-            </a>
+            </div>
         </div>
         
         <div class="footer">

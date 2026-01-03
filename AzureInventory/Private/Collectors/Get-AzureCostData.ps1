@@ -102,7 +102,7 @@ function Get-AzureCostData {
                     if ($response.StatusCode -eq 429) {
                         $retryCount++
                         $retryDelay = $baseRetryDelay * [math]::Pow(2, $retryCount - 1)  # Exponential backoff: 5, 10, 20, 40, 80 seconds
-                        Write-Warning "Rate limited (429) on page $pageCount. Retry $retryCount/$maxRetriesPerPage. Waiting $retryDelay seconds..."
+                        Write-Verbose "Rate limited (429) on page $pageCount. Retry $retryCount/$maxRetriesPerPage. Waiting $retryDelay seconds..."
                         Start-Sleep -Seconds $retryDelay
                         continue  # Retry the same page
                     }
@@ -115,7 +115,7 @@ function Get-AzureCostData {
                     if ($_.Exception.Message -match '429|throttl|TooManyRequests') {
                         $retryCount++
                         $retryDelay = $baseRetryDelay * [math]::Pow(2, $retryCount - 1)  # Exponential backoff
-                        Write-Warning "Rate limited (429) on page $pageCount. Retry $retryCount/$maxRetriesPerPage. Waiting $retryDelay seconds..."
+                        Write-Verbose "Rate limited (429) on page $pageCount. Retry $retryCount/$maxRetriesPerPage. Waiting $retryDelay seconds..."
                         Start-Sleep -Seconds $retryDelay
                         continue  # Retry the same page
                     }
@@ -263,10 +263,6 @@ function Get-AzureCostData {
                             CostLocal = $costLocal
                             CostUSD = $costUSD
                             Currency = $currency
-                            Quantity = $quantity
-                            UnitOfMeasure = if ([string]::IsNullOrWhiteSpace($unitOfMeasure)) { "" } else { $unitOfMeasure }
-                            UnitPrice = $unitPrice
-                            UnitPriceUSD = $unitPriceUSD
                             SubscriptionId = $SubscriptionId
                         }
                         

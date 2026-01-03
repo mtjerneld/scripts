@@ -112,7 +112,6 @@ function Get-AzureEOLStatus {
 
     # Use Search-AzGraph's -Subscription parameter instead of modifying the KQL query
     # This is cleaner and more reliable than injecting subscription filters into the query
-    Write-Host "  Querying $($SubscriptionIds.Count) subscription(s)..." -ForegroundColor Gray
     Write-Verbose "KQL query (first 500 chars): $($kqlQuery.Substring(0, [Math]::Min(500, $kqlQuery.Length)))"
     
     # Check if we have Resource Graph access
@@ -135,7 +134,7 @@ function Get-AzureEOLStatus {
         Write-Verbose "Calling Search-AzGraph with query length: $($kqlQuery.Length) characters"
         $queryResult = Search-AzGraph -Query $kqlQuery -Subscription $SubscriptionIds -ErrorAction Stop
         $queryDuration = (Get-Date) - $queryStartTime
-        Write-Host "  Found $($queryResult.Count) resource(s) with EOL components" -ForegroundColor Green
+        Write-Verbose "Found $($queryResult.Count) resource(s) with EOL components"
         if ($queryResult.Count -gt 0) {
             Write-Verbose "First result sample: $($queryResult[0] | ConvertTo-Json -Depth 2 -Compress)"
         }
@@ -369,7 +368,9 @@ function Get-AzureEOLStatus {
                 ResourceGroup  = $res.resourceGroup
                 Location       = $res.location
                 SubscriptionId = $res.subscriptionId
+                SubscriptionName = Get-SubscriptionDisplayName -SubscriptionId $res.subscriptionId
                 Name           = $resourceName
+                ResourceName   = $resourceName
                 Type           = $res.type
                 Properties     = $res.properties
                 Sku            = $res.sku

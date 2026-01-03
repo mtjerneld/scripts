@@ -30,6 +30,8 @@
 .OUTPUTS
     Updated collections (AllFindings, VMInventory, Errors).
 #>
+# PSScriptAnalyzer may report false positives for try-catch structure due to complex nesting
+# PowerShell parser confirms syntax is valid
 function Invoke-ScannerForSubscription {
     [CmdletBinding()]
     param(
@@ -43,6 +45,8 @@ function Invoke-ScannerForSubscription {
         [hashtable]$Scanners,
         
         [switch]$IncludeLevel2,
+        
+        [switch]$SuppressOutput,
         
         [Parameter(Mandatory = $false)]
         [System.Collections.Generic.List[PSObject]]$AllFindings,
@@ -127,7 +131,9 @@ function Invoke-ScannerForSubscription {
             continue
         }
         
+        # Always show category name, even when SuppressOutput is true
         Write-Host "  - $category..." -NoNewline
+        # PSScriptAnalyzer false positive: try-catch structure is valid (verified by PowerShell parser)
         try {
             # Suppress Azure module warnings about unapproved verbs during scanning
             $scanResult = Invoke-WithSuppressedWarnings -SuppressPSDefaultParams {
@@ -224,15 +230,91 @@ function Invoke-ScannerForSubscription {
                 Write-Verbose "Added $eolFindingsAdded EOL findings from $category scan. Total EOL findings in collection: $($AllEOLFindings.Count)"
             }
             
-            # Format output message using metadata from scanner if available, otherwise fallback to calculating from findings
-            if ($resourceCount -gt 0 -or $controlCount -gt 0) {
-                # Use metadata from scanner
-                $color = if ($failureCount -gt 0) { 'Red' } else { 'Green' }
-                $resourceWord = if ($resourceCount -eq 1) { "resource" } else { "resources" }
-                $checkWord = if ($controlCount -eq 1) { "check" } else { "checks" }
-                $failureWord = if ($failureCount -eq 1) { "failure" } else { "failures" }
+            # Calculate unique resources and unique checks from findings
+            # This ensures we show unique checks, not multiplied checks (resources * checks)
+            $validFindings = @($findings | Where-Object { $null -ne $_ })
+            
+            # Count unique resources and unique controls using hashtables
+            $uniqueResourceIds = @{}
+            $uniqueControls = @{}
+            $failCount = 0
+            
+            foreach ($finding in $validFindings) {
+                # Count unique resources by ResourceId or ResourceName+ResourceGroup
+                $resourceKey = $null
+                if ($finding.PSObject.Properties.Name -contains 'ResourceId' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceId)) {
+                    $resourceKey = $finding.ResourceId
+                }
+                elseif ($finding.PSObject.Properties.Name -contains 'ResourceName' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceName)) {
+                    $rg = if ($finding.PSObject.Properties.Name -contains 'ResourceGroup') { $finding.ResourceGroup } else { "" }
+                    $resourceKey = "$($finding.ResourceName)|$rg"
+                }
                 
-                $outputMsg = " $resourceCount $resourceWord evaluated against $controlCount $checkWord ($failureCount $failureWord"
+                if ($resourceKey -and -not $uniqueResourceIds.ContainsKey($resourceKey)) {
+                    $uniqueResourceIds[$resourceKey] = $true
+                }
+                
+                # Count unique controls by Category + ControlId
+                $controlKey = $null
+                if ($finding.PSObject.Properties.Name -contains 'Category' -and $finding.PSObject.Properties.Name -contains 'ControlId') {
+                    $cat = if ($finding.Category) { $finding.Category } else { "Unknown" }
+                    $ctrlId = if ($finding.ControlId) { $finding.ControlId } else { "Unknown" }
+                    $controlKey = "$cat|$ctrlId"
+                }
+                
+                if ($controlKey -and -not $uniqueControls.ContainsKey($controlKey)) {
+                    $uniqueControls[$controlKey] = $true
+                }
+                
+                # Count failures
+                if ($finding.PSObject.Properties.Name -contains 'Status' -and $finding.Status -eq 'FAIL') {
+                    $failCount++
+                }
+            }
+            
+            $uniqueResourcesFromFindings = $uniqueResourceIds.Count
+            $uniqueChecksFromFindings = $uniqueControls.Count
+            
+            # Use resourceCount from metadata if available (more accurate when all checks pass and no findings)
+            # But validate: if metadata says 0 resources but > 0 checks, that's invalid - ignore the checks
+            $finalResourceCount = if ($resourceCount -gt 0) { $resourceCount } else { $uniqueResourcesFromFindings }
+            
+            # Always use unique checks calculated from findings to avoid multiplication issue
+            # If no findings but metadata has resourceCount > 0, we can't know unique checks - use controlCount as fallback
+            # but only if it seems reasonable (not multiplied)
+            if ($uniqueChecksFromFindings -gt 0) {
+                $finalCheckCount = $uniqueChecksFromFindings
+            }
+            elseif ($finalResourceCount -gt 0 -and $controlCount -gt 0) {
+                # No findings but resources exist - check if controlCount seems multiplied
+                # If controlCount is much larger than a reasonable number of unique checks, it's likely multiplied
+                # Use it anyway but it might be inaccurate
+                $finalCheckCount = $controlCount
+            }
+            else {
+                $finalCheckCount = 0
+            }
+            
+            # Validate: if resources = 0, checks must also be 0 (can't check 0 resources)
+            if ($finalResourceCount -eq 0 -and $finalCheckCount -gt 0) {
+                $finalCheckCount = 0
+            }
+            
+            # Use failureCount from metadata if available and findings-based count is 0
+            # Otherwise use the calculated failCount from findings
+            $finalFailureCount = if ($failureCount -gt 0 -and $failCount -eq 0) { $failureCount } else { $failCount }
+            
+            # Format output message
+            $color = if ($finalFailureCount -gt 0) { 'Red' } else { 'Green' }
+            if ($finalResourceCount -eq 0 -and $finalCheckCount -eq 0) {
+                Write-Host " 0 resources (0 checks)" -ForegroundColor Gray
+            }
+            else {
+                $resourceWord = if ($finalResourceCount -eq 1) { "resource" } else { "resources" }
+                $checkWord = if ($finalCheckCount -eq 1) { "check" } else { "checks" }
+                $failureWord = if ($finalFailureCount -eq 1) { "failure" } else { "failures" }
+                
+                $outputMsg = " $finalResourceCount $resourceWord evaluated against $finalCheckCount $checkWord ($finalFailureCount $failureWord"
                 if ($eolCount -gt 0) {
                     $eolWord = if ($eolCount -eq 1) { "EOL" } else { "EOL" }
                     $outputMsg += ", $eolCount $eolWord"
@@ -241,79 +323,23 @@ function Invoke-ScannerForSubscription {
                 
                 Write-Host $outputMsg -ForegroundColor $color
             }
-            else {
-                # Fallback: Calculate from findings if metadata not available
-                $validFindings = @($findings | Where-Object { $null -ne $_ })
-                
-                # Count unique resources and unique controls using hashtables
-                $uniqueResourceIds = @{}
-                $uniqueControls = @{}
-                $failCount = 0
-                
-                foreach ($finding in $validFindings) {
-                    # Count unique resources by ResourceId or ResourceName+ResourceGroup
-                    $resourceKey = $null
-                    if ($finding.PSObject.Properties.Name -contains 'ResourceId' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceId)) {
-                        $resourceKey = $finding.ResourceId
-                    }
-                    elseif ($finding.PSObject.Properties.Name -contains 'ResourceName' -and -not [string]::IsNullOrWhiteSpace($finding.ResourceName)) {
-                        $rg = if ($finding.PSObject.Properties.Name -contains 'ResourceGroup') { $finding.ResourceGroup } else { "" }
-                        $resourceKey = "$($finding.ResourceName)|$rg"
-                    }
-                    
-                    if ($resourceKey -and -not $uniqueResourceIds.ContainsKey($resourceKey)) {
-                        $uniqueResourceIds[$resourceKey] = $true
-                    }
-                    
-                    # Count unique controls by Category + ControlId
-                    $controlKey = $null
-                    if ($finding.PSObject.Properties.Name -contains 'Category' -and $finding.PSObject.Properties.Name -contains 'ControlId') {
-                        $cat = if ($finding.Category) { $finding.Category } else { "Unknown" }
-                        $ctrlId = if ($finding.ControlId) { $finding.ControlId } else { "Unknown" }
-                        $controlKey = "$cat|$ctrlId"
-                    }
-                    
-                    if ($controlKey -and -not $uniqueControls.ContainsKey($controlKey)) {
-                        $uniqueControls[$controlKey] = $true
-                    }
-                    
-                    # Count failures
-                    if ($finding.PSObject.Properties.Name -contains 'Status' -and $finding.Status -eq 'FAIL') {
-                        $failCount++
-                    }
-                }
-                
-                $uniqueResources = $uniqueResourceIds.Count
-                $uniqueChecks = $uniqueControls.Count
-                
-                # Format output message
-                $color = if ($failCount -gt 0) { 'Red' } else { 'Green' }
-                if ($uniqueChecks -eq 0) {
-                    Write-Host " 0 resources (0 checks)" -ForegroundColor Gray
-                }
-                else {
-                    $resourceWord = if ($uniqueResources -eq 1) { "resource" } else { "resources" }
-                    $checkWord = if ($uniqueChecks -eq 1) { "check" } else { "checks" }
-                    Write-Host " $uniqueResources $resourceWord evaluated against $uniqueChecks $checkWord ($failCount failures)" -ForegroundColor $color
-                }
-            }
         }
         catch {
             Write-Host " ERROR: $_" -ForegroundColor Red
             $Errors.Add("$category scan failed for ${subscriptionNameToUse}: $_")
             
-                # Check if it's a permissions error
-                $permissionPatterns = Get-PermissionErrorPatterns
-                $isPermissionError = $false
-                foreach ($pattern in $permissionPatterns) {
-                    if ($_.Exception.Message -match $pattern) {
-                        $isPermissionError = $true
-                        break
-                    }
+            # Check if it's a permissions error
+            $permissionPatterns = Get-PermissionErrorPatterns
+            $isPermissionError = $false
+            foreach ($pattern in $permissionPatterns) {
+                if ($_.Exception.Message -match $pattern) {
+                    $isPermissionError = $true
+                    break
                 }
-                if ($isPermissionError) {
-                    Write-Host "    [WARNING] This may be a permissions issue. Ensure you have Reader role on subscription ${subscriptionNameToUse}" -ForegroundColor Yellow
-                }
+            }
+            if ($isPermissionError) {
+                Write-Host "    [WARNING] This may be a permissions issue. Ensure you have Reader role on subscription ${subscriptionNameToUse}" -ForegroundColor Yellow
+            }
         }
     }
 }

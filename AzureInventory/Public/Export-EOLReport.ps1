@@ -39,7 +39,7 @@ function Export-EOLReport {
         Write-Host "Export-EOLReport: No EOL findings provided - generating empty report" -ForegroundColor Yellow
         $eolFindings = @()
     } else {
-        Write-Host "Export-EOLReport: Received $($EOLFindings.Count) findings - Type = $($EOLFindings.GetType().FullName)" -ForegroundColor Gray
+        Write-Verbose "Export-EOLReport: Received $($EOLFindings.Count) findings - Type = $($EOLFindings.GetType().FullName)"
         
         # Validate findings - filter out null items and ensure Component property exists
         $validFindings = @()
@@ -84,7 +84,7 @@ function Export-EOLReport {
     if ($eolFindings.Count -gt 0) {
         $firstFinding = $eolFindings[0]
         Write-Verbose "Export-EOLReport: First finding - Component: $($firstFinding.Component), Severity: $($firstFinding.Severity), ResourceName: $($firstFinding.ResourceName)"
-        Write-Host "Export-EOLReport: Processing $($eolFindings.Count) EOL findings (first: $($firstFinding.Component) - $($firstFinding.Severity))" -ForegroundColor Gray
+        Write-Verbose "Export-EOLReport: Processing $($eolFindings.Count) EOL findings (first: $($firstFinding.Component) - $($firstFinding.Severity))"
     } else {
         Write-Host "Export-EOLReport: No EOL findings to process" -ForegroundColor Yellow
     }
@@ -600,6 +600,7 @@ function Export-EOLReport {
             $action  = $f.ActionRequired
             # Extract URL from ActionRequired if it contains one and make it clickable
             $actionHtml = ""
+            $actionUrl = $null
             if ($action) {
                 # Check if ActionRequired contains a URL (http:// or https://)
                 if ($action -match '(https?://[^\s<>"]+)') {
@@ -607,15 +608,20 @@ function Export-EOLReport {
                     # Split action text: part before URL and the URL itself
                     $parts = $action -split '(https?://[^\s<>"]+)', 2
                     $actionText = $parts[0].Trim()
-                    if ([string]::IsNullOrWhiteSpace($actionText)) {
-                        $actionText = "Review retirement notice:"
-                    }
                     
-                    # Build HTML with clickable link
-                    $escapedText = [System.Web.HttpUtility]::HtmlEncode($actionText)
+                    # If the text before URL is "Review retirement notice:" or similar, just show the link
+                    # Otherwise, show the text followed by the link
                     $escapedUrl = [System.Web.HttpUtility]::HtmlAttributeEncode($actionUrl)
-                    $escapedUrlText = [System.Web.HttpUtility]::HtmlEncode($actionUrl)
-                    $actionHtml = "$escapedText <a href='$escapedUrl' target='_blank' rel='noopener' class='eol-guidance-link' style='color: #ffffff !important; text-decoration: underline !important;'>$escapedUrlText</a>"
+                    $linkText = "Review retirement notice"
+                    
+                    if ([string]::IsNullOrWhiteSpace($actionText) -or $actionText -match '^Review retirement notice:?\s*$') {
+                        # No text before URL, or just "Review retirement notice:" - show only the link
+                        $actionHtml = "<a href='$escapedUrl' target='_blank' rel='noopener' class='eol-guidance-link' style='color: #ffffff !important; text-decoration: underline !important;'>$linkText</a>"
+                    } else {
+                        # Has other text before URL - show text followed by link
+                        $escapedText = [System.Web.HttpUtility]::HtmlEncode($actionText)
+                        $actionHtml = "$escapedText <a href='$escapedUrl' target='_blank' rel='noopener' class='eol-guidance-link' style='color: #ffffff !important; text-decoration: underline !important;'>$linkText</a>"
+                    }
                 } else {
                     # No URL found, just encode the text
                     $actionHtml = [System.Web.HttpUtility]::HtmlEncode($action)
@@ -623,28 +629,39 @@ function Export-EOLReport {
             }
             
             # Use first reference URL if available, otherwise fall back to migrationGuide
+            # But skip any URLs that match the ActionRequired URL to avoid duplicates
             $guideUrl = $null
+            $normalizedActionUrl = if ($actionUrl) { $actionUrl.TrimEnd('/') } else { $null }
+            
             if ($f.References -and $f.References.Count -gt 0) {
-                # Get first URL from references array
-                $firstRef = $f.References[0]
-                if ($firstRef -and $firstRef -match '^https?://') {
-                    $guideUrl = $firstRef
+                # Find first URL in References that's different from ActionRequired URL
+                foreach ($ref in $f.References) {
+                    if ($ref -and $ref -match '^https?://') {
+                        $normalizedRef = $ref.TrimEnd('/')
+                        if ($normalizedRef -ne $normalizedActionUrl) {
+                            $guideUrl = $ref
+                            break
+                        }
+                    }
                 }
             }
             
-            # Fallback to migrationGuide if it looks like a URL (and we haven't already used ActionRequired URL)
+            # Fallback to migrationGuide if it looks like a URL and is different from ActionRequired URL
             if (-not $guideUrl -and $f.MigrationGuide) {
                 if ($f.MigrationGuide -match '^https?://') {
-                    $guideUrl = $f.MigrationGuide
+                    $normalizedMigrationGuide = $f.MigrationGuide.TrimEnd('/')
+                    if ($normalizedMigrationGuide -ne $normalizedActionUrl) {
+                        $guideUrl = $f.MigrationGuide
+                    }
                 }
             }
             
-            # Only show "View guidance" link if we have a separate URL (not already in ActionRequired)
-            $guideHtml = if ($guideUrl -and $guideUrl -ne $actionUrl) { 
+            # Only show "View guidance" link if we have a separate URL that's different from ActionRequired URL
+            # If ActionRequired already has a URL (shown as "Review retirement notice"), don't show "View guidance" for the same URL
+            $guideHtml = ""
+            if ($guideUrl) {
                 $escapedUrl = [System.Web.HttpUtility]::HtmlAttributeEncode($guideUrl)
-                "<a href='$escapedUrl' target='_blank' rel='noopener' class='eol-guidance-link' style='color: #ffffff !important; text-decoration: underline !important;'>View guidance</a>" 
-            } else { 
-                "" 
+                $guideHtml = "<a href='$escapedUrl' target='_blank' rel='noopener' class='eol-guidance-link' style='color: #ffffff !important; text-decoration: underline !important;'>View guidance</a>"
             }
 
             $resourceRows += @"

@@ -1472,16 +1472,11 @@ foreach ($funcName in $userFunctions) {
     }
 }
 
-Write-Host "`nTip: Common test commands:" -ForegroundColor Cyan
-Write-Host "  - Connect-AuditEnvironment            # Sign in to Azure and select tenant/subscription" -ForegroundColor Gray
-Write-Host "  - Invoke-AzureSecurityAudit -AI       # Run full audit with AI analysis" -ForegroundColor Gray
-Write-Host "  - Invoke-AzureArchitectAgent          # Run AI analysis on governance data" -ForegroundColor Gray
-Write-Host "  - Test-RetryAIAnalysis                # Retry AI analysis with existing JSON payload" -ForegroundColor Gray
-Write-Host "  - Test-SecurityReport                 # Run security report (can take -SubscriptionIds/-Categories)" -ForegroundColor Gray
-Write-Host "  - Test-ChangeTracking                 # Generate Change Tracking report" -ForegroundColor Gray
-Write-Host "  - Test-NetworkInventory               # Generate Network Inventory report" -ForegroundColor Gray
-Write-Host "  - Test-VMBackup                       # Generate VM Backup report" -ForegroundColor Gray
-Write-Host "  - Test-Advisor                        # Generate Advisor report" -ForegroundColor Gray
-Write-Host "  - Test-RBAC                           # Generate RBAC/IAM Inventory report" -ForegroundColor Gray
-Write-Host "  - Test-CostTracking                   # Generate Cost Tracking report" -ForegroundColor Gray
+Write-Host "`nTip: Common commands:" -ForegroundColor Cyan
+Write-Host "  - Connect-AuditEnvironment                      # Sign in to Azure" -ForegroundColor Gray
+Write-Host "  - Start-AzureGovernanceAudit                    # Full audit (live data, all reports)" -ForegroundColor Gray
+Write-Host "  - Start-AzureGovernanceAudit -Mode Test         # Full audit with mock data" -ForegroundColor Gray
+Write-Host "  - Start-AzureGovernanceAudit -ReportType CostTracking -Mode Test" -ForegroundColor Gray
+Write-Host "  - Start-AzureGovernanceAudit -AI                # Full audit with AI analysis" -ForegroundColor Gray
+Write-Host "  - Start-AzureGovernanceAudit -Help              # Show all options" -ForegroundColor Gray
 
