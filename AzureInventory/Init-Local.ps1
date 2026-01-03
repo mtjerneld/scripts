@@ -268,8 +268,12 @@ Write-Host "  Loading Test Data Functions..." -ForegroundColor Gray
 $testDataScript = Join-Path $ModuleRoot "Tools\New-TestData.ps1"
 if (Test-Path $testDataScript) {
     try {
-        # Ensure Test-SingleReport is removed before loading
+        # Ensure Test functions are removed before loading to force refresh
         Remove-Item "Function:\Test-SingleReport" -Force -ErrorAction SilentlyContinue
+        Get-Command New-Test* -ErrorAction SilentlyContinue | ForEach-Object { 
+            Remove-Item "Function:\$($_.Name)" -Force -ErrorAction SilentlyContinue 
+        }
+        
         . $testDataScript
         # Verify Test-SingleReport was loaded
         if (Get-Command Test-SingleReport -ErrorAction SilentlyContinue) {

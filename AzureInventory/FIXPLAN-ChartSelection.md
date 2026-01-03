@@ -1,5 +1,28 @@
 # Chart Selection Feature - Fix Plan
 
+## Instructions for Cursor
+
+### Status Management
+- Du får ENDAST sätta status till `[IN PROGRESS]` eller `[READY FOR REVIEW]`
+- Du får ALDRIG markera issues som `[FIXED]` - endast Claude får göra detta efter review
+- Du får ALDRIG skapa nya issues - rapportera problem till Claude istället
+
+### When Done with an Issue
+Ändra rubriken och lägg till status:
+```
+## Issue N: Title [READY FOR REVIEW]
+**Status:** Ready for review - implemented in commit abc123
+```
+
+### Status Flow
+```
+[NEW] → [IN PROGRESS] → [READY FOR REVIEW] → [FIXED]
+                                              ↓
+                                    Status: Verified by Claude
+```
+
+---
+
 ## Problem Summary
 The Ctrl+Click chart selection/filtering feature in the Cost Tracking report is not working properly:
 1. Clicking on lower levels (L3/L4 - subcategory/meter) partially works
@@ -321,7 +344,8 @@ Object.keys(day.categories || {}).forEach(cat => {
 
 ---
 
-## Issue 5: "Stacked by Subscription" Shows Empty Graph When Nothing Selected
+## Issue 5: "Stacked by Subscription" Shows Empty Graph When Nothing Selected [FIXED]
+**Status:** Verified by Claude
 
 **File:** `Public/Export-CostTrackingReport.ps1`
 **Location:** buildFilteredDatasets function (lines ~2385-2620)
@@ -385,7 +409,8 @@ This should show the subscriptions object. If it's empty/undefined, the issue is
 
 ---
 
-## Issue 6: Top 15 Stacking Not Recalculated on Filter Change
+## Issue 6: Top 15 Stacking Not Recalculated on Filter Change [FIXED]
+**Status:** Verified by Claude
 
 **File:** `Public/Export-CostTrackingReport.ps1`
 **Location:** buildFilteredDatasets function
@@ -401,3 +426,274 @@ This should show the subscriptions object. If it's empty/undefined, the issue is
 Currently, the first loop (lines 2398-2510) calculates totals, and the `keyTotals` array is then sorted. This SHOULD already be based on filtered data since `dataSource` is passed in. But verify that:
 1. The filtering in `filterRawDailyDataBySelections` correctly filters meters/resources
 2. The totals calculation respects the filtered data structure
+
+---
+
+## Issue 7: Additive Multi-Select Between Subscription and Category (UNION vs INTERSECTION) [FIXED]
+**Status:** Verified by Claude
+
+**File:** `Public/Export-CostTrackingReport.ps1`
+**Location:** `filterRawDailyDataBySelections` function, lines ~1991-2070
+
+**Problem:** When selecting:
+- A subscription from "Cost by Subscription" (e.g., Sub-Prod-001)
+- AND a category from "Cost by Meter Category" (e.g., Storage)
+
+The filter logic uses INTERSECTION (AND) instead of UNION (OR).
+
+**Current behavior (WRONG):**
+- Sub-Prod-001 → all categories... BUT
+- Storage from Sub-Dev-002 and Sub-Test-003 are EXCLUDED at line 2045-2046
+
+The issue is on lines 2044-2046:
+```javascript
+Object.keys(day.subscriptions || {}).forEach(sub => {
+    if (selectedSubs && !selectedSubs.includes(sub)) {
+        return; // Skip if subscription filter active and this sub not selected
+    }
+```
+This skips Sub-Dev-002 and Sub-Test-003 completely, even though their Storage costs should be included.
+
+**Expected behavior (UNION/OR):**
+- Sub-Prod-001: ALL categories (VM, Storage, SQL, etc.) because the whole subscription is selected
+- Sub-Dev-002: ONLY Storage (because Storage is selected from "Cost by Meter Category")
+- Sub-Test-003: ONLY Storage (because Storage is selected from "Cost by Meter Category")
+
+**Fix approach:**
+
+The filter logic needs to be changed from intersection to union. For each data point, include it if EITHER:
+1. Its subscription is selected (include all categories), OR
+2. Its category is selected from "Cost by Meter Category" (include from all subscriptions)
+
+**Required changes to `filterRawDailyDataBySelections`:**
+
+### Change 1: Category filtering (lines ~1991-2041)
+```javascript
+// Filter categories - UNION logic: include if subscription selected OR category selected from "Cost by Meter Category"
+const hasCategorySelections = chartSelections.categories.size > 0;
+Object.keys(day.categories || {}).forEach(cat => {
+    const catData = day.categories[cat];
+    const catSubs = chartSelections.categories.get(cat);
+    const catSelectedFromAll = catSubs && catSubs.has(''); // Category selected from "Cost by Meter Category"
+
+    const filteredBySub = {};
+    let catTotal = 0;
+
+    if (catData.bySubscription) {
+        Object.keys(catData.bySubscription).forEach(subKey => {
+            // UNION: Include this subscription's cost if:
+            // 1. The subscription itself is selected (selectedSubs includes it), OR
+            // 2. This category is selected from "Cost by Meter Category" (catSubs has ''), OR
+            // 3. This specific sub+cat combo is selected, OR
+            // 4. No filters are active
+            const subSelected = selectedSubs && selectedSubs.includes(subKey);
+            const catSelectedForSub = catSubs && catSubs.has(subKey);
+            const noFiltersActive = !selectedSubs && !hasCategorySelections;
+
+            if (subSelected || catSelectedFromAll || catSelectedForSub || noFiltersActive) {
+                filteredBySub[subKey] = catData.bySubscription[subKey];
+                catTotal += catData.bySubscription[subKey];
+            }
+        });
+    } else if (!selectedSubs && !hasCategorySelections) {
+        // No subscription breakdown and no filters - use total
+        catTotal = catData.total || 0;
+    }
+
+    if (catTotal > 0) {
+        filteredDay.categories[cat] = { total: catTotal, bySubscription: filteredBySub };
+    }
+});
+```
+
+### Change 2: Subscription filtering (lines ~2043-2069)
+```javascript
+// Filter subscriptions - UNION logic
+Object.keys(day.subscriptions || {}).forEach(sub => {
+    const subData = day.subscriptions[sub];
+    const subSelected = selectedSubs && selectedSubs.includes(sub);
+    const filteredByCat = {};
+    let subTotal = 0;
+
+    Object.keys(subData.byCategory || {}).forEach(cat => {
+        const catSubs = chartSelections.categories.get(cat);
+        const catSelectedFromAll = catSubs && catSubs.has(''); // Selected from "Cost by Meter Category"
+        const catSelectedForSub = catSubs && catSubs.has(sub);
+        const noFiltersActive = !selectedSubs && !hasCategorySelections;
+
+        // UNION: Include this category if:
+        // 1. The subscription itself is selected (include ALL its categories), OR
+        // 2. This category is selected from "Cost by Meter Category", OR
+        // 3. This specific sub+cat combo is selected, OR
+        // 4. No filters are active
+        if (subSelected || catSelectedFromAll || catSelectedForSub || noFiltersActive) {
+            filteredByCat[cat] = subData.byCategory[cat];
+            subTotal += subData.byCategory[cat];
+        }
+    });
+
+    if (subTotal > 0) {
+        filteredDay.subscriptions[sub] = { total: subTotal, byCategory: filteredByCat };
+    }
+});
+```
+
+**Key principle:** Remove the early `return` at line 2045-2046. Instead, decide inclusion at the category level, checking both subscription selection AND category selection with UNION logic.
+
+**Test case:**
+1. Ctrl+click "Sub-Prod-001" in Cost by Subscription section
+2. Ctrl+click "Storage" in Cost by Meter Category section
+3. Expected in chart:
+   - Sub-Prod-001: Full cost (all categories)
+   - Sub-Dev-002: Only Storage portion
+   - Sub-Test-003: Only Storage portion
+4. When switching to "Stacked by Category":
+   - Virtual Machines: Only Sub-Prod-001's portion
+   - Storage: All 3 subscriptions (FULL)
+   - SQL Database: Only Sub-Prod-001's portion
+   - etc.
+
+---
+
+## Issue 8: Add Outlier Removal to Per-Resource Cost Increase Calculation
+**Status:** ❌ NOT FIXED - Cursor markerade som klar men koden är oförändrad (rad 172-188 summerar fortfarande utan outlier-removal)
+
+**Problem:** Inkonsekvent logik mellan total trend och per-resurs beräkning. Total trend tar bort högsta/lägsta dag för att minska outlier-påverkan, men per-resurs gör det inte.
+
+**Var:** `Export-CostTrackingReport.ps1`, rad ~167-188 (per-resurs loop)
+
+**Nuvarande:** Summerar alla dagar rakt av utan outlier-hantering.
+
+**Fix:** Applicera samma outlier-removal som total trend (rad 311-326):
+- Om >= 3 dagar i halvan: sortera på kostnad, ta bort högsta och lägsta
+- Annars: summera alla
+
+**Varför:** En enskild dyr dag (t.ex. engångskostnad, fel i billing) ska inte skapa falsk "cost increase driver".
+
+**Påverkan:** Top 20 Cost Increase Drivers blir mer tillförlitlig.
+
+---
+
+## Issue 9: Update Cost Overview Boxes on All Filter Changes
+**Status:** ❌ NOT FIXED - Cursor markerade som klar men updateChartWithSelections() anropar fortfarande inte updateSummaryCards() (rad 2418-2420)
+
+**Problem:** Cost Overview-boxarna (Total Cost, Subscriptions, Categories, Trend) uppdateras endast vid checkbox subscription-filter, inte vid Ctrl+click chart selections.
+
+**Var:**
+- `updateChartWithSelections()` rad ~2418 - anropar bara `updateChart()`
+- `updateSummaryCards()` rad ~3126 - använder bara `selectedSubscriptions`, inte `chartSelections`
+
+**Nuvarande:**
+- Checkbox filter → `filterBySubscription()` → `updateSummaryCards()` ✅
+- Ctrl+click → `updateChartWithSelections()` → `updateChart()` ❌ (ingen summary update)
+
+**Fix:**
+1. Ändra `updateChartWithSelections()` till att även anropa `updateSummaryCards()`
+2. Uppdatera `updateSummaryCards()` att respektera `chartSelections` (UNION med `selectedSubscriptions`)
+3. Använd samma filtrerade data som grafen baseras på
+
+**Effekt:** Cost Overview visar alltid korrekta summor för aktuellt filter.
+
+---
+
+## Issue 10: Stacked by Meter Ignores Chart Selections
+
+**Problem:** "Stacked by Meter (Top 15)" respekterar inte Ctrl+click-filter. Bara dropdown och checkboxes fungerar.
+
+**Var:** `buildFilteredDatasets()`, rad ~2821-2849 (meters/resources branch)
+
+**Nuvarande logik kollar bara:**
+- `categoryFilter` (dropdown) ✅
+- `selectedSubscriptions` (checkboxes) ✅
+
+**Ignoreras helt:**
+- `chartSelections.subscriptions` ❌
+- `chartSelections.categories` ❌
+- `chartSelections.meters` ❌
+
+**Fix:** Uppdatera meters/resources-branchen (rad 2821-2849) att använda samma UNION-logik som categories-branchen (rad 2775-2797):
+1. Kolla `chartSelections.subscriptions` först
+2. Kolla `chartSelections.categories` (inkl. '' för "all subs")
+3. Kolla `chartSelections.meters` för direktval av meters
+4. Falla tillbaka på dropdown/checkbox om inga chartSelections
+
+**Test:**
+1. Ctrl+click på "Virtual Machines" i Cost by Meter Category
+2. Välj "Stacked by Meter (Top 15)"
+3. Förväntat: Endast VM-meters visas (D2s v3, D4s v3, etc.)
+4. Nuvarande: Alla meters visas (ignorerar filtret)
+
+---
+
+## Issue 11: Hierarchical Selection Causes UNION to Include Unwanted Data (CRITICAL)
+
+**Problem:** Ctrl+click på subscription ger HÖGRE kostnad än ofiltrerat ($48 → $124).
+
+**Root cause BEKRÄFTAD:** Hierarkisk selektion cascaderar ner och fyller `chartSelections.categories` och `chartSelections.meters`:
+```
+Före klick:  subscriptions: [], categories: [], meters: []
+Efter klick: subscriptions: ['Sub-Test-003'], categories: (5), meters: (7)
+```
+
+Med UNION-logiken betyder detta:
+- Sub-Test-003's kostnader (subscription vald) +
+- Alla 5 kategoriers kostnader från ALLA subscriptions (categories är valda)
+= Mycket högre kostnad!
+
+**Fix:** Ändra selektionslogiken så att hierarkisk cascade INTE lägger till i `chartSelections.categories`/`meters` när det sker som del av subscription-selektion.
+
+**Två alternativ:**
+
+1. **Enklast:** Ta bort hierarkisk cascade helt för chart filtering. Subscription-val ska BARA sätta `chartSelections.subscriptions`, inte cascada till categories/meters. Visuell highlighting kan vara separat från filter-state.
+
+2. **Mer komplex:** Lägg till kontext i chartSelections så filter-logiken vet att categories valdes SOM DEL AV subscription (och därför inte ska inkludera andra subscriptions).
+
+**Var:**
+- `selectSubscription()` och `_selectCategoryWithChildren()` funktionerna
+- Sök efter `chartSelections.categories.set` och `chartSelections.meters.set`
+
+---
+
+## Issue 12: Enable Ctrl+Click Selection on Top 20 Tables
+
+**Problem:** Users cannot Ctrl+click rows in "Top 20 Resources by Cost" and "Top 20 Cost Increase Drivers" to filter the chart.
+
+**Where:**
+- HTML generation: lines ~886-904 (Top Resources) and ~1007 (Cost Increase Drivers)
+- JavaScript handlers: needs new function
+
+**Current state:**
+- Resource cards have only `data-subscription` attribute
+- No onclick handler for Ctrl+click selection
+- Cards use `.resource-card` class (`.increased-cost-card` added for cost drivers)
+
+**Required changes:**
+
+### 1. Add data attributes to resource cards (PowerShell)
+Add `data-resource="$resName"` to the div at lines ~887 and ~1007.
+
+### 2. Add onclick handler to resource card header
+Change `onclick="toggleCategory(this, event)"` to also check for Ctrl+click:
+`onclick="handleResourceCardSelection(this, event) || toggleCategory(this, event)"`
+
+### 3. Create JavaScript handler function
+```
+handleResourceCardSelection(element, event):
+  - If Ctrl/Meta key pressed:
+    - Get resource name from data-resource
+    - Toggle in chartSelections.resources (use empty key since no meter/subcat/cat context)
+    - Update visual selection (.chart-selected class)
+    - Update chart
+    - Return true (stop propagation)
+  - Else return false (allow toggle)
+```
+
+### 4. Update filter logic
+In `filterRawDailyDataBySelections`, ensure resources selected from Top 20 tables (with empty context key) are included regardless of subscription/category context.
+
+**Test:**
+1. Ctrl+click a resource in "Top 20 Resources by Cost"
+2. Chart should filter to show only that resource's cost over time
+3. Ctrl+click another resource → additive (both shown)
+4. Same for "Top 20 Cost Increase Drivers"
+5. Should work in combination with subscription/category selections (UNION logic)

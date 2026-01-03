@@ -632,6 +632,8 @@ function New-TestCostTrackingData {
     $dailyTrend = @()
     $categories = @('Virtual Machines', 'Storage', 'Networking', 'SQL Database', 'App Service')
     $subscriptions = @('Sub-Prod-001', 'Sub-Dev-002', 'Sub-Test-003')
+    $subIds = @('sub-prod-001', 'sub-dev-002', 'sub-test-003')
+    
     # Meters must match categoryMeters used in RawData so Ctrl+click filtering works
     # (chart shows meters from DailyTrend.ByMeter, tables show meters from RawData - they must be consistent)
     $meters = @(
@@ -645,59 +647,121 @@ function New-TestCostTrackingData {
     # Track resource costs over time to create realistic increases
     $halfwayPoint = [math]::Floor($DayCount / 2)
     
+    # Define different trend patterns for categories (realistic: some grow faster, some slower)
+    # Each category gets a unique trend multiplier to create variation
+    $categoryTrends = @{
+        'Virtual Machines' = 0.6    # High growth (60% increase in second half)
+        'Storage' = 0.3              # Moderate growth (30% increase)
+        'Networking' = 0.4          # Moderate-high growth (40% increase)
+        'SQL Database' = 0.2        # Low growth (20% increase)
+        'App Service' = 0.5         # High growth (50% increase)
+    }
+    
+    # Define different trend patterns for subscriptions (realistic: prod grows slower, dev/test can vary)
+    $subscriptionTrends = @{
+        'Sub-Prod-001' = 0.3       # Production: stable, moderate growth (30%)
+        'Sub-Dev-002' = 0.7         # Dev: more volatile, higher growth (70%)
+        'Sub-Test-003' = 0.2        # Test: stable, low growth (20%)
+    }
+    
+    # Define currency and exchange rate for realistic testing
+    $currencyCode = 'SEK'
+    $exchangeRate = 10.5 # 1 USD = 10.5 SEK
+    
+    # Initialize totals for aggregation across all days
+    $totalBySubscription = @{}
+    $totalByMeterCategory = @{}
+
     for ($i = $DayCount - 1; $i -ge 0; $i--) {
         $date = (Get-Date).AddDays(-$i)
         $dateString = $date.ToString('yyyy-MM-dd')
         $baseCost = 500 + (Get-Random -Minimum -50 -Maximum 100)
-        # Gradually increase base cost in second half to create trend (recent days have higher costs)
-        # Since loop goes from high $i (old) to low $i (new), recent days have lower $i values
+        
+        # Calculate base trend multiplier for this day (applies to overall cost)
+        $baseTrendMultiplier = 1.0
         if ($i -lt $halfwayPoint) {
             $daysFromHalfway = $halfwayPoint - $i
-            $baseCost = $baseCost * (1.0 + ($daysFromHalfway / $DayCount) * 0.5)  # Up to 50% increase for most recent days
+            $baseTrendMultiplier = 1.0 + ($daysFromHalfway / $DayCount) * 0.4  # Base 40% increase
         }
         
-        # Build category breakdown
+        # Build category breakdown and subscription breakdown simultaneously
         $byCategory = @{}
-        $categoryCosts = @(0.35, 0.20, 0.15, 0.15, 0.15) # Distribution percentages
-        foreach ($catIndex in 0..($categories.Count - 1)) {
-            $catCost = [math]::Round($baseCost * $categoryCosts[$catIndex], 2)
-            $byCategory[$categories[$catIndex]] = @{
-                CostLocal = $catCost
-                CostUSD = $catCost
-                BySubscription = @{
-                    'Sub-Prod-001' = @{
-                        CostLocal = [math]::Round($catCost * 0.6, 2)
-                        CostUSD = [math]::Round($catCost * 0.6, 2)
-                    }
-                    'Sub-Dev-002' = @{
-                        CostLocal = [math]::Round($catCost * 0.3, 2)
-                        CostUSD = [math]::Round($catCost * 0.3, 2)
-                    }
-                    'Sub-Test-003' = @{
-                        CostLocal = [math]::Round($catCost * 0.1, 2)
-                        CostUSD = [math]::Round($catCost * 0.1, 2)
-                    }
-                }
+        
+        # Initialize byCategory entries first
+        foreach ($catName in $categories) {
+            $byCategory[$catName] = @{
+                CostLocal = 0
+                CostUSD = 0
+                BySubscription = @{}
             }
         }
-        
-        # Build subscription breakdown for this day (use different variable name to avoid overwriting top-level $bySubscription)
+
+        # Build subscription breakdown for this day
         $dayBySubscription = @{}
-        $subCosts = @(0.6, 0.3, 0.1) # Distribution percentages
-        foreach ($subIndex in 0..($subscriptions.Count - 1)) {
-            $subCost = [math]::Round($baseCost * $subCosts[$subIndex], 2)
-            $dayBySubscription[$subscriptions[$subIndex]] = @{
-                CostLocal = $subCost
-                CostUSD = $subCost
+        foreach ($s in $subscriptions) {
+            $dayBySubscription[$s] = @{
+                CostLocal = 0
+                CostUSD = 0
                 ByCategory = @{}
             }
-            # Populate category breakdown for this subscription
+        }
+        
+        $subCosts = @(0.6, 0.3, 0.1) # Distribution percentages
+        $categoryCosts = @(0.35, 0.20, 0.15, 0.15, 0.15) # Distribution percentages
+        
+        foreach ($subIndex in 0..($subscriptions.Count - 1)) {
+            $subName = $subscriptions[$subIndex]
+            $subBaseCost = $baseCost * $subCosts[$subIndex]
+            
+            # Apply subscription-specific trend
+            $subTrendMultiplier = 1.0
+            if ($i -lt $halfwayPoint -and $subscriptionTrends.ContainsKey($subName)) {
+                $daysFromHalfway = $halfwayPoint - $i
+                $subTrendFactor = $subscriptionTrends[$subName]
+                $subTrendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * $subTrendFactor
+            }
+            $subCost = [math]::Round($subBaseCost * $subTrendMultiplier, 2)
+            
+            # Populate category breakdown for this subscription (with combined trends)
             foreach ($catIndex in 0..($categories.Count - 1)) {
-                $catCost = [math]::Round($baseCost * $categoryCosts[$catIndex] * $subCosts[$subIndex], 2)
-                $dayBySubscription[$subscriptions[$subIndex]].ByCategory[$categories[$catIndex]] = @{
-                    CostLocal = $catCost
-                    CostUSD = $catCost
+                $catName = $categories[$catIndex]
+                $catBaseCost = $baseCost * $categoryCosts[$catIndex] * $subCosts[$subIndex]
+                
+                # Apply both category and subscription trends
+                $combinedTrendMultiplier = 1.0
+                if ($i -lt $halfwayPoint) {
+                    $daysFromHalfway = $halfwayPoint - $i
+                    $catTrendFactor = if ($categoryTrends.ContainsKey($catName)) { $categoryTrends[$catName] } else { 0.4 }
+                    $subTrendFactor = if ($subscriptionTrends.ContainsKey($subName)) { $subscriptionTrends[$subName] } else { 0.4 }
+                    # Combine trends (average with slight weighting)
+                    $combinedTrendFactor = ($catTrendFactor * 0.6 + $subTrendFactor * 0.4)
+                    $combinedTrendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * $combinedTrendFactor
                 }
+                $catCost = [math]::Round($catBaseCost * $combinedTrendMultiplier, 2)
+                $catCostUSD = [math]::Round($catCost / $exchangeRate, 2)
+                
+                $dayBySubscription[$subName].ByCategory[$catName] = @{
+                    CostLocal = $catCost
+                    CostUSD = $catCostUSD
+                }
+                
+                # Accumulate actual category costs to subscription total to ensure consistency
+                $dayBySubscription[$subName].CostLocal += $catCost
+                $dayBySubscription[$subName].CostUSD += $catCostUSD
+                
+                # Accumulate to daily category total
+                $byCategory[$catName].CostLocal += $catCost
+                $byCategory[$catName].CostUSD += $catCostUSD
+                
+                # Accumulate to daily category subscription breakdown
+                if (-not $byCategory[$catName].BySubscription.ContainsKey($subName)) {
+                    $byCategory[$catName].BySubscription[$subName] = @{
+                        CostLocal = 0
+                        CostUSD = 0
+                    }
+                }
+                $byCategory[$catName].BySubscription[$subName].CostLocal += $catCost
+                $byCategory[$catName].BySubscription[$subName].CostUSD += $catCostUSD
             }
         }
         
@@ -716,30 +780,60 @@ function New-TestCostTrackingData {
             $meterCategory = $meterToCategory[$meterName]
             # Distribute costs across meters: higher index = lower cost (creates natural ranking)
             $costFactor = 0.15 - ($meterIndex * 0.006)  # Range from ~0.15 to ~0.03
-            $meterCost = [math]::Round($baseCost * [math]::Max(0.02, $costFactor), 2)
+            $meterBaseCost = $baseCost * [math]::Max(0.02, $costFactor)
+            
+            # Apply category-specific trend to meter (meters follow their category's trend)
+            $meterTrendMultiplier = 1.0
+            if ($i -lt $halfwayPoint -and $categoryTrends.ContainsKey($meterCategory)) {
+                $daysFromHalfway = $halfwayPoint - $i
+                $catTrendFactor = $categoryTrends[$meterCategory]
+                $meterTrendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * $catTrendFactor
+            }
+            $meterCost = [math]::Round($meterBaseCost * $meterTrendMultiplier, 2)
+            
+            # Build subscription breakdown for meter with subscription-specific trends
+            $meterBySubscription = @{}
+            
+            # Distribute costs across subscriptions
+            # Ensure total adds up to ~100% regardless of subscription count
+            $subCount = $subscriptions.Count
+            
+            foreach ($subIndex in 0..($subscriptions.Count - 1)) {
+                $subName = $subscriptions[$subIndex]
+                
+                # Create uneven distribution if multiple subscriptions
+                $share = if ($subCount -eq 1) { 1.0 } 
+                         elseif ($subCount -eq 2) { if ($subIndex -eq 0) { 0.65 } else { 0.35 } }
+                         elseif ($subCount -eq 3) { if ($subIndex -eq 0) { 0.55 } elseif ($subIndex -eq 1) { 0.30 } else { 0.15 } }
+                         else { 1.0 / $subCount }
+                
+                $subBaseCost = $meterCost * $share
+                
+                # Apply subscription-specific trend on top of category trend
+                $subTrendMultiplier = 1.0
+                if ($i -lt $halfwayPoint -and $subscriptionTrends.ContainsKey($subName)) {
+                    $daysFromHalfway = $halfwayPoint - $i
+                    $subTrendFactor = $subscriptionTrends[$subName]
+                    $subTrendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * ($subTrendFactor * 0.5)  # Scale down to avoid too extreme
+                }
+                $subCost = [math]::Round($subBaseCost * $subTrendMultiplier, 2)
+                
+                $meterBySubscription[$subName] = @{
+                    CostLocal = $subCost
+                    CostUSD = [math]::Round($subCost / $exchangeRate, 2)
+                }
+            }
+            
             $byMeter[$meterName] = @{
                 CostLocal = $meterCost
-                CostUSD = $meterCost
+                CostUSD = [math]::Round($meterCost / $exchangeRate, 2)
                 ByCategory = @{
                     $meterCategory = @{
                         CostLocal = $meterCost
-                        CostUSD = $meterCost
+                        CostUSD = [math]::Round($meterCost / $exchangeRate, 2)
                     }
                 }
-                BySubscription = @{
-                    'Sub-Prod-001' = @{
-                        CostLocal = [math]::Round($meterCost * 0.6, 2)
-                        CostUSD = [math]::Round($meterCost * 0.6, 2)
-                    }
-                    'Sub-Dev-002' = @{
-                        CostLocal = [math]::Round($meterCost * 0.3, 2)
-                        CostUSD = [math]::Round($meterCost * 0.3, 2)
-                    }
-                    'Sub-Test-003' = @{
-                        CostLocal = [math]::Round($meterCost * 0.1, 2)
-                        CostUSD = [math]::Round($meterCost * 0.1, 2)
-                    }
-                }
+                BySubscription = $meterBySubscription
             }
         }
         
@@ -761,20 +855,21 @@ function New-TestCostTrackingData {
                     $baseVmCost = $baseVmCost * $trendMultiplier
                 }
                 $vmCost = [math]::Round($baseVmCost, 2)
+                $vmCostUSD = [math]::Round($vmCost / $exchangeRate, 2)
                 if ($vmCost -gt 0.01) {
                     $byResource[$vmName] = @{
                         CostLocal = $vmCost
-                        CostUSD = $vmCost
+                        CostUSD = $vmCostUSD
                         ByCategory = @{
                             'Virtual Machines' = @{
                                 CostLocal = $vmCost
-                                CostUSD = $vmCost
+                                CostUSD = $vmCostUSD
                             }
                         }
                         BySubscription = @{
                             $subName = @{
                                 CostLocal = $vmCost
-                                CostUSD = $vmCost
+                                CostUSD = $vmCostUSD
                             }
                         }
                     }
@@ -785,26 +880,32 @@ function New-TestCostTrackingData {
             for ($storIdx = 0; $storIdx -lt $storToAdd; $storIdx++) {
                 $storName = $subResources.Storage[$storIdx]
                 $baseStorCost = $baseCost * 0.12 * (0.6 - ($resourceIndex * 0.05) - ($storIdx * 0.05))
+                
+                # Apply combined trend: Storage category trend + subscription trend + resource variation
                 if ($i -lt $halfwayPoint) {
                     $daysFromHalfway = $halfwayPoint - $i
-                    $trendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * (0.2 + ($resourceIndex * 0.05) + ($storIdx * 0.05))
+                    $storCategoryTrend = if ($categoryTrends.ContainsKey('Storage')) { $categoryTrends['Storage'] } else { 0.3 }
+                    # Combine category trend (60%), subscription trend (30%), and resource variation (10%)
+                    $combinedTrendFactor = ($storCategoryTrend * 0.6 + $subTrendFactor * 0.3 + (0.2 + ($resourceIndex * 0.05) + ($storIdx * 0.05)) * 0.1)
+                    $trendMultiplier = 1.0 + ($daysFromHalfway / $halfwayPoint) * $combinedTrendFactor
                     $baseStorCost = $baseStorCost * $trendMultiplier
                 }
                 $storCost = [math]::Round($baseStorCost, 2)
+                $storCostUSD = [math]::Round($storCost / $exchangeRate, 2)
                 if ($storCost -gt 0.01) {
                     $byResource[$storName] = @{
                         CostLocal = $storCost
-                        CostUSD = $storCost
+                        CostUSD = $storCostUSD
                         ByCategory = @{
                             'Storage' = @{
                                 CostLocal = $storCost
-                                CostUSD = $storCost
+                                CostUSD = $storCostUSD
                             }
                         }
                         BySubscription = @{
                             $subName = @{
                                 CostLocal = $storCost
-                                CostUSD = $storCost
+                                CostUSD = $storCostUSD
                             }
                         }
                     }
@@ -813,11 +914,46 @@ function New-TestCostTrackingData {
             $resourceIndex++
         }
         
+        # Link resources to meters for "Stacked by Meter" functionality
+        # This ensures that the resource-to-meter mapping exists for the report generation logic
+        foreach ($resName in $byResource.Keys) {
+            $resData = $byResource[$resName]
+            # Get resource category (take first one found from ByCategory keys)
+            $resCategory = $resData.ByCategory.Keys | Select-Object -First 1
+            
+            if ($resCategory) {
+                # Find meters with matching category
+                foreach ($meterName in $byMeter.Keys) {
+                    $meterData = $byMeter[$meterName]
+                    if ($meterData.ByCategory.ContainsKey($resCategory)) {
+                        # This meter belongs to the same category as the resource
+                        # Add resource to meter's Resources list
+                        if (-not $meterData.ContainsKey('Resources')) {
+                            $meterData['Resources'] = @{}
+                        }
+                        # Add resource if not exists
+                        if (-not $meterData.Resources.ContainsKey($resName)) {
+                            # Just a marker that this resource uses this meter
+                            $meterData.Resources[$resName] = 1
+                        }
+                    }
+                }
+            }
+        }
+        
+        # Calculate total cost for this day (sum of all categories)
+        $dayTotalCost = 0
+        $dayTotalCostUSD = 0
+        foreach ($cat in $byCategory.Values) {
+            $dayTotalCost += $cat.CostLocal
+            $dayTotalCostUSD += $cat.CostUSD
+        }
+        
         $dailyTrend += @{
             Date = $date
             DateString = $dateString
-            TotalCostLocal = [math]::Round($baseCost, 2)
-            TotalCostUSD = [math]::Round($baseCost, 2)
+            TotalCostLocal = [math]::Round($dayTotalCost, 2)
+            TotalCostUSD = [math]::Round($dayTotalCostUSD, 2)
             ByCategory = $byCategory
             BySubscription = $dayBySubscription
             ByMeter = $byMeter
@@ -825,9 +961,46 @@ function New-TestCostTrackingData {
         }
     }
     
+    # Re-calculate totals from DailyTrend to ensure 100% consistency
+    $totalBySubscription = @{}
+    $totalByMeterCategory = @{}
+
+    foreach ($day in $dailyTrend) {
+        # Aggregate Subscriptions
+        foreach ($subKey in $day.BySubscription.Keys) {
+            if (-not $totalBySubscription.ContainsKey($subKey)) {
+                # Find subscription ID
+                $subIndex = $subscriptions.IndexOf($subKey)
+                $subId = if ($subIndex -ge 0) { $subIds[$subIndex] } else { "unknown-id" }
+
+                $totalBySubscription[$subKey] = @{
+                    Name = $subKey
+                    SubscriptionId = $subId
+                    CostLocal = 0
+                    CostUSD = 0
+                    Currency = $currencyCode
+                }
+            }
+            $totalBySubscription[$subKey].CostLocal += $day.BySubscription[$subKey].CostLocal
+            $totalBySubscription[$subKey].CostUSD += $day.BySubscription[$subKey].CostUSD
+        }
+
+        # Aggregate Categories
+        foreach ($catKey in $day.ByCategory.Keys) {
+            if (-not $totalByMeterCategory.ContainsKey($catKey)) {
+                $totalByMeterCategory[$catKey] = @{
+                    CostLocal = 0
+                    CostUSD = 0
+                }
+            }
+            $totalByMeterCategory[$catKey].CostLocal += $day.ByCategory[$catKey].CostLocal
+            $totalByMeterCategory[$catKey].CostUSD += $day.ByCategory[$catKey].CostUSD
+        }
+    }
+
     # Generate RawData for detailed drilldown sections with subscription-specific resources
     $rawData = @()
-    $subIds = @('sub-prod-001', 'sub-dev-002', 'sub-test-003')
+    # subIds is already defined at the top
     
     # Category to resource type mapping
     $categoryToResourceType = @{
@@ -871,7 +1044,10 @@ function New-TestCostTrackingData {
             # Get resources for this category from subscription-specific list
             if ($subResources.ContainsKey($resourceKey)) {
                 $catResources = $subResources[$resourceKey]
-                $catCost = [math]::Round($byMeterCategory[$catName].CostLocal / ($categories.Count * $subscriptions.Count), 2)
+                # Use subscription's share (60/30/10) of the category cost
+                $subShares = @(0.6, 0.3, 0.1)
+                $catCostForSub = $totalByMeterCategory[$catName].CostLocal * $subShares[$subIndex]
+                $catCost = [math]::Round($catCostForSub, 2)
                 
                 # Create 2-4 resources per category per subscription
                 $resourcesToCreate = [math]::Min($catResources.Count, 4)
@@ -886,6 +1062,11 @@ function New-TestCostTrackingData {
                     $rgName = "rg-$($subName.ToLower())-$($resourceKey.ToLower())"
                     
                     if ($resCost -gt 0.01) {
+                        # Generate consistent Quantity and UnitPrice: Quantity × UnitPrice = CostLocal
+                        $resQuantity = [math]::Round((Get-Random -Minimum 10 -Maximum 500), 2)
+                        $resUnitPrice = if ($resQuantity -gt 0) { [math]::Round($resCost / $resQuantity, 4) } else { 0 }
+                        $resUnitPriceUSD = if ($resQuantity -gt 0) { [math]::Round(($resCost / $exchangeRate) / $resQuantity, 4) } else { 0 }
+
                         $rawData += [PSCustomObject]@{
                             SubscriptionId = $subId
                             SubscriptionName = $subName
@@ -897,12 +1078,12 @@ function New-TestCostTrackingData {
                             MeterSubCategory = "Standard"
                             Meter = $meterName
                             CostLocal = $resCost
-                            CostUSD = $resCost
-                            Currency = 'USD'
-                            Quantity = [math]::Round((Get-Random -Minimum 10 -Maximum 1000), 2)
+                            CostUSD = [math]::Round($resCost / $exchangeRate, 2)
+                            Currency = $currencyCode
+                            Quantity = $resQuantity
                             UnitOfMeasure = if ($catName -eq 'Storage') { "GB" } elseif ($catName -eq 'Virtual Machines') { "Hours" } else { "Count" }
-                            UnitPrice = [math]::Round($resCost / (Get-Random -Minimum 50 -Maximum 200), 4)
-                            UnitPriceUSD = [math]::Round($resCost / (Get-Random -Minimum 50 -Maximum 200), 4)
+                            UnitPrice = $resUnitPrice
+                            UnitPriceUSD = $resUnitPriceUSD
                         }
                         $entryCount++
                     }
@@ -914,22 +1095,51 @@ function New-TestCostTrackingData {
     # Collect all unique resource names from rawData
     $allUniqueResourceNames = $rawData | Select-Object -ExpandProperty ResourceName -Unique | Sort-Object
     
+    # Generate TopResources from RawData
+    $topResources = $rawData | Group-Object ResourceId | ForEach-Object {
+        $group = $_.Group
+        $first = $group[0]
+        @{
+            ResourceId = $first.ResourceId
+            ResourceName = $first.ResourceName
+            ResourceGroup = $first.ResourceGroup
+            ResourceType = $first.ResourceType
+            SubscriptionName = $first.SubscriptionName
+            SubscriptionId = $first.SubscriptionId
+            MeterCategory = $first.MeterCategory
+            CostLocal = [math]::Round(($group | Measure-Object -Property CostLocal -Sum).Sum, 2)
+            CostUSD = [math]::Round(($group | Measure-Object -Property CostUSD -Sum).Sum, 2)
+            ItemCount = $group.Count
+        }
+    } | Sort-Object CostUSD -Descending | Select-Object -First 20
+
+    # Calculate real total cost from daily trend (this is correct - matches graphs)
+    $realTotalCost = 0
+    $realTotalCostUSD = 0
+    foreach ($day in $dailyTrend) {
+        $realTotalCost += $day.TotalCostLocal
+        $realTotalCostUSD += $day.TotalCostUSD
+    }
+
     $costData = @{
         GeneratedAt = Get-Date
         PeriodStart = (Get-Date).AddDays(-$DayCount)
         PeriodEnd = Get-Date
         DaysToInclude = $DayCount
-        TotalCostLocal = 16551.50
-        TotalCostUSD = 16551.50
-        Currency = 'USD'
-        BySubscription = $bySubscription
-        ByMeterCategory = $byMeterCategory
+        TotalCostLocal = [math]::Round($realTotalCost, 2)
+        TotalCostUSD = [math]::Round($realTotalCostUSD, 2)
+        Currency = $currencyCode
+        BySubscription = $totalBySubscription
+        ByMeterCategory = $totalByMeterCategory
         TopResources = $topResources
         DailyTrend = $dailyTrend
         RawData = $rawData
         AllUniqueResourceNames = $allUniqueResourceNames
         SubscriptionCount = 3
     }
+    
+    if (-not $totalBySubscription) { Write-Warning "New-TestCostTrackingData: BySubscription is null!" }
+    if ($totalBySubscription.Count -eq 0) { Write-Warning "New-TestCostTrackingData: BySubscription is empty!" }
     
     return $costData
 }

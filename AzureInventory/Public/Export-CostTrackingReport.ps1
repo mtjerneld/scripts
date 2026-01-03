@@ -164,27 +164,51 @@ function Export-CostTrackingReport {
             }
         }
         
-        # Calculate costs per resource for each half
+        # Calculate costs per resource for each half (with outlier removal)
         foreach ($resName in $allResourceNamesInTrend) {
             $firstHalfCost = 0
             $secondHalfCost = 0
             
-            # Sum costs for first half
+            # Collect costs for first half
+            $firstHalfResourceCosts = @()
             foreach ($day in $firstHalfDays) {
                 if ($day.ByResource -and $day.ByResource.ContainsKey($resName)) {
                     $resData = $day.ByResource[$resName]
                     $cost = if ($resData.CostLocal) { $resData.CostLocal } else { 0 }
-                    $firstHalfCost += $cost
+                    if ($cost -gt 0) {
+                        $firstHalfResourceCosts += $cost
+                    }
                 }
             }
             
-            # Sum costs for second half
+            # Remove outliers from first half (same logic as total trend)
+            if ($firstHalfResourceCosts.Count -ge 3) {
+                $firstHalfSorted = $firstHalfResourceCosts | Sort-Object
+                $firstHalfFiltered = $firstHalfSorted[1..($firstHalfSorted.Count - 2)]  # Remove first (lowest) and last (highest)
+                $firstHalfCost = ($firstHalfFiltered | Measure-Object -Sum).Sum
+            } else {
+                $firstHalfCost = ($firstHalfResourceCosts | Measure-Object -Sum).Sum
+            }
+            
+            # Collect costs for second half
+            $secondHalfResourceCosts = @()
             foreach ($day in $secondHalfDays) {
                 if ($day.ByResource -and $day.ByResource.ContainsKey($resName)) {
                     $resData = $day.ByResource[$resName]
                     $cost = if ($resData.CostLocal) { $resData.CostLocal } else { 0 }
-                    $secondHalfCost += $cost
+                    if ($cost -gt 0) {
+                        $secondHalfResourceCosts += $cost
+                    }
                 }
+            }
+            
+            # Remove outliers from second half (same logic as total trend)
+            if ($secondHalfResourceCosts.Count -ge 3) {
+                $secondHalfSorted = $secondHalfResourceCosts | Sort-Object
+                $secondHalfFiltered = $secondHalfSorted[1..($secondHalfSorted.Count - 2)]  # Remove first (lowest) and last (highest)
+                $secondHalfCost = ($secondHalfFiltered | Measure-Object -Sum).Sum
+            } else {
+                $secondHalfCost = ($secondHalfResourceCosts | Measure-Object -Sum).Sum
             }
             
             # Calculate percentage increase (only if first half > 0)
@@ -335,6 +359,7 @@ function Export-CostTrackingReport {
     # Prepare subscription data as array (sorted by cost descending)
     # Convert hashtable values to PSCustomObjects for reliable property access
     # Use hashtable keys as fallback for Name if not present in value
+    if (-not $bySubscription) { $bySubscription = @{} }
     $subscriptionsArray = @($bySubscription.GetEnumerator() | ForEach-Object {
         $key = $_.Key
         $ht = $_.Value
@@ -387,7 +412,7 @@ function Export-CostTrackingReport {
             }
         }
     } | Sort-Object { $_.CostUSD } -Descending)
-    
+
     # Prepare categories data as array (sorted by cost descending)
     $categoriesArray = @($byMeterCategory.Values | Sort-Object { $_.CostUSD } -Descending)
     
@@ -536,27 +561,42 @@ function Export-CostTrackingReport {
         $dayResourceOtherCost = $day.TotalCostLocal
         
         foreach ($category in $allCategories) {
-            $catCost = 0
+            $catCostLocal = 0
+            $catCostUSD = 0
             $catSubBreakdown = @{}
             if ($day.ByCategory -and $day.ByCategory.ContainsKey($category)) {
-                $catCost = [math]::Round($day.ByCategory[$category].CostLocal, 2)
+                $catCostLocal = [math]::Round($day.ByCategory[$category].CostLocal, 2)
+                $catCostUSD = if ($day.ByCategory[$category].CostUSD) {
+                    [math]::Round($day.ByCategory[$category].CostUSD, 2)
+                } else {
+                    0
+                }
                 if ($day.ByCategory[$category].BySubscription) {
                     foreach ($subEntry in $day.ByCategory[$category].BySubscription.GetEnumerator()) {
-                        # Handle both formats: direct number or object with CostLocal
-                        $subCost = if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
-                            [math]::Round($subEntry.Value.CostLocal, 2)
+                        # Handle both formats: direct number or object with CostLocal/CostUSD
+                        if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
+                            $catSubBreakdown[$subEntry.Key] = @{
+                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
+                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
+                            }
                         } elseif ($subEntry.Value -is [PSCustomObject] -and $subEntry.Value.CostLocal) {
-                            [math]::Round($subEntry.Value.CostLocal, 2)
+                            $catSubBreakdown[$subEntry.Key] = @{
+                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
+                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
+                            }
                         } else {
-                            # Direct number value (legacy format)
-                            [math]::Round($subEntry.Value, 2)
+                            # Direct number value (legacy format) - assume same for USD
+                            $numValue = [math]::Round($subEntry.Value, 2)
+                            $catSubBreakdown[$subEntry.Key] = @{
+                                CostLocal = $numValue
+                                CostUSD = $numValue
+                            }
                         }
-                        $catSubBreakdown[$subEntry.Key] = $subCost
                     }
                 }
             }
-            $chartDatasetsByCategory[$category] += $catCost
-            $dayData.categories[$category] = @{ total = $catCost; bySubscription = $catSubBreakdown }
+            $chartDatasetsByCategory[$category] += $catCostLocal
+            $dayData.categories[$category] = @{ total = $catCostLocal; totalUSD = $catCostUSD; bySubscription = $catSubBreakdown }
         }
         
         # By Subscription (with category breakdown)
@@ -590,16 +630,25 @@ function Export-CostTrackingReport {
                 }
                 if ($day.ByMeter[$meter].BySubscription) {
                     foreach ($subEntry in $day.ByMeter[$meter].BySubscription.GetEnumerator()) {
-                        # Handle both formats: direct number or object with CostLocal
-                        $subCost = if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
-                            [math]::Round($subEntry.Value.CostLocal, 2)
+                        # Handle both formats: direct number or object with CostLocal/CostUSD
+                        if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
+                            $meterSubBreakdown[$subEntry.Key] = @{
+                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
+                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
+                            }
                         } elseif ($subEntry.Value -is [PSCustomObject] -and $subEntry.Value.CostLocal) {
-                            [math]::Round($subEntry.Value.CostLocal, 2)
+                            $meterSubBreakdown[$subEntry.Key] = @{
+                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
+                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
+                            }
                         } else {
-                            # Direct number value (legacy format)
-                            [math]::Round($subEntry.Value, 2)
+                            # Direct number value (legacy format) - assume same for USD
+                            $numValue = [math]::Round($subEntry.Value, 2)
+                            $meterSubBreakdown[$subEntry.Key] = @{
+                                CostLocal = $numValue
+                                CostUSD = $numValue
+                            }
                         }
-                        $meterSubBreakdown[$subEntry.Key] = $subCost
                     }
                 }
             }
@@ -610,40 +659,98 @@ function Export-CostTrackingReport {
         # Add "Other" for meters
         $dayData.meters["Other"] = @{ total = [math]::Round([math]::Max(0, $dayMeterOtherCost), 2); byCategory = @{}; bySubscription = @{} }
         
+        # Pre-process meters to find which resources use which meters
+        $resMetersMap = @{}
+        if ($day.ByMeter) {
+            foreach ($meterEntry in $day.ByMeter.GetEnumerator()) {
+                $meterName = $meterEntry.Key
+                if ($meterEntry.Value.Resources) {
+                    foreach ($resEntry in $meterEntry.Value.Resources.GetEnumerator()) {
+                        $resName = $resEntry.Key
+                        if (-not $resMetersMap.ContainsKey($resName)) {
+                            $resMetersMap[$resName] = @()
+                        }
+                        $resMetersMap[$resName] += $meterName
+                    }
+                }
+            }
+        }
+
         # By Resource (with category and subscription breakdown)
         foreach ($resName in $allResourceNames) {
-            $resCost = 0
+            $resCostLocal = 0
+            $resCostUSD = 0
             $resCatBreakdown = @{}
             $resSubBreakdown = @{}
             if ($day.ByResource -and $day.ByResource.ContainsKey($resName)) {
-                $resCost = [math]::Round($day.ByResource[$resName].CostLocal, 2)
+                $resCostLocal = [math]::Round($day.ByResource[$resName].CostLocal, 2)
+                $resCostUSD = if ($day.ByResource[$resName].CostUSD) {
+                    [math]::Round($day.ByResource[$resName].CostUSD, 2)
+                } else {
+                    0
+                }
                 $dayResourceOtherCost -= $day.ByResource[$resName].CostLocal
                 if ($day.ByResource[$resName].ByCategory) {
                     foreach ($catEntry in $day.ByResource[$resName].ByCategory.GetEnumerator()) {
-                        $resCatBreakdown[$catEntry.Key] = [math]::Round($catEntry.Value.CostLocal, 2)
+                        $catCost = $catEntry.Value
+                        if ($catCost -is [hashtable] -and $catCost.ContainsKey('CostLocal')) {
+                            $resCatBreakdown[$catEntry.Key] = @{
+                                CostLocal = [math]::Round($catCost.CostLocal, 2)
+                                CostUSD = if ($catCost.CostUSD) { [math]::Round($catCost.CostUSD, 2) } else { 0 }
+                            }
+                        } elseif ($catCost -is [PSCustomObject] -and $catCost.CostLocal) {
+                            $resCatBreakdown[$catEntry.Key] = @{
+                                CostLocal = [math]::Round($catCost.CostLocal, 2)
+                                CostUSD = if ($catCost.CostUSD) { [math]::Round($catCost.CostUSD, 2) } else { 0 }
+                            }
+                        } else {
+                            # Direct number value (legacy format) - assume same for USD
+                            $numValue = [math]::Round($catCost, 2)
+                            $resCatBreakdown[$catEntry.Key] = @{
+                                CostLocal = $numValue
+                                CostUSD = $numValue
+                            }
+                        }
                     }
                 }
                 if ($day.ByResource[$resName].BySubscription) {
                     foreach ($subEntry in $day.ByResource[$resName].BySubscription.GetEnumerator()) {
-                        # Handle both formats: direct number or object with CostLocal
-                        $subCost = if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
-                            [math]::Round($subEntry.Value.CostLocal, 2)
+                        # Handle both formats: direct number or object with CostLocal/CostUSD
+                        if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
+                            $resSubBreakdown[$subEntry.Key] = @{
+                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
+                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
+                            }
                         } elseif ($subEntry.Value -is [PSCustomObject] -and $subEntry.Value.CostLocal) {
-                            [math]::Round($subEntry.Value.CostLocal, 2)
+                            $resSubBreakdown[$subEntry.Key] = @{
+                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
+                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
+                            }
                         } else {
-                            # Direct number value (legacy format)
-                            [math]::Round($subEntry.Value, 2)
+                            # Direct number value (legacy format) - assume same for USD
+                            $numValue = [math]::Round($subEntry.Value, 2)
+                            $resSubBreakdown[$subEntry.Key] = @{
+                                CostLocal = $numValue
+                                CostUSD = $numValue
+                            }
                         }
-                        $resSubBreakdown[$subEntry.Key] = $subCost
                     }
                 }
             }
-            $chartDatasetsByResource[$resName] += $resCost
-            $dayData.resources[$resName] = @{ total = $resCost; byCategory = $resCatBreakdown; bySubscription = $resSubBreakdown }
+            $chartDatasetsByResource[$resName] += $resCostLocal
+            $resMeters = if ($resMetersMap.ContainsKey($resName)) { $resMetersMap[$resName] } else { @() }
+            $dayData.resources[$resName] = @{ total = $resCostLocal; totalUSD = $resCostUSD; byCategory = $resCatBreakdown; bySubscription = $resSubBreakdown; meters = $resMeters }
         }
         
         # Add "Other" for resources
-        $dayData.resources["Other"] = @{ total = [math]::Round([math]::Max(0, $dayResourceOtherCost), 2); byCategory = @{}; bySubscription = @{} }
+        $dayResourceOtherCostUSD = if ($dayResourceOtherCost -gt 0) {
+            # Estimate USD based on exchange rate (if available) or use 0
+            # This is a fallback - ideally we'd track USD separately for "Other"
+            [math]::Round($dayResourceOtherCost / 10.5, 2)  # Rough estimate: SEK/10.5 ≈ USD
+        } else {
+            0
+        }
+        $dayData.resources["Other"] = @{ total = [math]::Round([math]::Max(0, $dayResourceOtherCost), 2); totalUSD = $dayResourceOtherCostUSD; byCategory = @{}; bySubscription = @{} }
         
         $rawDailyData += $dayData
     }
@@ -652,10 +759,21 @@ function Export-CostTrackingReport {
     # Ensure we always have a valid JSON array, even if empty
     if ($rawDailyData -and $rawDailyData.Count -gt 0) {
         $rawDailyDataJson = $rawDailyData | ConvertTo-Json -Depth 6 -Compress
-        # Escape single quotes and backslashes for safe embedding in JavaScript string
-        $rawDailyDataJson = $rawDailyDataJson -replace '\\', '\\' -replace "'", "\'"
+        # Escape backslashes first, then single quotes for safe embedding in JavaScript string (using single quotes)
+        # Note: JSON uses double quotes, so we only need to escape backslashes and single quotes
+        $rawDailyDataJson = $rawDailyDataJson -replace '\\', '\\\\' -replace "'", "\'"
     } else {
         $rawDailyDataJson = "[]"
+    }
+    
+    # All known subscriptions for JS (HTML encoded to match checkboxes)
+    $allSubscriptionNamesEncoded = $allSubscriptionNames | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode($_) }
+    if ($allSubscriptionNamesEncoded -and $allSubscriptionNamesEncoded.Count -gt 0) {
+        $allSubscriptionsJson = $allSubscriptionNamesEncoded | ConvertTo-Json -Compress
+        # Escape backslashes first, then single quotes for safe embedding in JavaScript string (using single quotes)
+        $allSubscriptionsJson = $allSubscriptionsJson -replace '\\', '\\\\' -replace "'", "\'"
+    } else {
+        $allSubscriptionsJson = "[]"
     }
     
     # Color palette for categories
@@ -802,6 +920,7 @@ function Export-CostTrackingReport {
     
     foreach ($res in $topResources) {
         $resId = $res.ResourceId
+        $resNameRaw = if ($res.ResourceName) { $res.ResourceName } else { "N/A" }
         $resName = if ($res.ResourceName) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceName) } else { "N/A" }
         $resGroup = if ($res.ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceGroup) } else { "N/A" }
         $resSub = if ($res.SubscriptionName) { [System.Web.HttpUtility]::HtmlEncode($res.SubscriptionName) } else { "N/A" }
@@ -883,9 +1002,10 @@ $meterCardsHtml
 "@
         }
         
+        $resNameEncoded = [System.Web.HttpUtility]::HtmlEncode($resNameRaw)
         $topResourcesSectionsHtml += @"
-                    <div class="category-card resource-card" data-subscription="$resSub">
-                        <div class="category-header" onclick="toggleCategory(this, event)">
+                    <div class="category-card resource-card" data-subscription="$resSub" data-resource="$resNameEncoded">
+                        <div class="category-header" onclick="handleResourceCardSelection(this, event) || toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$resName</span>
                             <span class="category-cost">$currency $resCostLocal (`$$resCostUSD)</span>
@@ -914,6 +1034,7 @@ $categoryHtml
             continue  # Skip if no increase data found
         }
         $resId = $res.ResourceId
+        $resNameRaw = if ($res.ResourceName) { $res.ResourceName } else { "N/A" }
         $resName = if ($res.ResourceName) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceName) } else { "N/A" }
         $resGroup = if ($res.ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceGroup) } else { "N/A" }
         $resSub = if ($res.SubscriptionName) { [System.Web.HttpUtility]::HtmlEncode($res.SubscriptionName) } else { "N/A" }
@@ -1003,9 +1124,10 @@ $meterCardsHtml
 "@
         }
         
+        $resNameEncoded = [System.Web.HttpUtility]::HtmlEncode($resNameRaw)
         $topIncreasedResourcesSectionsHtml += @"
-                    <div class="category-card resource-card increased-cost-card" data-subscription="$resSub">
-                        <div class="category-header" onclick="toggleCategory(this, event)">
+                    <div class="category-card resource-card increased-cost-card" data-subscription="$resSub" data-resource="$resNameEncoded">
+                        <div class="category-header" onclick="handleResourceCardSelection(this, event) || toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$resName</span>
                             <span class="category-cost">+$currency $increaseAmount ($increasePercentDisplay)</span>
@@ -1633,6 +1755,7 @@ $datasetsByResourceJsonString
         
         // Raw daily data for cross-filtering
         const rawDailyData = JSON.parse('$rawDailyDataJson');
+        const allKnownSubscriptions = new Set(JSON.parse('$allSubscriptionsJson'));
         
         // Currency for formatting
         const currency = "$currency";
@@ -1831,6 +1954,8 @@ $datasetsByResourceJsonString
             populateCategoryFilter();
             // Update chart to show default view (Total Cost)
             updateChart();
+            // Calculate trend with JavaScript (same logic as when filters are applied)
+            updateSummaryCards();
             
             // Initially hide resources beyond top 20 in "Top 20 Resources" section only
             // Don't hide cards in "Top 20 Cost Increase Drivers" section (they use .increased-cost-card class)
@@ -1937,7 +2062,12 @@ $datasetsByResourceJsonString
                                 dayTotal += (catData.total || 0);
                             } else {
                                 selectedSubscriptions.forEach(sub => {
-                                    dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
+                                    const subCost = catData.bySubscription && catData.bySubscription[sub];
+                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                        dayTotal += subCost.CostLocal || 0;
+                                    } else if (typeof subCost === 'number') {
+                                        dayTotal += subCost;
+                                    }
                                 });
                             }
                         }
@@ -1988,82 +2118,103 @@ $datasetsByResourceJsonString
                 const selectedSubs = chartSelections.subscriptions.size > 0 ? 
                     Array.from(chartSelections.subscriptions) : null;
                 
-                // Filter categories
+                // Filter categories - UNION logic: include if subscription selected OR category selected from "Cost by Meter Category" OR resource selected
                 const hasCategorySelections = chartSelections.categories.size > 0;
+                const hasResourceSelections = chartSelections.resources.size > 0;
+                
+                // Collect categories used by selected resources
+                const resourceCategories = new Set();
+                if (hasResourceSelections) {
+                    chartSelections.resources.forEach((resKeys, resource) => {
+                        const resData = day.resources && day.resources[resource];
+                        if (resData && resData.byCategory) {
+                            Object.keys(resData.byCategory).forEach(cat => resourceCategories.add(cat));
+                        }
+                    });
+                }
+                
                 Object.keys(day.categories || {}).forEach(cat => {
                     const catData = day.categories[cat];
                     const catSubs = chartSelections.categories.get(cat);
-                    
-                    if (catSubs && catSubs.size > 0) {
-                        // This category IS selected - include it (filtered by selected subscriptions)
-                        const filteredBySub = {};
-                        let catTotal = 0;
-                        catSubs.forEach(sub => {
-                            if (sub === '') {
-                                // Empty string means "Cost by Meter Category" section - include ALL subscriptions for this category
-                                if (catData.bySubscription) {
-                                    Object.keys(catData.bySubscription).forEach(subKey => {
-                                        filteredBySub[subKey] = catData.bySubscription[subKey];
-                                        catTotal += catData.bySubscription[subKey];
-                                    });
-                                } else {
-                                    // No subscription breakdown, use total
-                                    catTotal = catData.total || 0;
+                    const catSelectedFromAll = catSubs && catSubs.has(''); // Category selected from "Cost by Meter Category"
+                    const catUsedByResources = hasResourceSelections && resourceCategories.has(cat);
+
+                    const filteredBySub = {};
+                    let catTotalLocal = 0;
+                    let catTotalUSD = 0;
+
+                    if (catData.bySubscription) {
+                        Object.keys(catData.bySubscription).forEach(subKey => {
+                            // UNION: Include this subscription's cost if:
+                            // 1. The subscription itself is selected (selectedSubs includes it), OR
+                            // 2. This category is selected from "Cost by Meter Category" (catSubs has ''), OR
+                            // 3. This specific sub+cat combo is selected (catSubs has subKey), OR
+                            // 4. This category is used by selected resources (catUsedByResources), OR
+                            // 5. No filters are active
+                            const subSelected = selectedSubs && selectedSubs.includes(subKey);
+                            const catSelectedForSub = catSubs && catSubs.has(subKey);
+                            const noFiltersActive = !selectedSubs && !hasCategorySelections && !hasResourceSelections;
+
+                            if (subSelected || catSelectedFromAll || catSelectedForSub || catUsedByResources || noFiltersActive) {
+                                // Handle both object format and direct number format
+                                const subCost = catData.bySubscription[subKey];
+                                if (subCost && typeof subCost === 'object') {
+                                    filteredBySub[subKey] = subCost;
+                                    catTotalLocal += subCost.CostLocal || 0;
+                                    catTotalUSD += subCost.CostUSD || 0;
+                                } else if (typeof subCost === 'number') {
+                                    filteredBySub[subKey] = subCost;
+                                    catTotalLocal += subCost;
+                                    catTotalUSD += subCost; // Assume same if no USD provided
                                 }
-                            } else if (catData.bySubscription && catData.bySubscription[sub]) {
-                                // Specific subscription selected
-                                filteredBySub[sub] = catData.bySubscription[sub];
-                                catTotal += catData.bySubscription[sub];
                             }
                         });
-                        if (catTotal > 0) {
-                            filteredDay.categories[cat] = { total: catTotal, bySubscription: filteredBySub };
-                        }
-                    } else if (!hasCategorySelections) {
-                        // No category selections active - include based on subscription filter only
-                        if (selectedSubs) {
-                            const filteredBySub = {};
-                            let catTotal = 0;
-                            selectedSubs.forEach(sub => {
-                                if (catData.bySubscription && catData.bySubscription[sub]) {
-                                    filteredBySub[sub] = catData.bySubscription[sub];
-                                    catTotal += catData.bySubscription[sub];
-                                }
-                            });
-                            if (catTotal > 0) {
-                                filteredDay.categories[cat] = { total: catTotal, bySubscription: filteredBySub };
-                            }
-                        } else {
-                            filteredDay.categories[cat] = catData;
-                        }
+                    } else if (!selectedSubs && !hasCategorySelections && !hasResourceSelections) {
+                        // No subscription breakdown and no filters - use total
+                        catTotalLocal = catData.total || 0;
+                        catTotalUSD = catData.totalUSD || 0; // Don't fallback to total - use 0 if USD missing
+                    } else if (catUsedByResources && catData.total) {
+                        // Category used by selected resources but no subscription breakdown - use total
+                        catTotalLocal = catData.total || 0;
+                        catTotalUSD = catData.totalUSD || 0;
                     }
-                    // else: category selections exist but this category is NOT selected - exclude it
+
+                    if (catTotalLocal > 0 || catTotalUSD > 0) {
+                        filteredDay.categories[cat] = { total: catTotalLocal, totalUSD: catTotalUSD, bySubscription: filteredBySub };
+                    }
                 });
                 
-                // Filter subscriptions
+                // Filter subscriptions - UNION logic
                 Object.keys(day.subscriptions || {}).forEach(sub => {
-                    if (selectedSubs && !selectedSubs.includes(sub)) {
-                        return; // Skip if subscription filter active and this sub not selected
-                    }
                     const subData = day.subscriptions[sub];
+                    const subSelected = selectedSubs && selectedSubs.includes(sub);
                     const filteredByCat = {};
                     let subTotal = 0;
                     
                     Object.keys(subData.byCategory || {}).forEach(cat => {
                         const catSubs = chartSelections.categories.get(cat);
-                        if (catSubs && (catSubs.has(sub) || catSubs.has(''))) {
-                            // This category is selected for this subscription OR selected from "Cost by Meter Category" (empty string)
+                        const catSelectedFromAll = catSubs && catSubs.has(''); // Selected from "Cost by Meter Category"
+                        const catSelectedForSub = catSubs && catSubs.has(sub);
+                        const noFiltersActive = !selectedSubs && !hasCategorySelections;
+                        
+                        // UNION: Include this category if:
+                        // 1. The subscription itself is selected (include ALL its categories), OR
+                        // 2. This category is selected from "Cost by Meter Category", OR
+                        // 3. This specific sub+cat combo is selected, OR
+                        // 4. No filters are active
+                        if (subSelected || catSelectedFromAll || catSelectedForSub || noFiltersActive) {
                             filteredByCat[cat] = subData.byCategory[cat];
-                            subTotal += subData.byCategory[cat];
-                        } else if (!hasCategorySelections) {
-                            // No category selections active - include all categories for this subscription
-                            filteredByCat[cat] = subData.byCategory[cat];
-                            subTotal += subData.byCategory[cat];
+                            // Handle both object format and direct number format
+                            const catCost = subData.byCategory[cat];
+                            if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                subTotal += catCost.CostLocal || 0;
+                            } else if (typeof catCost === 'number') {
+                                subTotal += catCost;
+                            }
                         }
-                        // else: category selections exist but this category is NOT selected for this subscription - exclude it
                     });
                     
-                    if (subTotal > 0 || (selectedSubs && selectedSubs.includes(sub))) {
+                    if (subTotal > 0) {
                         filteredDay.subscriptions[sub] = { total: subTotal, byCategory: filteredByCat };
                     }
                 });
@@ -2097,8 +2248,114 @@ $datasetsByResourceJsonString
                             filteredDay.meters[meter] = { total: meterTotal, byCategory: filteredByCat, bySubscription: filteredBySub };
                         }
                     } else if (chartSelections.meters.size === 0) {
-                        // No meter selections, include if passes other filters
-                        filteredDay.meters[meter] = meterData;
+                        // No meter selections active - apply UNION logic for subscription/category/resource filters
+                        const filteredByCat = {};
+                        const filteredBySub = {};
+                        let meterTotal = 0;
+                        
+                        // Check if meter should be included based on subscription, category, or resource selections
+                        let shouldInclude = false;
+                        // Use hasResourceSelections from outer scope (already declared above)
+                        
+                        // Check resource filter (if resources are selected, only include meters used by those resources)
+                        if (hasResourceSelections) {
+                            // Check if any selected resource uses this meter
+                            // Since we don't have direct resource->meter link, we'll include the meter if:
+                            // - The resource has costs in categories/subscriptions that the meter also has costs in
+                            // - We'll use the resource's cost as the basis (proportional to meter's share)
+                            const resourceCategories = new Set();
+                            const resourceSubscriptions = new Set();
+                            
+                            // Collect all meters used by selected resources
+                            const resourceMeters = new Set();
+                            
+                            chartSelections.resources.forEach((resKeys, resource) => {
+                                const resData = day.resources && day.resources[resource];
+                                if (resData && resData.meters) {
+                                    // meters is an array of meter names
+                                    resData.meters.forEach(meter => resourceMeters.add(meter));
+                                } else if (resData) {
+                                    // Fallback if meters not available (older data): use category/subscription overlap
+                                    // (This part is removed as we now have direct meter link)
+                                }
+                            });
+                            
+                            // Check if this meter is used by any selected resource
+                            if (resourceMeters.has(key)) {
+                                shouldInclude = true;
+                                meterTotal = meterData.total || 0;
+                                // We include the full meter cost if it's used by the resource
+                                // This is an approximation as a meter might be shared, but usually meters are specific enough
+                                // Ideally we would sum up only the cost contribution from the selected resources
+                                // But since we don't have that granularity easily available here without complex iteration
+                                // and the "Stacked by Meter" view is meant to show the meters associated with the resource
+                                
+                                // Actually, we can try to filter by category/subscription to be more precise
+                                // if the meter is shared across subscriptions/categories
+                                
+                                // Copy breakdowns
+                                if (meterData.byCategory) {
+                                    Object.keys(meterData.byCategory).forEach(cat => {
+                                        filteredByCat[cat] = meterData.byCategory[cat];
+                                    });
+                                }
+                                if (meterData.bySubscription) {
+                                    Object.keys(meterData.bySubscription).forEach(sub => {
+                                        filteredBySub[sub] = meterData.bySubscription[sub];
+                                    });
+                                }
+                            }
+                        }
+                        
+                        // Check subscription filter (UNION - only if no resource filter or resource filter didn't match)
+                        if (!hasResourceSelections && selectedSubs && selectedSubs.size > 0) {
+                            selectedSubs.forEach(sub => {
+                                if (meterData.bySubscription && meterData.bySubscription[sub]) {
+                                    shouldInclude = true;
+                                    const subCost = meterData.bySubscription[sub];
+                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                        filteredBySub[sub] = subCost;
+                                        meterTotal += subCost.CostLocal || 0;
+                                    } else if (typeof subCost === 'number') {
+                                        filteredBySub[sub] = subCost;
+                                        meterTotal += subCost;
+                                    }
+                                }
+                            });
+                        }
+                        
+                        // Check category filter (UNION - include if category is selected from "Cost by Meter Category")
+                        if (!hasResourceSelections && hasCategorySelections) {
+                            Object.keys(meterData.byCategory || {}).forEach(cat => {
+                                const catSubs = chartSelections.categories.get(cat);
+                                if (catSubs && catSubs.has('')) {
+                                    // Category selected from "Cost by Meter Category" - include this meter
+                                    shouldInclude = true;
+                                    const catCost = meterData.byCategory[cat];
+                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                        filteredByCat[cat] = catCost;
+                                        meterTotal += catCost.CostLocal || 0;
+                                    } else if (typeof catCost === 'number') {
+                                        filteredByCat[cat] = catCost;
+                                        meterTotal += catCost;
+                                    }
+                                }
+                            });
+                        }
+                        
+                        // If no filters active, include all
+                        if (!hasResourceSelections && !selectedSubs && !hasCategorySelections) {
+                            shouldInclude = true;
+                            meterTotal = meterData.total || 0;
+                        }
+                        
+                        if (shouldInclude && meterTotal > 0) {
+                            filteredDay.meters[meter] = {
+                                total: meterTotal,
+                                byCategory: Object.keys(filteredByCat).length > 0 ? filteredByCat : (meterData.byCategory || {}),
+                                bySubscription: Object.keys(filteredBySub).length > 0 ? filteredBySub : (meterData.bySubscription || {})
+                            };
+                        }
                     }
                 });
                 
@@ -2108,63 +2365,241 @@ $datasetsByResourceJsonString
                     const resKeys = chartSelections.resources.get(resource);
                     if (resKeys && resKeys.size > 0) {
                         // This resource is selected
-                        let resTotal = 0;
+                        let resTotalLocal = 0;
+                        let resTotalUSD = 0;
                         const filteredByCat = {};
                         const filteredBySub = {};
+                        let hasEmptyKey = false; // Resource selected from Top 20 table (no context)
                         
                         resKeys.forEach(key => {
-                            const parts = key.split('|');
-                            const meter = parts[0];
-                            const subcat = parts[1];
-                            const cat = parts[2];
-                            const sub = parts[3];
-                            
-                            if (resData.byCategory && resData.byCategory[cat]) {
-                                filteredByCat[cat] = (filteredByCat[cat] || 0) + resData.byCategory[cat];
-                                resTotal += resData.byCategory[cat];
-                            }
-                            if (resData.bySubscription && resData.bySubscription[sub]) {
-                                filteredBySub[sub] = (filteredBySub[sub] || 0) + resData.bySubscription[sub];
+                            if (key === '') {
+                                // Empty key means resource selected from Top 20 table - include ALL data for this resource
+                                hasEmptyKey = true;
+                                resTotalLocal = resData.total || 0;
+                                // Calculate USD from byCategory or bySubscription
+                                if (resData.byCategory) {
+                                    Object.keys(resData.byCategory).forEach(cat => {
+                                        const catCost = resData.byCategory[cat];
+                                        filteredByCat[cat] = catCost;
+                                        if (catCost && typeof catCost === 'object' && catCost.CostUSD !== undefined) {
+                                            resTotalUSD += catCost.CostUSD || 0;
+                                        }
+                                    });
+                                }
+                                if (resData.bySubscription) {
+                                    Object.keys(resData.bySubscription).forEach(sub => {
+                                        const subCost = resData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            filteredBySub[sub] = subCost;
+                                            resTotalUSD += subCost.CostUSD || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            filteredBySub[sub] = subCost;
+                                            resTotalUSD += subCost; // Assume same if no USD provided
+                                        }
+                                    });
+                                }
+                            } else {
+                                // Specific context key - filter by that context
+                                const parts = key.split('|');
+                                const meter = parts[0];
+                                const subcat = parts[1];
+                                const cat = parts[2];
+                                const sub = parts[3];
+                                
+                                if (resData.byCategory && resData.byCategory[cat]) {
+                                    const catCost = resData.byCategory[cat];
+                                    filteredByCat[cat] = catCost;
+                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                        resTotalLocal += catCost.CostLocal || 0;
+                                        resTotalUSD += catCost.CostUSD || 0;
+                                    } else if (typeof catCost === 'number') {
+                                        resTotalLocal += catCost;
+                                        resTotalUSD += catCost; // Assume same if no USD provided
+                                    }
+                                }
+                                if (resData.bySubscription && resData.bySubscription[sub]) {
+                                    const subCost = resData.bySubscription[sub];
+                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                        filteredBySub[sub] = subCost;
+                                        resTotalLocal += subCost.CostLocal || 0;
+                                        resTotalUSD += subCost.CostUSD || 0;
+                                    } else if (typeof subCost === 'number') {
+                                        filteredBySub[sub] = subCost;
+                                        resTotalLocal += subCost;
+                                        resTotalUSD += subCost; // Assume same if no USD provided
+                                    }
+                                }
                             }
                         });
                         
-                        if (resTotal > 0) {
-                            filteredDay.resources[resource] = { total: resTotal, byCategory: filteredByCat, bySubscription: filteredBySub };
+                        if (hasEmptyKey || resTotalLocal > 0) {
+                            filteredDay.resources[resource] = { 
+                                total: hasEmptyKey ? resData.total : resTotalLocal,
+                                totalUSD: resTotalUSD,
+                                byCategory: Object.keys(filteredByCat).length > 0 ? filteredByCat : (resData.byCategory || {}), 
+                                bySubscription: Object.keys(filteredBySub).length > 0 ? filteredBySub : (resData.bySubscription || {})
+                            };
                         }
                     } else if (chartSelections.resources.size === 0) {
-                        // No resource selections active - include if passes subscription/category/meter filters
-                        // Apply subscription filter if active
-                        if (selectedSubs) {
-                            const filteredBySub = {};
-                            let resTotal = 0;
+                        // No resource selections active - apply UNION logic for subscription/category/meter filters
+                        const filteredByCat = {};
+                        const filteredBySub = {};
+                        let resTotal = 0;
+                        let shouldInclude = false;
+                        
+                        // Check subscription filter
+                        if (selectedSubs && selectedSubs.size > 0) {
                             selectedSubs.forEach(sub => {
                                 if (resData.bySubscription && resData.bySubscription[sub]) {
-                                    filteredBySub[sub] = resData.bySubscription[sub];
-                                    resTotal += resData.bySubscription[sub];
+                                    shouldInclude = true;
+                                    const subCost = resData.bySubscription[sub];
+                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                        filteredBySub[sub] = subCost;
+                                        resTotal += subCost.CostLocal || 0;
+                                    } else if (typeof subCost === 'number') {
+                                        filteredBySub[sub] = subCost;
+                                        resTotal += subCost;
+                                    }
                                 }
                             });
-                            if (resTotal > 0) {
-                                filteredDay.resources[resource] = { 
-                                    total: resTotal, 
-                                    byCategory: resData.byCategory || {}, 
-                                    bySubscription: filteredBySub 
-                                };
-                            }
-                        } else if (!hasCategorySelections && chartSelections.meters.size === 0) {
-                            // No filters active - include all
-                            filteredDay.resources[resource] = resData;
+                        }
+                        
+                        // Check category filter (UNION - include if category is selected from "Cost by Meter Category")
+                        if (hasCategorySelections) {
+                            Object.keys(resData.byCategory || {}).forEach(cat => {
+                                const catSubs = chartSelections.categories.get(cat);
+                                if (catSubs && catSubs.has('')) {
+                                    // Category selected from "Cost by Meter Category" - include this resource
+                                    shouldInclude = true;
+                                    const catCost = resData.byCategory[cat];
+                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                        filteredByCat[cat] = catCost;
+                                        resTotal += catCost.CostLocal || 0;
+                                    } else if (typeof catCost === 'number') {
+                                        filteredByCat[cat] = catCost;
+                                        resTotal += catCost;
+                                    }
+                                }
+                            });
+                        }
+                        
+                        // If no filters active, include all
+                        if (!selectedSubs && !hasCategorySelections && chartSelections.meters.size === 0) {
+                            shouldInclude = true;
+                            resTotal = resData.total || 0;
+                        }
+                        
+                        if (shouldInclude && resTotal > 0) {
+                            filteredDay.resources[resource] = {
+                                total: resTotal,
+                                byCategory: Object.keys(filteredByCat).length > 0 ? filteredByCat : (resData.byCategory || {}),
+                                bySubscription: Object.keys(filteredBySub).length > 0 ? filteredBySub : (resData.bySubscription || {})
+                            };
+                        }
+                    } else {
+                        // Resource selections exist but this resource is NOT selected - check if it should be included via UNION logic
+                        // (e.g., if subscription or category is selected, this resource might still be included)
+                        const filteredByCat = {};
+                        const filteredBySub = {};
+                        let resTotal = 0;
+                        let shouldInclude = false;
+                        
+                        // Check subscription filter (UNION)
+                        if (selectedSubs && selectedSubs.size > 0) {
+                            selectedSubs.forEach(sub => {
+                                if (resData.bySubscription && resData.bySubscription[sub]) {
+                                    shouldInclude = true;
+                                    const subCost = resData.bySubscription[sub];
+                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                        filteredBySub[sub] = subCost;
+                                        resTotal += subCost.CostLocal || 0;
+                                    } else if (typeof subCost === 'number') {
+                                        filteredBySub[sub] = subCost;
+                                        resTotal += subCost;
+                                    }
+                                }
+                            });
+                        }
+                        
+                        // Check category filter (UNION)
+                        if (hasCategorySelections) {
+                            Object.keys(resData.byCategory || {}).forEach(cat => {
+                                const catSubs = chartSelections.categories.get(cat);
+                                if (catSubs && catSubs.has('')) {
+                                    shouldInclude = true;
+                                    const catCost = resData.byCategory[cat];
+                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                        filteredByCat[cat] = catCost;
+                                        resTotal += catCost.CostLocal || 0;
+                                    } else if (typeof catCost === 'number') {
+                                        filteredByCat[cat] = catCost;
+                                        resTotal += catCost;
+                                    }
+                                }
+                            });
+                        }
+                        
+                        if (shouldInclude && resTotal > 0) {
+                            filteredDay.resources[resource] = {
+                                total: resTotal,
+                                byCategory: Object.keys(filteredByCat).length > 0 ? filteredByCat : (resData.byCategory || {}),
+                                bySubscription: Object.keys(filteredBySub).length > 0 ? filteredBySub : (resData.bySubscription || {})
+                            };
                         }
                     }
                     // else: resource selections exist but this resource is NOT selected - exclude it
                 });
                 
-                // Recalculate totals
-                let dayTotal = 0;
-                Object.values(filteredDay.categories).forEach(cat => {
-                    dayTotal += cat.total || 0;
-                });
-                filteredDay.totalCostLocal = dayTotal;
-                filteredDay.totalCostUSD = dayTotal; // Assuming same for simplicity
+                // Recalculate totals - track both Local and USD separately
+                // If resources are selected, calculate totals directly from resources (more accurate)
+                // Otherwise, calculate from categories
+                let dayTotalLocal = 0;
+                let dayTotalUSD = 0;
+                
+                // Use hasResourceSelections from outer scope (already declared above)
+                if (hasResourceSelections) {
+                    // Calculate totals directly from selected resources
+                    Object.values(filteredDay.resources || {}).forEach(res => {
+                        if (res && typeof res === 'object') {
+                            dayTotalLocal += res.total || 0;
+                            // Use totalUSD if available, otherwise calculate from byCategory/bySubscription
+                            if (res.totalUSD !== undefined && res.totalUSD !== null) {
+                                dayTotalUSD += res.totalUSD;
+                            } else {
+                                // Fallback: calculate USD from byCategory or bySubscription
+                                let resUSD = 0;
+                                if (res.byCategory) {
+                                    Object.values(res.byCategory).forEach(catCost => {
+                                        if (catCost && typeof catCost === 'object' && catCost.CostUSD !== undefined) {
+                                            resUSD += catCost.CostUSD || 0;
+                                        }
+                                    });
+                                }
+                                if (res.bySubscription) {
+                                    Object.values(res.bySubscription).forEach(subCost => {
+                                        if (subCost && typeof subCost === 'object' && subCost.CostUSD !== undefined) {
+                                            resUSD += subCost.CostUSD || 0;
+                                        }
+                                    });
+                                }
+                                dayTotalUSD += resUSD;
+                            }
+                        } else if (typeof res === 'number') {
+                            dayTotalLocal += res;
+                            dayTotalUSD += res; // Assume same if no USD provided
+                        }
+                    });
+                } else {
+                    // Calculate totals from categories (original logic)
+                    Object.values(filteredDay.categories).forEach(cat => {
+                        dayTotalLocal += cat.total || 0;
+                        // Ensure we use totalUSD if it exists, otherwise 0 (never fallback to total)
+                        const catUSD = (cat.totalUSD !== undefined && cat.totalUSD !== null) ? cat.totalUSD : 0;
+                        dayTotalUSD += catUSD;
+                    });
+                }
+                filteredDay.totalCostLocal = dayTotalLocal;
+                filteredDay.totalCostUSD = dayTotalUSD;
                 
                 return filteredDay;
             });
@@ -2175,6 +2610,7 @@ $datasetsByResourceJsonString
         // Update chart with selections
         function updateChartWithSelections() {
             updateChart();
+            updateSummaryCards();
         }
         
         function updateChart() {
@@ -2190,97 +2626,155 @@ $datasetsByResourceJsonString
                 return;
             }
             
+            // Check if there are any chart selections
+            const hasChartSelections = chartSelections.subscriptions.size > 0 ||
+                chartSelections.categories.size > 0 ||
+                chartSelections.subcategories.size > 0 ||
+                chartSelections.meters.size > 0 ||
+                chartSelections.resources.size > 0;
+            
             // Apply chart selections filter if any selections exist
             let dataToUse = filterRawDailyDataBySelections(rawDailyData);
             
             // Also apply subscription checkbox filter if active (separate from chart selections)
-            // Note: Only apply this filter if subscription checkboxes are actually selected
-            // If no checkboxes are selected, we want to show all subscriptions
             if (selectedSubscriptions.size > 0) {
-                dataToUse = dataToUse.map(day => {
-                    const filteredDay = {
-                        date: day.date,
-                        categories: {},
-                        subscriptions: {},
-                        meters: {},
-                        resources: {},
-                        totalCostLocal: 0,
-                        totalCostUSD: 0
-                    };
+                // Check if all subscriptions are selected
+                const allSelected = selectedSubscriptions.size > 0 && 
+                    selectedSubscriptions.size === allKnownSubscriptions.size &&
+                    Array.from(selectedSubscriptions).every(sub => allKnownSubscriptions.has(sub));
+                
+                // If all subscriptions selected AND no chart selections, use rawDailyData directly
+                // This ensures we get the same result as when no filters are applied
+                if (allSelected && !hasChartSelections) {
+                    dataToUse = rawDailyData;
+                } else {
+                    dataToUse = filterRawDailyDataBySelections(rawDailyData);
                     
-                    // Filter categories by selected subscriptions
-                    Object.keys(day.categories || {}).forEach(cat => {
-                        const catData = day.categories[cat];
-                        const filteredBySub = {};
-                        let catTotal = 0;
-                        selectedSubscriptions.forEach(sub => {
-                            if (catData.bySubscription && catData.bySubscription[sub]) {
-                                filteredBySub[sub] = catData.bySubscription[sub];
-                                catTotal += catData.bySubscription[sub];
-                            }
-                        });
-                        if (catTotal > 0) {
-                            filteredDay.categories[cat] = { total: catTotal, bySubscription: filteredBySub };
-                        }
-                    });
-                    
-                    // Filter subscriptions - only include selected ones
-                    selectedSubscriptions.forEach(sub => {
-                        if (day.subscriptions && day.subscriptions[sub]) {
-                            filteredDay.subscriptions[sub] = day.subscriptions[sub];
-                        }
-                    });
-                    
-                    // Filter meters by selected subscriptions
-                    Object.keys(day.meters || {}).forEach(meter => {
-                        const meterData = day.meters[meter];
-                        const filteredBySub = {};
-                        let meterTotal = 0;
-                        selectedSubscriptions.forEach(sub => {
-                            if (meterData.bySubscription && meterData.bySubscription[sub]) {
-                                filteredBySub[sub] = meterData.bySubscription[sub];
-                                meterTotal += meterData.bySubscription[sub];
-                            }
-                        });
-                        if (meterTotal > 0) {
-                            filteredDay.meters[meter] = {
-                                total: meterTotal,
-                                byCategory: meterData.byCategory || {},
-                                bySubscription: filteredBySub
+                    if (!allSelected) {
+                        // Some subscriptions selected - filter by selected subscriptions
+                        dataToUse = dataToUse.map(day => {
+                            const filteredDay = {
+                                date: day.date,
+                                categories: {},
+                                subscriptions: {},
+                                meters: {},
+                                resources: {},
+                                totalCostLocal: 0,
+                                totalCostUSD: 0
                             };
-                        }
-                    });
-                    
-                    // Filter resources by selected subscriptions
-                    Object.keys(day.resources || {}).forEach(resource => {
-                        const resData = day.resources[resource];
-                        const filteredBySub = {};
-                        let resTotal = 0;
-                        selectedSubscriptions.forEach(sub => {
-                            if (resData.bySubscription && resData.bySubscription[sub]) {
-                                filteredBySub[sub] = resData.bySubscription[sub];
-                                resTotal += resData.bySubscription[sub];
-                            }
+                            
+                            // Filter categories by selected subscriptions
+                            Object.keys(day.categories || {}).forEach(cat => {
+                                const catData = day.categories[cat];
+                                const filteredBySub = {};
+                                let catTotalLocal = 0;
+                                let catTotalUSD = 0;
+                                selectedSubscriptions.forEach(sub => {
+                                    if (catData.bySubscription && catData.bySubscription[sub]) {
+                                        const subCost = catData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            filteredBySub[sub] = subCost;
+                                            catTotalLocal += subCost.CostLocal || 0;
+                                            catTotalUSD += subCost.CostUSD || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            filteredBySub[sub] = subCost;
+                                            catTotalLocal += subCost;
+                                            catTotalUSD += subCost; // Assume same if no USD provided
+                                        }
+                                    }
+                                });
+                                if (catTotalLocal > 0 || catTotalUSD > 0) {
+                                    filteredDay.categories[cat] = { total: catTotalLocal, totalUSD: catTotalUSD, bySubscription: filteredBySub };
+                                }
+                            });
+                            
+                            // Filter subscriptions - only include selected ones
+                            selectedSubscriptions.forEach(sub => {
+                                if (day.subscriptions && day.subscriptions[sub]) {
+                                    filteredDay.subscriptions[sub] = day.subscriptions[sub];
+                                }
+                            });
+                            
+                            // Filter meters by selected subscriptions
+                            Object.keys(day.meters || {}).forEach(meter => {
+                                const meterData = day.meters[meter];
+                                const filteredBySub = {};
+                                let meterTotalLocal = 0;
+                                let meterTotalUSD = 0;
+                                selectedSubscriptions.forEach(sub => {
+                                    if (meterData.bySubscription && meterData.bySubscription[sub]) {
+                                        const subCost = meterData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            filteredBySub[sub] = subCost;
+                                            meterTotalLocal += subCost.CostLocal || 0;
+                                            meterTotalUSD += subCost.CostUSD || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            filteredBySub[sub] = subCost;
+                                            meterTotalLocal += subCost;
+                                            meterTotalUSD += subCost; // Assume same if no USD provided
+                                        }
+                                    }
+                                });
+                                if (meterTotalLocal > 0 || meterTotalUSD > 0) {
+                                    filteredDay.meters[meter] = {
+                                        total: meterTotalLocal,
+                                        totalUSD: meterTotalUSD,
+                                        byCategory: meterData.byCategory || {},
+                                        bySubscription: filteredBySub
+                                    };
+                                }
+                            });
+                            
+                            // Filter resources by selected subscriptions
+                            Object.keys(day.resources || {}).forEach(resource => {
+                                const resData = day.resources[resource];
+                                const filteredBySub = {};
+                                let resTotalLocal = 0;
+                                let resTotalUSD = 0;
+                                selectedSubscriptions.forEach(sub => {
+                                    if (resData.bySubscription && resData.bySubscription[sub]) {
+                                        const subCost = resData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            filteredBySub[sub] = subCost;
+                                            resTotalLocal += subCost.CostLocal || 0;
+                                            resTotalUSD += subCost.CostUSD || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            filteredBySub[sub] = subCost;
+                                            resTotalLocal += subCost;
+                                            resTotalUSD += subCost; // Assume same if no USD provided
+                                        }
+                                    }
+                                });
+                                if (resTotalLocal > 0 || resTotalUSD > 0) {
+                                    filteredDay.resources[resource] = {
+                                        total: resTotalLocal,
+                                        totalUSD: resTotalUSD,
+                                        byCategory: resData.byCategory || {},
+                                        bySubscription: filteredBySub
+                                    };
+                                }
+                            });
+                            
+                            // Recalculate totals - track both Local and USD separately
+                            let dayTotalLocal = 0;
+                            let dayTotalUSD = 0;
+                            Object.values(filteredDay.categories).forEach(cat => {
+                                dayTotalLocal += cat.total || 0;
+                                // Ensure we use totalUSD if it exists, otherwise 0 (never fallback to total)
+                                // If totalUSD is missing, it means the category wasn't properly filtered - use 0
+                                const catUSD = (cat.totalUSD !== undefined && cat.totalUSD !== null) ? cat.totalUSD : 0;
+                                dayTotalUSD += catUSD;
+                                
+                            });
+                            filteredDay.totalCostLocal = dayTotalLocal;
+                            filteredDay.totalCostUSD = dayTotalUSD;
+                            
+                            
+                            return filteredDay;
                         });
-                        if (resTotal > 0) {
-                            filteredDay.resources[resource] = {
-                                total: resTotal,
-                                byCategory: resData.byCategory || {},
-                                bySubscription: filteredBySub
-                            };
-                        }
-                    });
-                    
-                    // Recalculate totals
-                    let dayTotal = 0;
-                    Object.values(filteredDay.categories).forEach(cat => {
-                        dayTotal += cat.total || 0;
-                    });
-                    filteredDay.totalCostLocal = dayTotal;
-                    filteredDay.totalCostUSD = dayTotal;
-                    
-                    return filteredDay;
-                });
+                    }
+                    // else: allSelected = true, so use original data (no filtering needed)
+                }
             }
             
             const view = currentView;
@@ -2296,66 +2790,111 @@ $datasetsByResourceJsonString
             let datasets;
             
             if (view === 'total') {
-                // Show only total (filtered by category and subscription)
+                // Show only total (filtered by category, subscription, and resources)
+                const hasResourceSelections = chartSelections.resources.size > 0;
+                const selectedResources = hasResourceSelections ? new Set(chartSelections.resources.keys()) : null;
+                
                 const totalData = dataToUse.map(day => {
                     let dayTotal = 0;
-                    // Check if there are chart selections for categories
-                    const hasCategorySelections = chartSelections.categories.size > 0;
                     
-                    if (categoryFilter === 'all') {
-                        // Sum all categories for selected subscriptions
-                        Object.entries(day.categories || {}).forEach(([cat, catData]) => {
-                            const catSubs = chartSelections.categories.get(cat);
-                            if (catSubs && catSubs.size > 0) {
-                                // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
-                                if (catSubs.has('')) {
-                                    // Empty string means "Cost by Meter Category" - include all subscriptions
-                                    dayTotal += catData.total || 0;
+                    // If resources are selected, sum costs from selected resources only
+                    if (hasResourceSelections) {
+                        selectedResources.forEach(resource => {
+                            const resData = day.resources && day.resources[resource];
+                            if (resData) {
+                                if (categoryFilter === 'all') {
+                                    // Sum all categories for this resource
+                                    dayTotal += resData.total || 0;
                                 } else {
-                                    // Specific subscriptions selected - sum only those
-                                    catSubs.forEach(sub => {
-                                        dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
-                                    });
-                                }
-                            } else if (!hasCategorySelections) {
-                                // No category selections - apply subscription filter only
-                                if (selectedSubscriptions.size === 0) {
-                                    dayTotal += catData.total || 0;
-                                } else {
-                                    selectedSubscriptions.forEach(sub => {
-                                        dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
-                                    });
+                                    // Sum only the filtered category for this resource
+                                    const catCost = resData.byCategory && resData.byCategory[categoryFilter];
+                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                        dayTotal += catCost.CostLocal || 0;
+                                    } else if (typeof catCost === 'number') {
+                                        dayTotal += catCost;
+                                    }
                                 }
                             }
-                            // else: category selections exist but this category is NOT selected - skip it
                         });
                     } else {
-                        // Single category
-                        const catData = day.categories && day.categories[categoryFilter];
-                        if (catData) {
-                            const catSubs = chartSelections.categories.get(categoryFilter);
-                            if (catSubs && catSubs.size > 0) {
-                                // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
-                                if (catSubs.has('')) {
-                                    // Empty string means "Cost by Meter Category" - include all subscriptions
-                                    dayTotal = catData.total || 0;
-                                } else {
-                                    // Specific subscriptions selected - sum only those
-                                    catSubs.forEach(sub => {
-                                        dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
-                                    });
+                        // No resource selections - use existing category/subscription logic
+                        const hasCategorySelections = chartSelections.categories.size > 0;
+                        
+                        if (categoryFilter === 'all') {
+                            // Sum all categories for selected subscriptions
+                            Object.entries(day.categories || {}).forEach(([cat, catData]) => {
+                                const catSubs = chartSelections.categories.get(cat);
+                                if (catSubs && catSubs.size > 0) {
+                                    // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
+                                    if (catSubs.has('')) {
+                                        // Empty string means "Cost by Meter Category" - include all subscriptions
+                                        dayTotal += catData.total || 0;
+                                    } else {
+                                        // Specific subscriptions selected - sum only those
+                                        catSubs.forEach(sub => {
+                                            const subCost = catData.bySubscription && catData.bySubscription[sub];
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                dayTotal += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                dayTotal += subCost;
+                                            }
+                                        });
+                                    }
+                                } else if (!hasCategorySelections) {
+                                    // No category selections - apply subscription filter only
+                                    if (selectedSubscriptions.size === 0) {
+                                        dayTotal += catData.total || 0;
+                                    } else {
+                                        selectedSubscriptions.forEach(sub => {
+                                            const subCost = catData.bySubscription && catData.bySubscription[sub];
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                dayTotal += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                dayTotal += subCost;
+                                            }
+                                        });
+                                    }
                                 }
-                            } else if (!hasCategorySelections) {
-                                // No category selections - apply subscription filter only
-                                if (selectedSubscriptions.size === 0) {
-                                    dayTotal = catData.total || 0;
-                                } else {
-                                    selectedSubscriptions.forEach(sub => {
-                                        dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
-                                    });
+                                // else: category selections exist but this category is NOT selected - skip it
+                            });
+                        } else {
+                            // Single category
+                            const catData = day.categories && day.categories[categoryFilter];
+                            if (catData) {
+                                const catSubs = chartSelections.categories.get(categoryFilter);
+                                if (catSubs && catSubs.size > 0) {
+                                    // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
+                                    if (catSubs.has('')) {
+                                        // Empty string means "Cost by Meter Category" - include all subscriptions
+                                        dayTotal = catData.total || 0;
+                                    } else {
+                                        // Specific subscriptions selected - sum only those
+                                        catSubs.forEach(sub => {
+                                            const subCost = catData.bySubscription && catData.bySubscription[sub];
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                dayTotal += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                dayTotal += subCost;
+                                            }
+                                        });
+                                    }
+                                } else if (!hasCategorySelections) {
+                                    // No category selections - apply subscription filter only
+                                    if (selectedSubscriptions.size === 0) {
+                                        dayTotal = catData.total || 0;
+                                    } else {
+                                        selectedSubscriptions.forEach(sub => {
+                                            const subCost = catData.bySubscription && catData.bySubscription[sub];
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                dayTotal += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                dayTotal += subCost;
+                                            }
+                                        });
+                                    }
                                 }
+                                // else: category selections exist but this category is NOT selected - dayTotal stays 0
                             }
-                            // else: category selections exist but this category is NOT selected - dayTotal stays 0
                         }
                     }
                     return dayTotal;
@@ -2388,11 +2927,34 @@ $datasetsByResourceJsonString
             // Use provided dataSource or fall back to rawDailyData
             const data = dataSource || rawDailyData;
             
+            // Check if resource selections are active
+            const hasResourceSelections = chartSelections.resources.size > 0;
+            const selectedResources = hasResourceSelections ? new Set(chartSelections.resources.keys()) : null;
+            
             // Get all unique keys for this dimension (excluding "Other" which we handle separately)
+            // If resources are selected and dimension is resources or meters, only get keys from filtered data
             const allKeys = new Set();
             data.forEach(day => {
                 Object.keys(day[dimension] || {}).forEach(key => {
-                    if (key !== 'Other') allKeys.add(key);
+                    if (key !== 'Other') {
+                        // If resources are selected and dimension is resources, only include if resource is selected
+                        if (dimension === 'resources' && hasResourceSelections) {
+                            if (selectedResources.has(key)) {
+                                allKeys.add(key);
+                            }
+                        } else if (dimension === 'meters' && hasResourceSelections) {
+                            // For meters, only include if meter exists in filtered data (which means it's used by selected resources)
+                            // Since data is already filtered by filterRawDailyDataBySelections, if meter exists here, it's used by selected resources
+                            const meterData = day.meters && day.meters[key];
+                            if (meterData) {
+                                // Meter exists in filtered data - it's used by selected resources
+                                allKeys.add(key);
+                            }
+                            // If meter doesn't exist in filtered data, don't add it to allKeys
+                        } else {
+                            allKeys.add(key);
+                        }
+                    }
                 });
             });
             
@@ -2409,6 +2971,16 @@ $datasetsByResourceJsonString
                     return;
                 }
                 
+                // Skip if resources are selected and this is resources dimension - only show selected resources
+                if (dimension === 'resources' && hasResourceSelections) {
+                    if (!selectedResources.has(key)) {
+                        return; // Skip this resource if it's not selected
+                    }
+                }
+                
+                // Note: Meters are already filtered in allKeys collection above when resources are selected
+                // So if we reach here and dimension is meters with resource selections, the meter is already validated
+                
                     let totalCost = 0;
                 data.forEach((day, dayIndex) => {
                     const dimData = day[dimension] && day[dimension][key];
@@ -2419,30 +2991,113 @@ $datasetsByResourceJsonString
                     // Apply filters based on dimension type
                     if (dimension === 'categories') {
                         // When dimension is categories, key IS the category name
-                        // Check if this category is selected via chart selections
-                        const catSubs = chartSelections.categories.get(key);
-                        if (catSubs && catSubs.size > 0) {
-                            // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
-                            if (catSubs.has('')) {
-                                // Empty string means "Cost by Meter Category" - include all subscriptions
-                                value = dimData.total || 0;
+                        // If resources are selected, sum costs from selected resources for this category
+                        if (hasResourceSelections) {
+                            selectedResources.forEach(resource => {
+                                const resData = day.resources && day.resources[resource];
+                                if (resData && resData.byCategory && resData.byCategory[key]) {
+                                    const catCost = resData.byCategory[key];
+                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                        value += catCost.CostLocal || 0;
+                                    } else if (typeof catCost === 'number') {
+                                        value += catCost;
+                                    }
+                                }
+                            });
+                        } else {
+                            // No resource selections - use existing category logic
+                            const catSubs = chartSelections.categories.get(key);
+                            const hasCategorySelections = chartSelections.categories.size > 0;
+                            
+                            if (catSubs && catSubs.size > 0) {
+                                // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
+                                if (catSubs.has('')) {
+                                    // Empty string means "Cost by Meter Category" - include all subscriptions
+                                    // Use total from filtered data, or calculate from bySubscription if total is missing
+                                    if (dimData && dimData.total !== undefined && dimData.total !== null) {
+                                        value = dimData.total || 0;
+                                    } else if (dimData && dimData.bySubscription) {
+                                        // Calculate total from bySubscription breakdown
+                                        Object.values(dimData.bySubscription).forEach(subCost => {
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                value += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                value += subCost;
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    // Specific subscriptions selected - sum only those
+                                    catSubs.forEach(sub => {
+                                        const subCost = dimData && dimData.bySubscription && dimData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            value += subCost.CostLocal || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            value += subCost;
+                                        }
+                                    });
+                                }
+                            } else if (!hasCategorySelections) {
+                                // No category selections - apply subscription filter only
+                                if (selectedSubscriptions.size === 0) {
+                                    // No filters - use total
+                                    if (dimData && dimData.total !== undefined && dimData.total !== null) {
+                                        value = dimData.total || 0;
+                                    } else if (dimData && dimData.bySubscription) {
+                                        // Calculate total from bySubscription breakdown
+                                        Object.values(dimData.bySubscription).forEach(subCost => {
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                value += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                value += subCost;
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    // Subscription filter active - sum selected subscriptions
+                                    selectedSubscriptions.forEach(sub => {
+                                        const subCost = dimData && dimData.bySubscription && dimData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            value += subCost.CostLocal || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            value += subCost;
+                                        }
+                                    });
+                                }
                             } else {
-                                // Specific subscriptions selected - sum only those
-                                catSubs.forEach(sub => {
-                                    value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
-                                });
-                            }
-                        } else if (chartSelections.categories.size === 0) {
-                            // No category selections - apply subscription filter only
-                            if (selectedSubscriptions.size === 0) {
-                                value = dimData.total || 0;
-                            } else {
-                                selectedSubscriptions.forEach(sub => {
-                                    value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
-                                });
+                                // Category selections exist but this category is NOT explicitly selected
+                                // However, if it exists in filtered data, it means it should be included
+                                // (e.g., it was included via subscription selection or other UNION logic)
+                                // So we should still calculate its value based on available data
+                                if (dimData) {
+                                    if (selectedSubscriptions.size === 0) {
+                                        // No subscription filter - use total
+                                        if (dimData.total !== undefined && dimData.total !== null) {
+                                            value = dimData.total || 0;
+                                        } else if (dimData.bySubscription) {
+                                            // Calculate total from bySubscription breakdown
+                                            Object.values(dimData.bySubscription).forEach(subCost => {
+                                                if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                    value += subCost.CostLocal || 0;
+                                                } else if (typeof subCost === 'number') {
+                                                    value += subCost;
+                                                }
+                                            });
+                                        }
+                                    } else {
+                                        // Subscription filter active - sum selected subscriptions
+                                        selectedSubscriptions.forEach(sub => {
+                                            const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                value += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                value += subCost;
+                                            }
+                                        });
+                                    }
+                                }
                             }
                         }
-                        // else: category selections exist but this category is NOT selected - value stays 0
                     } else if (dimension === 'subscriptions') {
                         // When dimension is subscriptions, apply category filter and chart selections
                         // Check if there are category selections active
@@ -2454,7 +3109,12 @@ $datasetsByResourceJsonString
                             chartSelections.categories.forEach((subs, cat) => {
                                 // Check if this subscription is selected for this category, or if category is selected from "Cost by Meter Category" (empty string)
                                 if (subs.has(key) || subs.has('')) {
-                                    selectedCatTotal += (dimData.byCategory && dimData.byCategory[cat]) || 0;
+                                    const catCost = dimData.byCategory && dimData.byCategory[cat];
+                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                        selectedCatTotal += catCost.CostLocal || 0;
+                                    } else if (typeof catCost === 'number') {
+                                        selectedCatTotal += catCost;
+                                    }
                                 }
                             });
                             value = selectedCatTotal;
@@ -2473,7 +3133,12 @@ $datasetsByResourceJsonString
                                 value = dimData.total || 0;
                             } else {
                                 selectedSubscriptions.forEach(sub => {
-                                    value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                    const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                        value += subCost.CostLocal || 0;
+                                    } else if (typeof subCost === 'number') {
+                                        value += subCost;
+                                    }
                                 });
                             }
                         } else {
@@ -2491,7 +3156,12 @@ $datasetsByResourceJsonString
                                     if (totalValue > 0) {
                                         let subscriptionShare = 0;
                                         selectedSubscriptions.forEach(sub => {
-                                            subscriptionShare += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                            const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                subscriptionShare += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                subscriptionShare += subCost;
+                                            }
                                         });
                                         // Apply the same proportion to the category value
                                         value = catValue * (subscriptionShare / totalValue);
@@ -2528,54 +3198,288 @@ $datasetsByResourceJsonString
                     // Apply filters based on dimension type
                     if (dimension === 'categories') {
                         // When dimension is categories, key IS the category name
-                        // Apply subscription filter only
-                        if (selectedSubscriptions.size === 0) {
-                            value = dimData.total || 0;
-                        } else {
-                            selectedSubscriptions.forEach(sub => {
-                                value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
-                            });
-                        }
-                    } else if (dimension === 'subscriptions') {
-                        // When dimension is subscriptions, apply category filter and chart selections
-                        // Check if there are category selections active
-                        const hasCategorySelections = chartSelections.categories.size > 0;
-                        
-                        if (hasCategorySelections) {
-                            // Category selections are active - only include categories that are selected
-                            let selectedCatTotal = 0;
-                            chartSelections.categories.forEach((subs, cat) => {
-                                // Check if this subscription is selected for this category, or if category is selected from "Cost by Meter Category" (empty string)
-                                if (subs.has(key) || subs.has('')) {
-                                    selectedCatTotal += (dimData.byCategory && dimData.byCategory[cat]) || 0;
+                        // If resources are selected, sum costs from selected resources for this category
+                        if (hasResourceSelections) {
+                            selectedResources.forEach(resource => {
+                                const resData = day.resources && day.resources[resource];
+                                if (resData && resData.byCategory && resData.byCategory[key]) {
+                                    const catCost = resData.byCategory[key];
+                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                        value += catCost.CostLocal || 0;
+                                    } else if (typeof catCost === 'number') {
+                                        value += catCost;
+                                    }
                                 }
                             });
-                            value = selectedCatTotal;
-                        } else if (categoryFilter === 'all') {
-                            // No category selections, no category filter - use total
-                            value = dimData.total || 0;
                         } else {
-                            // Category filter active - get value for this category
-                            value = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
+                            // No resource selections - use existing category logic
+                            const catSubs = chartSelections.categories.get(key);
+                            const hasCategorySelections = chartSelections.categories.size > 0;
+                            
+                            if (catSubs && catSubs.size > 0) {
+                                // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
+                                if (catSubs.has('')) {
+                                    // Empty string means "Cost by Meter Category" - include all subscriptions
+                                    // Use total from filtered data, or calculate from bySubscription if total is missing
+                                    if (dimData && dimData.total !== undefined && dimData.total !== null) {
+                                        value = dimData.total || 0;
+                                    } else if (dimData && dimData.bySubscription) {
+                                        // Calculate total from bySubscription breakdown
+                                        Object.values(dimData.bySubscription).forEach(subCost => {
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                value += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                value += subCost;
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    // Specific subscriptions selected - sum only those
+                                    catSubs.forEach(sub => {
+                                        const subCost = dimData && dimData.bySubscription && dimData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            value += subCost.CostLocal || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            value += subCost;
+                                        }
+                                    });
+                                }
+                            } else if (!hasCategorySelections) {
+                                // No category selections - apply subscription filter only
+                                if (selectedSubscriptions.size === 0) {
+                                    // No filters - use total
+                                    if (dimData && dimData.total !== undefined && dimData.total !== null) {
+                                        value = dimData.total || 0;
+                                    } else if (dimData && dimData.bySubscription) {
+                                        // Calculate total from bySubscription breakdown
+                                        Object.values(dimData.bySubscription).forEach(subCost => {
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                value += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                value += subCost;
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    // Subscription filter active - sum selected subscriptions
+                                    selectedSubscriptions.forEach(sub => {
+                                        const subCost = dimData && dimData.bySubscription && dimData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            value += subCost.CostLocal || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            value += subCost;
+                                        }
+                                    });
+                                }
+                            } else {
+                                // Category selections exist but this category is NOT explicitly selected
+                                // However, if it exists in filtered data, it means it should be included
+                                // (e.g., it was included via subscription selection or other UNION logic)
+                                // So we should still calculate its value based on available data
+                                if (dimData) {
+                                    if (selectedSubscriptions.size === 0) {
+                                        // No subscription filter - use total
+                                        if (dimData.total !== undefined && dimData.total !== null) {
+                                            value = dimData.total || 0;
+                                        } else if (dimData.bySubscription) {
+                                            // Calculate total from bySubscription breakdown
+                                            Object.values(dimData.bySubscription).forEach(subCost => {
+                                                if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                    value += subCost.CostLocal || 0;
+                                                } else if (typeof subCost === 'number') {
+                                                    value += subCost;
+                                                }
+                                            });
+                                        }
+                                    } else {
+                                        // Subscription filter active - sum selected subscriptions
+                                        selectedSubscriptions.forEach(sub => {
+                                            const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                value += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                value += subCost;
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    } else if (dimension === 'subscriptions') {
+                        // When dimension is subscriptions, if resources are selected, sum costs from selected resources for this subscription
+                        if (hasResourceSelections) {
+                            selectedResources.forEach(resource => {
+                                const resData = day.resources && day.resources[resource];
+                                if (resData && resData.bySubscription && resData.bySubscription[key]) {
+                                    const subCost = resData.bySubscription[key];
+                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                        value += subCost.CostLocal || 0;
+                                    } else if (typeof subCost === 'number') {
+                                        value += subCost;
+                                    }
+                                }
+                            });
+                        } else {
+                            // No resource selections - use existing subscription logic
+                            const hasCategorySelections = chartSelections.categories.size > 0;
+                            
+                            if (hasCategorySelections) {
+                                // Category selections are active - only include categories that are selected
+                                let selectedCatTotal = 0;
+                                chartSelections.categories.forEach((subs, cat) => {
+                                    // Check if this subscription is selected for this category, or if category is selected from "Cost by Meter Category" (empty string)
+                                    if (subs.has(key) || subs.has('')) {
+                                        selectedCatTotal += (dimData.byCategory && dimData.byCategory[cat]) || 0;
+                                    }
+                                });
+                                value = selectedCatTotal;
+                            } else if (categoryFilter === 'all') {
+                                // No category selections, no category filter - use total
+                                value = dimData.total || 0;
+                            } else {
+                                // Category filter active - get value for this category
+                                value = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
+                            }
+                        }
+                    } else if (dimension === 'meters') {
+                        // When dimension is meters, if resources are selected, sum costs from selected resources for this meter
+                        if (hasResourceSelections) {
+                            // Sum meter costs from selected resources
+                            // Since resources don't have direct byMeter breakdown, we use the meter's total from filtered data
+                            // which should already be filtered by resources in filterRawDailyDataBySelections
+                            if (dimData && dimData.total) {
+                                value = dimData.total || 0;
+                            } else {
+                                // Fallback: if meter not in filtered data, it means no selected resources use it
+                                value = 0;
+                            }
+                        } else {
+                            // No resource selections - use UNION logic for chartSelections
+                            const hasSubscriptionSelections = chartSelections.subscriptions.size > 0;
+                            const hasCategorySelections = chartSelections.categories.size > 0;
+                            const hasMeterSelections = chartSelections.meters.size > 0;
+                            
+                            // Check if this meter is directly selected
+                            const meterKeys = chartSelections.meters.get(key);
+                            const isMeterSelected = meterKeys && meterKeys.size > 0;
+                            
+                            if (isMeterSelected) {
+                                // Meter is directly selected - sum costs for selected contexts
+                                meterKeys.forEach(meterKey => {
+                                    const parts = meterKey.split('|');
+                                    const subcat = parts[0];
+                                    const cat = parts[1];
+                                    const sub = parts[2];
+                                    
+                                    // Check category match
+                                    if (dimData.byCategory && dimData.byCategory[cat]) {
+                                        const catCost = dimData.byCategory[cat];
+                                        if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                            value += catCost.CostLocal || 0;
+                                        } else if (typeof catCost === 'number') {
+                                            value += catCost;
+                                        }
+                                    }
+                                    // Check subscription match
+                                    if (dimData.bySubscription && dimData.bySubscription[sub]) {
+                                        const subCost = dimData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            // Only add if not already added via category
+                                            if (!dimData.byCategory || !dimData.byCategory[cat]) {
+                                                value += subCost.CostLocal || 0;
+                                            }
+                                        } else if (typeof subCost === 'number') {
+                                            if (!dimData.byCategory || !dimData.byCategory[cat]) {
+                                                value += subCost;
+                                            }
+                                        }
+                                    }
+                                });
+                            } else if (hasCategorySelections) {
+                                // Category selections are active - sum costs for selected categories
+                                chartSelections.categories.forEach((subs, cat) => {
+                                    // Check if this category is selected for this meter, or if category is selected from "Cost by Meter Category" (empty string)
+                                    if (subs.has('') || subs.size > 0) {
+                                        const catCost = dimData.byCategory && dimData.byCategory[cat];
+                                        if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                            value += catCost.CostLocal || 0;
+                                        } else if (typeof catCost === 'number') {
+                                            value += catCost;
+                                        }
+                                    }
+                                });
+                            } else if (hasSubscriptionSelections) {
+                                // Subscription selections are active - sum costs for selected subscriptions
+                                chartSelections.subscriptions.forEach(sub => {
+                                    const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                        value += subCost.CostLocal || 0;
+                                    } else if (typeof subCost === 'number') {
+                                        value += subCost;
+                                    }
+                                });
+                            } else if (categoryFilter === 'all') {
+                                // No chart selections - use dropdown/checkbox filters
+                                // No category filter - use total and apply subscription filter
+                                if (selectedSubscriptions.size === 0) {
+                                    value = dimData.total || 0;
+                                } else {
+                                    selectedSubscriptions.forEach(sub => {
+                                        const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            value += subCost.CostLocal || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            value += subCost;
+                                        }
+                                    });
+                                }
+                            } else {
+                                // Category filter active - get value for this category
+                                const catValue = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
+                                if (catValue > 0) {
+                                    if (selectedSubscriptions.size === 0) {
+                                        value = catValue;
+                                    } else {
+                                        // Estimate: use category value proportionally based on subscription share of total
+                                        const totalValue = dimData.total || 0;
+                                        if (totalValue > 0) {
+                                            let subscriptionShare = 0;
+                                            selectedSubscriptions.forEach(sub => {
+                                                const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                                if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                    subscriptionShare += subCost.CostLocal || 0;
+                                                } else if (typeof subCost === 'number') {
+                                                    subscriptionShare += subCost;
+                                                }
+                                            });
+                                            value = catValue * (subscriptionShare / totalValue);
+                                        } else {
+                                            value = 0;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     } else {
-                        // For meters and resources, apply both filters
+                        // For resources dimension, use existing logic (already handled by filterRawDailyDataBySelections)
                         if (categoryFilter === 'all') {
                             // No category filter - use total and apply subscription filter
                             if (selectedSubscriptions.size === 0) {
                                 value = dimData.total || 0;
                             } else {
                                 selectedSubscriptions.forEach(sub => {
-                                    value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                    const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                        value += subCost.CostLocal || 0;
+                                    } else if (typeof subCost === 'number') {
+                                        value += subCost;
+                                    }
                                 });
                             }
                         } else {
                             // Category filter active - get value for this category
                             const catValue = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
                             if (catValue > 0) {
-                                // This meter/resource has costs in the filtered category
-                                // For category-filtered values, we can't break down by subscription
-                                // So we use the category value proportionally based on subscription filter
                                 if (selectedSubscriptions.size === 0) {
                                     value = catValue;
                                 } else {
@@ -2584,9 +3488,13 @@ $datasetsByResourceJsonString
                                     if (totalValue > 0) {
                                         let subscriptionShare = 0;
                                         selectedSubscriptions.forEach(sub => {
-                                            subscriptionShare += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                            const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                subscriptionShare += subCost.CostLocal || 0;
+                                            } else if (typeof subCost === 'number') {
+                                                subscriptionShare += subCost;
+                                            }
                                         });
-                                        // Apply the same proportion to the category value
                                         value = catValue * (subscriptionShare / totalValue);
                                     } else {
                                         value = 0;
@@ -2630,6 +3538,12 @@ $datasetsByResourceJsonString
                     if (dimension === 'resources' || dimension === 'meters') {
                         Object.keys(day[dimension] || {}).forEach(key => {
                             if (key === 'Other') return;
+                            
+                            // Skip if resources are selected and this is resources dimension - only count selected resources
+                            if (dimension === 'resources' && hasResourceSelections && !selectedResources.has(key)) {
+                                return;
+                            }
+                            
                             const dimData = day[dimension][key];
                             if (!dimData) return;
                             
@@ -2639,11 +3553,23 @@ $datasetsByResourceJsonString
                                     value = dimData.total || 0;
                                 } else {
                                     selectedSubscriptions.forEach(sub => {
-                                        value += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                        const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                            value += subCost.CostLocal || 0;
+                                        } else if (typeof subCost === 'number') {
+                                            value += subCost;
+                                        }
                                     });
                                 }
                             } else {
-                                const catValue = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
+                                const catCost = dimData.byCategory && dimData.byCategory[categoryFilter];
+                                let catValue = 0;
+                                if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
+                                    catValue = catCost.CostLocal || 0;
+                                } else if (typeof catCost === 'number') {
+                                    catValue = catCost;
+                                }
+                                
                                 if (catValue > 0) {
                                     if (selectedSubscriptions.size === 0) {
                                         value = catValue;
@@ -2652,7 +3578,12 @@ $datasetsByResourceJsonString
                                         if (totalValue > 0) {
                                             let subscriptionShare = 0;
                                             selectedSubscriptions.forEach(sub => {
-                                                subscriptionShare += (dimData.bySubscription && dimData.bySubscription[sub]) || 0;
+                                                const subCost = dimData.bySubscription && dimData.bySubscription[sub];
+                                                if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                    subscriptionShare += subCost.CostLocal || 0;
+                                                } else if (typeof subCost === 'number') {
+                                                    subscriptionShare += subCost;
+                                                }
                                             });
                                             value = catValue * (subscriptionShare / totalValue);
                                         }
@@ -2729,8 +3660,23 @@ $datasetsByResourceJsonString
             const categoryCountEl = document.getElementById('summary-category-count');
             const trendPercentEl = document.getElementById('summary-trend-percent');
             
-            if (selectedSubscriptions.size === 0) {
-                // No filter - restore original values
+            // Check if any filters are active (checkbox subscriptions OR chart selections)
+            const hasChartSelections = chartSelections.subscriptions.size > 0 ||
+                                      chartSelections.categories.size > 0 ||
+                                      chartSelections.subcategories.size > 0 ||
+                                      chartSelections.meters.size > 0 ||
+                                      chartSelections.resources.size > 0;
+            const hasAnyFilters = selectedSubscriptions.size > 0 || hasChartSelections;
+            
+            // Use the same filtered data that the chart uses
+            // Always calculate trend from JavaScript data (even when no filters) to ensure consistent logic
+            let dataToUse;
+            
+            if (!hasAnyFilters) {
+                // No filter - restore original values for totals and counts, but calculate trend from data
+                // Use rawDailyData directly for trend calculation (no filtering needed)
+                dataToUse = rawDailyData;
+                
                 if (totalCostLocalEl && originalSummaryValues.totalCostLocal !== null) {
                     totalCostLocalEl.textContent = originalSummaryValues.totalCostLocal;
                 }
@@ -2743,43 +3689,127 @@ $datasetsByResourceJsonString
                 if (categoryCountEl && originalSummaryValues.categoryCount !== null) {
                     categoryCountEl.textContent = originalSummaryValues.categoryCount;
                 }
-                if (trendPercentEl && originalSummaryValues.trendPercent !== null) {
-                    trendPercentEl.innerHTML = originalSummaryValues.trendPercent; // Restore HTML to preserve arrow entity
-                    // Restore color class
-                    trendPercentEl.classList.remove('trend-increasing', 'trend-decreasing', 'trend-stable');
-                    if (originalSummaryValues.trendColorClass) {
-                        trendPercentEl.classList.add(originalSummaryValues.trendColorClass);
+                // Note: Trend is calculated below using same logic as filtered case
+            } else {
+                // Apply chart selections filter if any selections exist
+                dataToUse = filterRawDailyDataBySelections(rawDailyData);
+                
+                // Also apply subscription checkbox filter if active (separate from chart selections)
+                if (selectedSubscriptions.size > 0) {
+                    // Check if all subscriptions are selected
+                    const allSelected = selectedSubscriptions.size > 0 && 
+                        selectedSubscriptions.size === allKnownSubscriptions.size &&
+                        Array.from(selectedSubscriptions).every(sub => allKnownSubscriptions.has(sub));
+                    
+                    // If all subscriptions selected AND no chart selections, use original values for totals/counts
+                    // But still calculate trend from data to ensure consistent logic
+                    if (allSelected && !hasChartSelections) {
+                        // Restore original values for totals and counts (same as when no filters are applied)
+                        if (totalCostLocalEl && originalSummaryValues.totalCostLocal !== null) {
+                            totalCostLocalEl.textContent = originalSummaryValues.totalCostLocal;
+                        }
+                        if (totalCostUsdEl && originalSummaryValues.totalCostUSD !== null) {
+                            totalCostUsdEl.textContent = originalSummaryValues.totalCostUSD;
+                        }
+                        if (subscriptionCountEl && originalSummaryValues.subscriptionCount !== null) {
+                            subscriptionCountEl.textContent = originalSummaryValues.subscriptionCount;
+                        }
+                        if (categoryCountEl && originalSummaryValues.categoryCount !== null) {
+                            categoryCountEl.textContent = originalSummaryValues.categoryCount;
+                        }
+                        // Note: Trend is calculated below using same logic as filtered case
+                        // Use rawDailyData for trend calculation when all subscriptions selected (no filtering needed)
+                        dataToUse = rawDailyData;
+                    } else {
+                        // Re-apply filter if needed (dataToUse already filtered by chart selections above)
+                        
+                        if (!allSelected) {
+                            // Some subscriptions selected - filter by selected subscriptions
+                            dataToUse = dataToUse.map(day => {
+                                const filteredDay = {
+                                    date: day.date,
+                                    categories: {},
+                                    subscriptions: {},
+                                    meters: {},
+                                    resources: {},
+                                    totalCostLocal: 0,
+                                    totalCostUSD: 0
+                                };
+                                
+                                // Filter categories by selected subscriptions
+                                let dayTotalLocal = 0;
+                                let dayTotalUSD = 0;
+                                Object.keys(day.categories || {}).forEach(cat => {
+                                    const catData = day.categories[cat];
+                                    const filteredBySub = {};
+                                    let catTotalLocal = 0;
+                                    let catTotalUSD = 0;
+
+                                    if (catData.bySubscription) {
+                                        Object.keys(catData.bySubscription).forEach(sub => {
+                                            if (selectedSubscriptions.has(sub)) {
+                                                const subCost = catData.bySubscription[sub];
+                                                if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
+                                                    filteredBySub[sub] = subCost;
+                                                    catTotalLocal += subCost.CostLocal || 0;
+                                                    catTotalUSD += subCost.CostUSD || 0;
+                                                } else if (typeof subCost === 'number') {
+                                                    filteredBySub[sub] = subCost;
+                                                    catTotalLocal += subCost;
+                                                    catTotalUSD += subCost; // Assume same if no USD provided
+                                                }
+                                            }
+                                        });
+                                    }
+
+                                    if (catTotalLocal > 0 || catTotalUSD > 0) {
+                                        filteredDay.categories[cat] = { total: catTotalLocal, totalUSD: catTotalUSD, bySubscription: filteredBySub };
+                                        dayTotalLocal += catTotalLocal;
+                                        dayTotalUSD += catTotalUSD;
+                                    }
+                                });
+
+                                // Filter subscriptions
+                                Object.keys(day.subscriptions || {}).forEach(sub => {
+                                    if (selectedSubscriptions.has(sub)) {
+                                        filteredDay.subscriptions[sub] = day.subscriptions[sub];
+                                    }
+                                });
+
+                                filteredDay.totalCostLocal = dayTotalLocal;
+                                filteredDay.totalCostUSD = dayTotalUSD;
+                                
+                                return filteredDay;
+                            });
+                        }
+                        // else: allSelected = true, so use original data (no filtering needed)
                     }
                 }
-                return;
             }
             
-            // Calculate filtered totals from rawDailyData
+            // Calculate filtered totals from filtered data
             let filteredTotalCostLocal = 0;
             let filteredTotalCostUSD = 0;
             const filteredSubscriptions = new Set();
             const filteredCategories = new Set();
             
-            rawDailyData.forEach(day => {
-                // Sum costs for selected subscriptions
-                Object.entries(day.subscriptions || {}).forEach(([subName, subData]) => {
-                    if (selectedSubscriptions.has(subName)) {
-                        const subCostLocal = subData.total || 0;
-                        filteredTotalCostLocal += subCostLocal;
-                        
-                        // Calculate USD proportionally based on the day's total
-                        let subCostUSD = 0;
-                        if (day.totalCostLocal > 0 && day.totalCostUSD !== undefined) {
-                            subCostUSD = (day.totalCostUSD / day.totalCostLocal) * subCostLocal;
-                        }
-                        filteredTotalCostUSD += subCostUSD;
-                        filteredSubscriptions.add(subName);
-                        
-                        // Get categories for this subscription
-                        Object.keys(subData.byCategory || {}).forEach(cat => {
-                            filteredCategories.add(cat);
-                        });
-                    }
+            dataToUse.forEach(day => {
+                filteredTotalCostLocal += day.totalCostLocal || 0;
+                // Only use totalCostUSD if it exists and is a number - don't fallback to Local
+                // If USD is missing, use 0 (never use Local value)
+                // If USD equals Local (within 1%), it's likely a calculation error - use 0 to avoid showing wrong value
+                let dayUSD = 0;
+                if (day.totalCostUSD !== undefined && day.totalCostUSD !== null) {
+                    dayUSD = day.totalCostUSD;
+                }
+                filteredTotalCostUSD += dayUSD;
+                
+                // Collect unique subscriptions and categories from filtered data
+                Object.keys(day.subscriptions || {}).forEach(subName => {
+                    filteredSubscriptions.add(subName);
+                });
+                Object.keys(day.categories || {}).forEach(catName => {
+                    filteredCategories.add(catName);
                 });
             });
             
@@ -2799,37 +3829,29 @@ $datasetsByResourceJsonString
             
             // Calculate trend for filtered data
             // Remove highest and lowest day from each half to reduce outlier impact
-            if (rawDailyData.length >= 4) {  // Need at least 4 days (2 per half after removing outliers)
-                const totalDays = rawDailyData.length;
+            if (dataToUse.length >= 4) {  // Need at least 4 days (2 per half after removing outliers)
+                const totalDays = dataToUse.length;
                 const daysPerHalf = Math.floor(totalDays / 2);
                 
                 // If odd number of days, exclude the middle day(s) to ensure equal comparison
                 // First half: first N days
                 // Second half: last N days
                 
-                // Build first half data with costs
+                // Build first half data with costs from filtered data
                 const firstHalfDays = [];
                 for (let i = 0; i < daysPerHalf; i++) {
-                    const day = rawDailyData[i];
-                    let dayCost = 0;
-                    Object.entries(day.subscriptions || {}).forEach(([subName, subData]) => {
-                        if (selectedSubscriptions.has(subName)) {
-                            dayCost += subData.total || 0;
-                        }
-                    });
+                    const day = dataToUse[i];
+                    // Use totalCostLocal from filtered data (already filtered by all selections)
+                    const dayCost = day.totalCostLocal || 0;
                     firstHalfDays.push({ index: i, cost: dayCost });
                 }
                 
-                // Build second half data with costs
+                // Build second half data with costs from filtered data
                 const secondHalfDays = [];
                 for (let i = totalDays - daysPerHalf; i < totalDays; i++) {
-                    const day = rawDailyData[i];
-                    let dayCost = 0;
-                    Object.entries(day.subscriptions || {}).forEach(([subName, subData]) => {
-                        if (selectedSubscriptions.has(subName)) {
-                            dayCost += subData.total || 0;
-                        }
-                    });
+                    const day = dataToUse[i];
+                    // Use totalCostLocal from filtered data (already filtered by all selections)
+                    const dayCost = day.totalCostLocal || 0;
                     secondHalfDays.push({ index: i, cost: dayCost });
                 }
                 
@@ -2867,21 +3889,31 @@ $datasetsByResourceJsonString
                     // Determine arrow and color class
                     let arrow = '&#8594;'; // Default: stable
                     let colorClass = 'trend-stable';
+                    let borderClass = 'gray-border'; // Default: gray for neutral
                     
                     if (trendDirection === 'up') {
                         arrow = '&#8593;';
                         colorClass = 'trend-increasing';
+                        borderClass = 'red-border'; // Red for increasing cost
                     } else if (trendDirection === 'down') {
                         arrow = '&#8595;';
                         colorClass = 'trend-decreasing';
+                        borderClass = 'green-border'; // Green for decreasing cost
                     }
                     
                     // Update content with arrow (using innerHTML to render HTML entities)
                     trendPercentEl.innerHTML = arrow + ' ' + Math.abs(trendPercent).toFixed(1) + '%';
                     
-                    // Update color class
+                    // Update color class for the value
                     trendPercentEl.classList.remove('trend-increasing', 'trend-decreasing', 'trend-stable');
                     trendPercentEl.classList.add(colorClass);
+                    
+                    // Update border class for the summary card box (parent element)
+                    const summaryCardBox = trendPercentEl.closest('.summary-card');
+                    if (summaryCardBox) {
+                        summaryCardBox.classList.remove('red-border', 'green-border', 'gray-border');
+                        summaryCardBox.classList.add(borderClass);
+                    }
                 }
             }
         }
@@ -3287,19 +4319,10 @@ $datasetsByResourceJsonString
             if (!subscription) return;
             _selectSubscriptionInternal(subscription);
             
-            // Only select category-cards that are DIRECT children of this subscription
-            const subscriptionCard = document.querySelector('.subscription-card[data-subscription="' + subscription + '"]');
-            if (subscriptionCard) {
-                const subscriptionContent = subscriptionCard.querySelector('.category-content');
-                if (subscriptionContent) {
-                    subscriptionContent.querySelectorAll(':scope > .category-card[data-category]').forEach(catCard => {
-                        const category = catCard.getAttribute('data-category');
-                        if (category) {
-                            _selectCategoryWithChildren(category, subscription);
-                        }
-                    });
-                }
-            }
+            // NOTE: We do NOT cascade to categories/meters here to avoid UNION bug
+            // When a subscription is selected, only chartSelections.subscriptions is set
+            // This prevents the UNION logic from including ALL categories/meters from ALL subscriptions
+            // Visual highlighting will show the subscription card as selected
             
             updateChartSelectionsVisual();
             updateChartWithSelections();
@@ -3624,15 +4647,23 @@ $datasetsByResourceJsonString
             
             chartSelections.resources.forEach((keys, resource) => {
                 keys.forEach(key => {
-                    const parts = key.split('|');
-                    const meter = parts[0];
-                    const subcategory = parts[1];
-                    const category = parts[2];
-                    const subscription = parts[3];
-                    const selector = subscription ? '[data-resource="' + resource + '"][data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]' : '[data-resource="' + resource + '"][data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"]';
-                    document.querySelectorAll(selector).forEach(el => {
-                        el.classList.add('chart-selected');
-                    });
+                    if (key === '') {
+                        // Empty key means resource selected from Top 20 table - highlight resource card
+                        document.querySelectorAll('[data-resource="' + resource + '"].resource-card').forEach(el => {
+                            el.classList.add('chart-selected');
+                        });
+                    } else {
+                        // Specific context key - highlight resource row in drilldown
+                        const parts = key.split('|');
+                        const meter = parts[0];
+                        const subcategory = parts[1];
+                        const category = parts[2];
+                        const subscription = parts[3];
+                        const selector = subscription ? '[data-resource="' + resource + '"][data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]' : '[data-resource="' + resource + '"][data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"]';
+                        document.querySelectorAll(selector).forEach(el => {
+                            el.classList.add('chart-selected');
+                        });
+                    }
                 });
             });
             
@@ -3775,6 +4806,49 @@ $datasetsByResourceJsonString
             }
             // If not Ctrl+Click, allow normal behavior (no toggle for rows)
             return true;
+        }
+        
+        function handleResourceCardSelection(element, event) {
+            if (event && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                event.stopPropagation();
+                
+                // Get resource name from data-resource attribute
+                const card = element.closest('[data-resource]');
+                if (!card) return false;
+                
+                const resource = card.getAttribute('data-resource');
+                if (!resource || resource === 'N/A') return false;
+                
+                // Use empty key since no meter/subcat/cat context for Top 20 resources
+                const key = '';
+                const isSelected = chartSelections.resources.has(resource) && 
+                                 chartSelections.resources.get(resource).has(key);
+                
+                if (isSelected) {
+                    // Deselect
+                    const keys = chartSelections.resources.get(resource);
+                    if (keys) {
+                        keys.delete(key);
+                        if (keys.size === 0) {
+                            chartSelections.resources.delete(resource);
+                        }
+                    }
+                } else {
+                    // Select
+                    if (!chartSelections.resources.has(resource)) {
+                        chartSelections.resources.set(resource, new Set());
+                    }
+                    chartSelections.resources.get(resource).add(key);
+                }
+                
+                // Update visual selection and chart
+                updateChartSelectionsVisual();
+                updateChartWithSelections();
+                
+                return true; // Stop propagation
+            }
+            return false; // Allow normal toggle behavior
         }
         
         function toggleCategory(element, event) {

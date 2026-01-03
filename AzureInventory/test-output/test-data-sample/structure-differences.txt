@@ -1,2 +1,0 @@
-﻿BySubscription: Missing properties: Currency, ItemCount, Name, SubscriptionId
-BySubscription: Extra properties: ByCategory

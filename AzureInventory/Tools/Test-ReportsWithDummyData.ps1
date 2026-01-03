@@ -88,7 +88,8 @@ try {
 # Test Cost Tracking Report
 Write-Host "Generating Cost Tracking Report..." -ForegroundColor Yellow
 try {
-    Export-CostTrackingReport -CostTrackingData $testData.CostTracking -OutputPath (Join-Path $OutputFolder "cost-tracking.html") -TenantId "test-tenant-12345"
+    $costPath = Join-Path $OutputFolder "cost-tracking.html"
+    Export-CostTrackingReport -CostTrackingData $testData.CostTracking -OutputPath $costPath -TenantId "test-tenant-12345"
     Write-Host "  ✓ Cost Tracking report generated" -ForegroundColor Green
 } catch {
     Write-Host "  ✗ Cost Tracking report failed: $_" -ForegroundColor Red
@@ -133,4 +134,3 @@ try {
 Write-Host "`n=== Test Reports Generated ===" -ForegroundColor Cyan
 Write-Host "All reports saved to: $OutputFolder" -ForegroundColor Green
 Write-Host "`nYou can now open the HTML files to test CSS changes!" -ForegroundColor Yellow
-

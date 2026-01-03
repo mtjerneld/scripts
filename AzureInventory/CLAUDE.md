@@ -92,3 +92,81 @@ We never write or change anything in the Azure- or EntraID tenants. We only ever
 
 ## Testing
 Tests use Pester framework. Test files in `Tests/` directory follow `*.Tests.ps1` naming. Tests import functions directly via dot-sourcing rather than importing the full module.
+
+## Development Workflow
+
+**Claude Code** - Arkitekt och senior utvecklare:
+- Designar nya lösningar och arkitektur
+- Code review och kvalitetssäkring
+- Problemlösning vid komplexa buggar
+- Kommunicerar via MD-filer (FIXPLAN-*.md, DESIGN-*.md, etc.)
+
+**Cursor** - Team av juniorutvecklare:
+- Skriver majoriteten av koden
+- Implementerar enligt specifikationer i MD-filer
+- Kör tester och rapporterar resultat
+
+**Arbetsflöde:**
+1. Claude analyserar problem/feature → skriver spec i MD-fil
+2. Cursor implementerar enligt spec
+3. Claude gör review, identifierar issues → uppdaterar MD-fil
+4. Iteration tills klart
+
+## Writing FIXPLAN Files
+
+When creating FIXPLAN-*.md files or feature specs for Cursor, **always include the standard Cursor Instructions header** at the top of the file.
+
+### Standard Cursor Instructions Header
+
+Every FIXPLAN or feature spec MUST start with:
+
+```markdown
+## Instructions for Cursor
+
+### Status Management
+- Du får ENDAST sätta status till `[IN PROGRESS]` eller `[READY FOR REVIEW]`
+- Du får ALDRIG markera issues som `[FIXED]` - endast Claude får göra detta efter review
+- Du får ALDRIG skapa nya issues - rapportera problem till Claude istället
+
+### When Done with an Issue
+Ändra rubriken och lägg till status:
+\`\`\`
+## Issue N: Title [READY FOR REVIEW]
+**Status:** Ready for review - implemented in commit abc123
+\`\`\`
+
+### Status Flow
+\`\`\`
+[NEW] → [IN PROGRESS] → [READY FOR REVIEW] → [FIXED]
+                                              ↓
+                                    Status: Verified by Claude
+\`\`\`
+
+---
+```
+
+### Issue Format
+
+Be concise and descriptive rather than writing full code:
+
+**Include:**
+- **What** - Problem symptoms and root cause
+- **Where** - File path and approximate line numbers
+- **Why** - Explain the flawed logic
+- **How** - Describe the fix approach (not full implementation)
+- **Test** - How to verify the fix works
+
+**Avoid:**
+- Full code blocks (if you have the complete code, just edit directly)
+- Redundant explanations
+
+**Example:**
+```
+## Issue N: Brief Title
+
+**Problem:** Filter uses INTERSECTION instead of UNION
+**Where:** `filterRawDailyDataBySelections`, lines ~2044-2046
+**Current logic:** Early return skips unselected subscriptions entirely
+**Fix:** Remove early return, use UNION condition at category level
+**Test:** Ctrl+click Sub-1 + Storage → should show Sub-1 fully + Storage from all subs
+```
