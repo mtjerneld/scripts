@@ -430,12 +430,25 @@ function Collect-CostData {
                         CostUSD = ($resSubGroup.Group | Measure-Object -Property CostUSD -Sum).Sum
                     }
                 }
+
+                # Meter breakdown within resource (needed for accurate filtering)
+                $resMeterGroups = $dayResGroupItems | Group-Object Meter
+                $resByMeter = @{}
+                foreach ($resMeterGroup in $resMeterGroups) {
+                    $meterName = $resMeterGroup.Name
+                    if ([string]::IsNullOrWhiteSpace($meterName)) { $meterName = "Unknown" }
+                    $resByMeter[$meterName] = @{
+                        CostLocal = ($resMeterGroup.Group | Measure-Object -Property CostLocal -Sum).Sum
+                        CostUSD = ($resMeterGroup.Group | Measure-Object -Property CostUSD -Sum).Sum
+                    }
+                }
                 
                 $dayByResource[$resName] = @{
                     CostLocal = $dayResCostLocal
                     CostUSD = $dayResCostUSD
                     ByCategory = $resByCategory
                     BySubscription = $resBySubscription
+                    ByMeter = $resByMeter
                 }
             }
             

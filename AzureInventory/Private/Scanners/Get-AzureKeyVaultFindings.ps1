@@ -216,6 +216,145 @@ function Get-AzureKeyVaultFindings {
                 -RemediationSteps $firewallControl.businessImpact `
                 -RemediationCommand $remediationCmd))
         }
+
+        # Determine if vault uses RBAC
+        $usesRbac = if ($vault.EnableRbacAuthorization) { $true } else { $false }
+
+        # Control: Expiration Date Set for All Keys (RBAC or Non-RBAC)
+        $keysRbacControl = $controlLookup["Expiration Date Set for All Keys in RBAC Key Vaults"]
+        $keysNonRbacControl = $controlLookup["Expiration Date Set for All Keys in Non-RBAC Key Vaults"]
+
+        if (($usesRbac -and $keysRbacControl) -or (-not $usesRbac -and $keysNonRbacControl)) {
+            $controlsEvaluated++
+            $control = if ($usesRbac) { $keysRbacControl } else { $keysNonRbacControl }
+            $allKeysHaveExpiration = $true
+            $keyCount = 0
+            $keysWithoutExpiration = 0
+            $status = "PASS"
+            
+            try {
+                $keys = Invoke-AzureApiWithRetry {
+                    Get-AzKeyVaultKey -VaultName $vault.VaultName -ErrorAction SilentlyContinue
+                }
+                if ($keys) {
+                    $keyCount = @($keys).Count
+                    foreach ($key in $keys) {
+                        if (-not $key.ExpiresOn) {
+                            $allKeysHaveExpiration = $false
+                            $keysWithoutExpiration++
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Could not check key expiration for vault $($vault.VaultName): $_"
+                $allKeysHaveExpiration = $false
+                $status = "ERROR"
+            }
+            
+            if ($status -ne "ERROR") {
+                $status = if ($allKeysHaveExpiration) { "PASS" } else { "FAIL" }
+            }
+            
+            $currentValue = if ($status -eq "ERROR") { 
+                "Unable to check (access denied or vault unavailable)" 
+            } elseif ($keyCount -eq 0) {
+                "No keys found"
+            } elseif ($allKeysHaveExpiration) {
+                "All $keyCount key(s) have expiration dates"
+            } else {
+                "$keysWithoutExpiration of $keyCount key(s) missing expiration dates"
+            }
+            
+            $remediationCmd = $control.remediationCommand -replace '\{name\}', $vault.VaultName -replace '\{rg\}', $vault.ResourceGroupName
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $vault.ResourceGroupName `
+                -ResourceType "Microsoft.KeyVault/vaults" `
+                -ResourceName $vault.VaultName `
+                -ResourceId $vault.ResourceId `
+                -ControlId $control.controlId `
+                -ControlName $control.controlName `
+                -Category $control.category `
+                -Frameworks $control.frameworks `
+                -Severity $control.severity `
+                -CisLevel $control.level `
+                -CurrentValue $currentValue `
+                -ExpectedValue $control.expectedValue `
+                -Status $status `
+                -RemediationSteps $control.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
+
+        # Control: Expiration Date Set for All Secrets (RBAC or Non-RBAC)
+        $secretsRbacControl = $controlLookup["Expiration Date Set for All Secrets in RBAC Key Vaults"]
+        $secretsNonRbacControl = $controlLookup["Expiration Date Set for All Secrets in Non-RBAC Key Vaults"]
+
+        if (($usesRbac -and $secretsRbacControl) -or (-not $usesRbac -and $secretsNonRbacControl)) {
+            $controlsEvaluated++
+            $control = if ($usesRbac) { $secretsRbacControl } else { $secretsNonRbacControl }
+            $allSecretsHaveExpiration = $true
+            $secretCount = 0
+            $secretsWithoutExpiration = 0
+            $status = "PASS"
+            
+            try {
+                $secrets = Invoke-AzureApiWithRetry {
+                    Get-AzKeyVaultSecret -VaultName $vault.VaultName -ErrorAction SilentlyContinue
+                }
+                if ($secrets) {
+                    $secretCount = @($secrets).Count
+                    foreach ($secret in $secrets) {
+                        if (-not $secret.ExpiresOn) {
+                            $allSecretsHaveExpiration = $false
+                            $secretsWithoutExpiration++
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Could not check secret expiration for vault $($vault.VaultName): $_"
+                $allSecretsHaveExpiration = $false
+                $status = "ERROR"
+            }
+            
+            if ($status -ne "ERROR") {
+                $status = if ($allSecretsHaveExpiration) { "PASS" } else { "FAIL" }
+            }
+            
+            $currentValue = if ($status -eq "ERROR") { 
+                "Unable to check (access denied or vault unavailable)" 
+            } elseif ($secretCount -eq 0) {
+                "No secrets found"
+            } elseif ($allSecretsHaveExpiration) {
+                "All $secretCount secret(s) have expiration dates"
+            } else {
+                "$secretsWithoutExpiration of $secretCount secret(s) missing expiration dates"
+            }
+            
+            $remediationCmd = $control.remediationCommand -replace '\{name\}', $vault.VaultName -replace '\{rg\}', $vault.ResourceGroupName
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $vault.ResourceGroupName `
+                -ResourceType "Microsoft.KeyVault/vaults" `
+                -ResourceName $vault.VaultName `
+                -ResourceId $vault.ResourceId `
+                -ControlId $control.controlId `
+                -ControlName $control.controlName `
+                -Category $control.category `
+                -Frameworks $control.frameworks `
+                -Severity $control.severity `
+                -CisLevel $control.level `
+                -CurrentValue $currentValue `
+                -ExpectedValue $control.expectedValue `
+                -Status $status `
+                -RemediationSteps $control.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
     }
     
     # Calculate failure count

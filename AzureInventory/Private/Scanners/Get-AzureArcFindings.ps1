@@ -167,7 +167,12 @@ function Get-AzureArcFindings {
         # Control: AMA Extension Installed
         $amaControl = $controlLookup["ARC AMA Extension Installed"]
         if ($amaControl) {
-            $controlsEvaluated++
+            # Only check AMA extension for Connected or Disconnected machines, skip Expired
+            $connectionStatus = if ($machine.Status) { $machine.Status } else { "Unknown" }
+            if ($connectionStatus -eq "Expired") {
+                Write-Verbose "Skipping AMA Extension check for ARC machine $($machine.Name) - status is Expired"
+            } else {
+                $controlsEvaluated++
             try {
                 $extensions = Invoke-AzureApiWithRetry {
                     Get-AzConnectedMachineExtension -ResourceGroupName $machine.ResourceGroupName -MachineName $machine.Name -ErrorAction SilentlyContinue
@@ -187,37 +192,43 @@ function Get-AzureArcFindings {
                 $amaInstalled = $false
             }
             
-            $amaStatus = if ($amaInstalled) { "PASS" } else { "FAIL" }
-            
-            $descAndRefs = Get-ControlDescriptionAndReferences -Control $amaControl
-            $remediationCmd = $amaControl.remediationCommand -replace '\{name\}', $machine.Name -replace '\{rg\}', $machine.ResourceGroupName
-            
-            $finding = New-SecurityFinding `
-                -SubscriptionId $SubscriptionId `
-                -SubscriptionName $SubscriptionName `
-                -ResourceGroup $machine.ResourceGroupName `
-                -ResourceType "Microsoft.HybridCompute/machines" `
-                -ResourceName $machine.Name `
-                -ResourceId $machine.Id `
-                -ControlId $amaControl.controlId `
-                -ControlName $amaControl.controlName `
-                -Category $amaControl.category `
-                -Frameworks $amaControl.frameworks `
-                -Severity $amaControl.severity `
-                -CisLevel $amaControl.level `
-                -CurrentValue $(if ($amaInstalled) { "Installed" } else { "Not installed" }) `
-                -ExpectedValue $amaControl.expectedValue `
-                -Status $amaStatus `
-                -RemediationSteps $descAndRefs.Description `
-                -RemediationCommand $remediationCmd `
-                -References $descAndRefs.References
-            $findings.Add($finding)
+                $amaStatus = if ($amaInstalled) { "PASS" } else { "FAIL" }
+                
+                $descAndRefs = Get-ControlDescriptionAndReferences -Control $amaControl
+                $remediationCmd = $amaControl.remediationCommand -replace '\{name\}', $machine.Name -replace '\{rg\}', $machine.ResourceGroupName
+                
+                $finding = New-SecurityFinding `
+                    -SubscriptionId $SubscriptionId `
+                    -SubscriptionName $SubscriptionName `
+                    -ResourceGroup $machine.ResourceGroupName `
+                    -ResourceType "Microsoft.HybridCompute/machines" `
+                    -ResourceName $machine.Name `
+                    -ResourceId $machine.Id `
+                    -ControlId $amaControl.controlId `
+                    -ControlName $amaControl.controlName `
+                    -Category $amaControl.category `
+                    -Frameworks $amaControl.frameworks `
+                    -Severity $amaControl.severity `
+                    -CisLevel $amaControl.level `
+                    -CurrentValue $(if ($amaInstalled) { "Installed" } else { "Not installed" }) `
+                    -ExpectedValue $amaControl.expectedValue `
+                    -Status $amaStatus `
+                    -RemediationSteps $descAndRefs.Description `
+                    -RemediationCommand $remediationCmd `
+                    -References $descAndRefs.References
+                $findings.Add($finding)
+            }
         }
         
         # Control: Automatic Upgrade Enabled
         $upgradeControl = $controlLookup["ARC Automatic Upgrade Enabled"]
         if ($upgradeControl) {
-            $controlsEvaluated++
+            # Only check automatic upgrade for Connected or Disconnected machines, skip Expired
+            $connectionStatus = if ($machine.Status) { $machine.Status } else { "Unknown" }
+            if ($connectionStatus -eq "Expired") {
+                Write-Verbose "Skipping Automatic Upgrade check for ARC machine $($machine.Name) - status is Expired"
+            } else {
+                $controlsEvaluated++
             try {
                 $upgradeSettings = $machine.AgentUpgrade
                 $autoUpgrade = if ($upgradeSettings) { $upgradeSettings.EnableAutomaticUpgrade } else { $false }
@@ -226,31 +237,32 @@ function Get-AzureArcFindings {
                 $autoUpgrade = $false
             }
             
-            $upgradeStatus = if ($autoUpgrade) { "PASS" } else { "FAIL" }
-            
-            $descAndRefs = Get-ControlDescriptionAndReferences -Control $upgradeControl
-            $remediationCmd = $upgradeControl.remediationCommand -replace '\{name\}', $machine.Name -replace '\{rg\}', $machine.ResourceGroupName
-            
-            $finding = New-SecurityFinding `
-                -SubscriptionId $SubscriptionId `
-                -SubscriptionName $SubscriptionName `
-                -ResourceGroup $machine.ResourceGroupName `
-                -ResourceType "Microsoft.HybridCompute/machines" `
-                -ResourceName $machine.Name `
-                -ResourceId $machine.Id `
-                -ControlId $upgradeControl.controlId `
-                -ControlName $upgradeControl.controlName `
-                -Category $upgradeControl.category `
-                -Frameworks $upgradeControl.frameworks `
-                -Severity $upgradeControl.severity `
-                -CisLevel $upgradeControl.level `
-                -CurrentValue $autoUpgrade.ToString() `
-                -ExpectedValue $upgradeControl.expectedValue `
-                -Status $upgradeStatus `
-                -RemediationSteps $descAndRefs.Description `
-                -RemediationCommand $remediationCmd `
-                -References $descAndRefs.References
-            $findings.Add($finding)
+                $upgradeStatus = if ($autoUpgrade) { "PASS" } else { "FAIL" }
+                
+                $descAndRefs = Get-ControlDescriptionAndReferences -Control $upgradeControl
+                $remediationCmd = $upgradeControl.remediationCommand -replace '\{name\}', $machine.Name -replace '\{rg\}', $machine.ResourceGroupName
+                
+                $finding = New-SecurityFinding `
+                    -SubscriptionId $SubscriptionId `
+                    -SubscriptionName $SubscriptionName `
+                    -ResourceGroup $machine.ResourceGroupName `
+                    -ResourceType "Microsoft.HybridCompute/machines" `
+                    -ResourceName $machine.Name `
+                    -ResourceId $machine.Id `
+                    -ControlId $upgradeControl.controlId `
+                    -ControlName $upgradeControl.controlName `
+                    -Category $upgradeControl.category `
+                    -Frameworks $upgradeControl.frameworks `
+                    -Severity $upgradeControl.severity `
+                    -CisLevel $upgradeControl.level `
+                    -CurrentValue $autoUpgrade.ToString() `
+                    -ExpectedValue $upgradeControl.expectedValue `
+                    -Status $upgradeStatus `
+                    -RemediationSteps $descAndRefs.Description `
+                    -RemediationCommand $remediationCmd `
+                    -References $descAndRefs.References
+                $findings.Add($finding)
+            }
         }
     }
     

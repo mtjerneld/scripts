@@ -118,6 +118,70 @@ function Get-AzureMonitorFindings {
         }
     }
     
+    # Control: Log Analytics Workspace Retention Period
+    $retentionControl = $controlLookup["Log Analytics Workspace Retention Period"]
+    if ($retentionControl) {
+        $controlsEvaluated++
+        try {
+            $workspaces = Invoke-AzureApiWithRetry {
+                Get-AzOperationalInsightsWorkspace -ErrorAction SilentlyContinue
+            }
+            
+            if ($workspaces) {
+                foreach ($workspace in $workspaces) {
+                    # Track workspace as resource scanned
+                    $resourceKey = if ($workspace.Id) { $workspace.Id } else { "$($workspace.ResourceGroupName)/$($workspace.Name)" }
+                    if (-not $uniqueResourcesScanned.ContainsKey($resourceKey)) {
+                        $uniqueResourcesScanned[$resourceKey] = $true
+                    }
+                    
+                    try {
+                        # Skip if ResourceGroupName is empty
+                        if ([string]::IsNullOrWhiteSpace($workspace.ResourceGroupName)) {
+                            Write-Verbose "Skipping workspace $($workspace.Name) - ResourceGroupName is empty"
+                            continue
+                        }
+                        
+                        $retentionDays = if ($workspace.RetentionInDays) { $workspace.RetentionInDays } else { 0 }
+                        $meetsRequirement = $retentionDays -ge 90
+                        $status = if ($meetsRequirement) { "PASS" } else { "FAIL" }
+                        $currentValue = if ($retentionDays -gt 0) { "$retentionDays days" } else { "Not configured" }
+                        
+                        $remediationCmd = $retentionControl.remediationCommand -replace '\{name\}', $workspace.Name -replace '\{rg\}', $workspace.ResourceGroupName
+                        $descAndRefs = Get-ControlDescriptionAndReferences -Control $retentionControl
+                        
+                        $finding = New-SecurityFinding `
+                            -SubscriptionId $SubscriptionId `
+                            -SubscriptionName $SubscriptionName `
+                            -ResourceGroup $workspace.ResourceGroupName `
+                            -ResourceType "Microsoft.OperationalInsights/workspaces" `
+                            -ResourceName $workspace.Name `
+                            -ResourceId $workspace.Id `
+                            -ControlId $retentionControl.controlId `
+                            -ControlName $retentionControl.controlName `
+                            -Category $retentionControl.category `
+                            -Frameworks $retentionControl.frameworks `
+                            -Severity $retentionControl.severity `
+                            -CisLevel $retentionControl.level `
+                            -CurrentValue $currentValue `
+                            -ExpectedValue $retentionControl.expectedValue `
+                            -Status $status `
+                            -RemediationSteps $descAndRefs.Description `
+                            -RemediationCommand $remediationCmd `
+                            -References $descAndRefs.References
+                        $findings.Add($finding)
+                    }
+                    catch {
+                        Write-Verbose "Could not check retention for workspace $($workspace.Name): $_"
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Could not check Log Analytics retention: $_"
+        }
+    }
+    
     # Control: Diagnostic Settings Enabled
     $diagControl = $controlLookup["Diagnostic Settings Enabled"]
     if ($diagControl) {

@@ -385,7 +385,7 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 </div>
                 <div class="card-body">
                     <div class="score-display">
-                        <div class="score-circle" style="--score: $securityScore;">
+                        <div class="score-circle" style="--score: $securityScore; --score-color: $securityScoreColor;">
                             <span class="score-value" style="color: $securityScoreColor; font-size: 2rem !important;">$securityScore%</span>
                             <span class="score-label">Compliance</span>
                         </div>
@@ -420,7 +420,7 @@ $(Get-ReportNavigation -ActivePage "Dashboard")
                 </div>
                 <div class="card-body">
                     <div class="score-display">
-                        <div class="score-circle" style="--score: $backupRate; --accent-green: #54a0ff;">
+                        <div class="score-circle" style="--score: $backupRate; --score-color: $backupRateColor;">
                             <span class="score-value" style="color: $backupRateColor; font-size: 2rem !important;">$backupRate%</span>
                             <span class="score-label">Protected</span>
                         </div>

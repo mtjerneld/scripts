@@ -264,6 +264,216 @@ function Get-AzureStorageFindings {
             $findings.Add($finding)
         }
 
+        # Control: Soft Delete for Azure File Shares
+        $fileShareSoftDeleteControl = $controlLookup["Soft Delete for Azure File Shares"]
+        if ($fileShareSoftDeleteControl) {
+            $controlsEvaluated++
+            $fileShareSoftDeleteEnabled = $false
+            try {
+                $fileProps = Invoke-AzureApiWithRetry {
+                    Get-AzStorageFileServiceProperty -ResourceGroupName $sa.ResourceGroupName -StorageAccountName $sa.StorageAccountName -ErrorAction SilentlyContinue
+                }
+                if ($fileProps -and $fileProps.ShareDeleteRetentionPolicy -and $fileProps.ShareDeleteRetentionPolicy.Enabled) {
+                    $fileShareSoftDeleteEnabled = $true
+                }
+            }
+            catch {
+                Write-Verbose "Could not get file service properties for $($sa.StorageAccountName): $_"
+            }
+            
+            $remediationCmd = $fileShareSoftDeleteControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $sa.ResourceGroupName `
+                -ResourceType "Microsoft.Storage/storageAccounts" `
+                -ResourceName $sa.StorageAccountName `
+                -ResourceId $resourceId `
+                -ControlId $fileShareSoftDeleteControl.controlId `
+                -ControlName $fileShareSoftDeleteControl.controlName `
+                -Category $fileShareSoftDeleteControl.category `
+                -Frameworks $fileShareSoftDeleteControl.frameworks `
+                -Severity $fileShareSoftDeleteControl.severity `
+                -CisLevel $fileShareSoftDeleteControl.level `
+                -CurrentValue $(if ($fileShareSoftDeleteEnabled) { "Enabled" } else { "Disabled" }) `
+                -ExpectedValue $fileShareSoftDeleteControl.expectedValue `
+                -Status $(if ($fileShareSoftDeleteEnabled) { "PASS" } else { "FAIL" }) `
+                -RemediationSteps $fileShareSoftDeleteControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
+
+        # Control: SMB Protocol Version 3.1.1 or Higher
+        $smbVersionControl = $controlLookup["SMB Protocol Version 3.1.1 or Higher"]
+        if ($smbVersionControl) {
+            $controlsEvaluated++
+            $smbVersionCompliant = $false
+            try {
+                $fileProps = Invoke-AzureApiWithRetry {
+                    Get-AzStorageFileServiceProperty -ResourceGroupName $sa.ResourceGroupName -StorageAccountName $sa.StorageAccountName -ErrorAction SilentlyContinue
+                }
+                if ($fileProps -and $fileProps.ProtocolSettings -and $fileProps.ProtocolSettings.Smb -and $fileProps.ProtocolSettings.Smb.Versions) {
+                    $versions = $fileProps.ProtocolSettings.Smb.Versions
+                    if ($versions -contains "SMB3.1.1") {
+                        $smbVersionCompliant = $true
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Could not get SMB protocol settings for $($sa.StorageAccountName): $_"
+            }
+            
+            $remediationCmd = $smbVersionControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
+            $currentValue = if ($smbVersionCompliant) { "SMB3.1.1 or higher" } else { "SMB version below 3.1.1" }
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $sa.ResourceGroupName `
+                -ResourceType "Microsoft.Storage/storageAccounts" `
+                -ResourceName $sa.StorageAccountName `
+                -ResourceId $resourceId `
+                -ControlId $smbVersionControl.controlId `
+                -ControlName $smbVersionControl.controlName `
+                -Category $smbVersionControl.category `
+                -Frameworks $smbVersionControl.frameworks `
+                -Severity $smbVersionControl.severity `
+                -CisLevel $smbVersionControl.level `
+                -CurrentValue $currentValue `
+                -ExpectedValue $smbVersionControl.expectedValue `
+                -Status $(if ($smbVersionCompliant) { "PASS" } else { "FAIL" }) `
+                -RemediationSteps $smbVersionControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
+
+        # Control: SMB Channel Encryption AES-256-GCM
+        $smbEncryptionControl = $controlLookup["SMB Channel Encryption AES-256-GCM"]
+        if ($smbEncryptionControl) {
+            $controlsEvaluated++
+            $smbEncryptionEnabled = $false
+            try {
+                $fileProps = Invoke-AzureApiWithRetry {
+                    Get-AzStorageFileServiceProperty -ResourceGroupName $sa.ResourceGroupName -StorageAccountName $sa.StorageAccountName -ErrorAction SilentlyContinue
+                }
+                if ($fileProps -and $fileProps.ProtocolSettings -and $fileProps.ProtocolSettings.Smb) {
+                    # Check for channel encryption - property may be ChannelEncryption or AuthenticationMethods
+                    if ($fileProps.ProtocolSettings.Smb.ChannelEncryption) {
+                        $smbEncryptionEnabled = $true
+                    }
+                    elseif ($fileProps.ProtocolSettings.Smb.AuthenticationMethods) {
+                        # If AuthenticationMethods contains encryption-related settings, consider it enabled
+                        $authMethods = $fileProps.ProtocolSettings.Smb.AuthenticationMethods
+                        if ($authMethods -and ($authMethods -contains "AES256" -or $authMethods -contains "AES-256-GCM")) {
+                            $smbEncryptionEnabled = $true
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Could not get SMB encryption settings for $($sa.StorageAccountName): $_"
+            }
+            
+            $remediationCmd = $smbEncryptionControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
+            $currentValue = if ($smbEncryptionEnabled) { "AES-256-GCM encryption enabled" } else { "SMB channel encryption not enabled" }
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $sa.ResourceGroupName `
+                -ResourceType "Microsoft.Storage/storageAccounts" `
+                -ResourceName $sa.StorageAccountName `
+                -ResourceId $resourceId `
+                -ControlId $smbEncryptionControl.controlId `
+                -ControlName $smbEncryptionControl.controlName `
+                -Category $smbEncryptionControl.category `
+                -Frameworks $smbEncryptionControl.frameworks `
+                -Severity $smbEncryptionControl.severity `
+                -CisLevel $smbEncryptionControl.level `
+                -CurrentValue $currentValue `
+                -ExpectedValue $smbEncryptionControl.expectedValue `
+                -Status $(if ($smbEncryptionEnabled) { "PASS" } else { "FAIL" }) `
+                -RemediationSteps $smbEncryptionControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
+
+        # Control: Cross Tenant Replication Disabled
+        $crossTenantControl = $controlLookup["Cross Tenant Replication Disabled"]
+        if ($crossTenantControl) {
+            $controlsEvaluated++
+            $allowCrossTenant = if ($null -ne $sa.AllowCrossTenantReplication) {
+                $sa.AllowCrossTenantReplication
+            } else {
+                $true  # Default is allowed if not set
+            }
+            $status = if (-not $allowCrossTenant) { "PASS" } else { "FAIL" }
+            
+            $remediationCmd = $crossTenantControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $sa.ResourceGroupName `
+                -ResourceType "Microsoft.Storage/storageAccounts" `
+                -ResourceName $sa.StorageAccountName `
+                -ResourceId $resourceId `
+                -ControlId $crossTenantControl.controlId `
+                -ControlName $crossTenantControl.controlName `
+                -Category $crossTenantControl.category `
+                -Frameworks $crossTenantControl.frameworks `
+                -Severity $crossTenantControl.severity `
+                -CisLevel $crossTenantControl.level `
+                -CurrentValue $(if ($allowCrossTenant) { "Enabled" } else { "Disabled" }) `
+                -ExpectedValue $crossTenantControl.expectedValue `
+                -Status $status `
+                -RemediationSteps $crossTenantControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
+
+        # Control: Storage Private Endpoints
+        $privateEndpointControl = $controlLookup["Storage Private Endpoints"]
+        if ($privateEndpointControl) {
+            $controlsEvaluated++
+            $hasPrivateEndpoint = $false
+            try {
+                if ($sa.PrivateEndpointConnections) {
+                    # Check if at least one approved private endpoint exists
+                    foreach ($connection in $sa.PrivateEndpointConnections) {
+                        if ($connection.PrivateLinkServiceConnectionState -eq "Approved") {
+                            $hasPrivateEndpoint = $true
+                            break
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Could not check private endpoints for $($sa.StorageAccountName): $_"
+            }
+            
+            $status = if ($hasPrivateEndpoint) { "PASS" } else { "FAIL" }
+            $currentValue = if ($hasPrivateEndpoint) { "Private endpoint configured" } else { "No private endpoint configured" }
+            
+            $remediationCmd = $privateEndpointControl.remediationCommand -replace '\{name\}', $sa.StorageAccountName -replace '\{rg\}', $sa.ResourceGroupName
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $sa.ResourceGroupName `
+                -ResourceType "Microsoft.Storage/storageAccounts" `
+                -ResourceName $sa.StorageAccountName `
+                -ResourceId $resourceId `
+                -ControlId $privateEndpointControl.controlId `
+                -ControlName $privateEndpointControl.controlName `
+                -Category $privateEndpointControl.category `
+                -Frameworks $privateEndpointControl.frameworks `
+                -Severity $privateEndpointControl.severity `
+                -CisLevel $privateEndpointControl.level `
+                -CurrentValue $currentValue `
+                -ExpectedValue $privateEndpointControl.expectedValue `
+                -Status $status `
+                -RemediationSteps $privateEndpointControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
+
         # Control: Default Network Access
         $networkControl = $controlLookup["Default Network Access"]
         if ($networkControl) {

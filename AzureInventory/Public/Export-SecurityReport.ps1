@@ -108,15 +108,13 @@ $(Get-ReportNavigation -ActivePage "Security")
 
         # Calculate unique resources and control types for accurate reporting
         $uniqueResources = @($findings | Select-Object -ExpandProperty ResourceId -Unique).Count
-        $uniqueControlTypes = @($findings | Select-Object -ExpandProperty ControlId -Unique).Count
         # Fallback to ResourceName if ResourceId is empty
         if ($uniqueResources -eq 0) {
             $uniqueResources = @($findings | Select-Object -ExpandProperty ResourceName -Unique).Count
         }
-        # Fallback to ControlName if ControlId is empty
-        if ($uniqueControlTypes -eq 0) {
-            $uniqueControlTypes = @($findings | Select-Object -ExpandProperty ControlName -Unique).Count
-        }
+        # For unique controls, use combination of ControlId and ControlName to handle cases where ControlId is "N/A"
+        # This ensures controls with same ControlId (like "N/A") are counted separately based on ControlName
+        $uniqueControlTypes = @($findings | ForEach-Object { "$($_.ControlId)|$($_.ControlName)" } | Select-Object -Unique).Count
         
         # Always calculate L1 and L2 scores from findings for consistency
         $l1Findings = $findings | Where-Object { $_.CisLevel -eq "L1" }
@@ -129,24 +127,19 @@ $(Get-ReportNavigation -ActivePage "Security")
         $l2Passed = @($l2Findings | Where-Object { $_.Status -eq 'PASS' }).Count
         $l2Score = if ($l2Total -gt 0) { [math]::Round(($l2Passed / $l2Total) * 100, 1) } else { $null }
         
-        if ($AuditResult.ComplianceScores) {
-            # Use category scores from ComplianceScores if available
-            $scoresByCategory = $AuditResult.ComplianceScores.ScoresByCategory
-        } else {
-            # Fallback: Calculate scores by category from findings if ComplianceScores not available
-            Write-Verbose "ComplianceScores not found in AuditResult, calculating category scores from findings..."
-            
-            # Calculate scores by category
-            $scoresByCategory = @{}
-            $categories = $findings | Select-Object -ExpandProperty Category -Unique
-            foreach ($cat in $categories) {
-                $catFindings = $findings | Where-Object { $_.Category -eq $cat }
-                $catTotal = $catFindings.Count
-                $catPassed = @($catFindings | Where-Object { $_.Status -eq 'PASS' }).Count
-                $catScore = if ($catTotal -gt 0) { [math]::Round(($catPassed / $catTotal) * 100, 1) } else { 0 }
-                $scoresByCategory[$cat] = $catScore
-            }
+        # Always calculate scores by category from findings for accuracy
+        # This ensures category scores are always available regardless of ComplianceScores structure
+        Write-Verbose "Calculating category scores from findings..."
+        $scoresByCategory = @{}
+        $categories = $findings | Select-Object -ExpandProperty Category -Unique
+        foreach ($cat in $categories) {
+            $catFindings = $findings | Where-Object { $_.Category -eq $cat }
+            $catTotal = $catFindings.Count
+            $catPassed = @($catFindings | Where-Object { $_.Status -eq 'PASS' }).Count
+            $catScore = if ($catTotal -gt 0) { [math]::Round(($catPassed / $catTotal) * 100, 1) } else { 0 }
+            $scoresByCategory[$cat] = $catScore
         }
+        Write-Verbose "Calculated scores for $($scoresByCategory.Count) categories: $($scoresByCategory.Keys -join ', ')"
         
         # Always calculate these values (used for both ComplianceScores and fallback cases)
         # Get subscription names for score cards
@@ -155,13 +148,43 @@ $(Get-ReportNavigation -ActivePage "Security")
         $l2SubscriptionNames = ($l2Findings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
         
         # Calculate ASB findings (findings that have ASB in their Frameworks array)
-        $asbFindings = $findings | Where-Object { 
+        $asbFindings = $findings | Where-Object {
             $_.Frameworks -and ($_.Frameworks -contains "ASB" -or $_.Frameworks -contains "asb")
         }
         $asbTotal = $asbFindings.Count
         $asbPassed = @($asbFindings | Where-Object { $_.Status -eq 'PASS' }).Count
         $asbScore = if ($asbTotal -gt 0) { [math]::Round(($asbPassed / $asbTotal) * 100, 1) } else { $null }
         $asbSubscriptionNames = ($asbFindings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+
+        # Calculate scope (unique resources and control types) for each framework
+        $l1UniqueResources = @($l1Findings | Select-Object -ExpandProperty ResourceId -Unique).Count
+        $l1UniqueControls = @($l1Findings | Select-Object -ExpandProperty ControlId -Unique).Count
+        if ($l1UniqueResources -eq 0) { $l1UniqueResources = @($l1Findings | Select-Object -ExpandProperty ResourceName -Unique).Count }
+        if ($l1UniqueControls -eq 0) { $l1UniqueControls = @($l1Findings | Select-Object -ExpandProperty ControlName -Unique).Count }
+
+        $l2UniqueResources = @($l2Findings | Select-Object -ExpandProperty ResourceId -Unique).Count
+        $l2UniqueControls = @($l2Findings | Select-Object -ExpandProperty ControlId -Unique).Count
+        if ($l2UniqueResources -eq 0) { $l2UniqueResources = @($l2Findings | Select-Object -ExpandProperty ResourceName -Unique).Count }
+        if ($l2UniqueControls -eq 0) { $l2UniqueControls = @($l2Findings | Select-Object -ExpandProperty ControlName -Unique).Count }
+
+        $asbUniqueResources = @($asbFindings | Select-Object -ExpandProperty ResourceId -Unique).Count
+        $asbUniqueControls = @($asbFindings | Select-Object -ExpandProperty ControlId -Unique).Count
+        if ($asbUniqueResources -eq 0) { $asbUniqueResources = @($asbFindings | Select-Object -ExpandProperty ResourceName -Unique).Count }
+        if ($asbUniqueControls -eq 0) { $asbUniqueControls = @($asbFindings | Select-Object -ExpandProperty ControlName -Unique).Count }
+
+        # Calculate MissionPoint findings (findings that have MissionPoint in their Frameworks array)
+        $missionPointFindings = $findings | Where-Object {
+            $_.Frameworks -and ($_.Frameworks -contains "MissionPoint" -or $_.Frameworks -contains "missionpoint")
+        }
+        $missionPointTotal = $missionPointFindings.Count
+        $missionPointPassed = @($missionPointFindings | Where-Object { $_.Status -eq 'PASS' }).Count
+        $missionPointScore = if ($missionPointTotal -gt 0) { [math]::Round(($missionPointPassed / $missionPointTotal) * 100, 1) } else { $null }
+        $missionPointSubscriptionNames = ($missionPointFindings | Select-Object -ExpandProperty SubscriptionName -Unique | Sort-Object) -join "|"
+        $missionPointUniqueResources = @($missionPointFindings | Select-Object -ExpandProperty ResourceId -Unique).Count
+        if ($missionPointUniqueResources -eq 0) { $missionPointUniqueResources = @($missionPointFindings | Select-Object -ExpandProperty ResourceName -Unique).Count }
+        # For unique controls, use combination of ControlId and ControlName to handle cases where ControlId is "N/A"
+        # This matches the approach used elsewhere in the code for counting unique controls
+        $missionPointUniqueControls = @($missionPointFindings | ForEach-Object { "$($_.ControlId)|$($_.ControlName)" } | Select-Object -Unique).Count
         
         # Calculate subscription-specific severity counts for dynamic updates
         $subscriptionSeverityCounts = @{}
@@ -204,6 +227,13 @@ $(Get-ReportNavigation -ActivePage "Security")
             $subAsbPassed = @($subAsbFindings | Where-Object { $_.Status -eq 'PASS' }).Count
             $subAsbScore = if ($subAsbTotal -gt 0) { [math]::Round(($subAsbPassed / $subAsbTotal) * 100, 1) } else { 0 }
             
+            $subMissionPointFindings = $subFindings | Where-Object {
+                $_.Frameworks -and ($_.Frameworks -contains "MissionPoint" -or $_.Frameworks -contains "missionpoint")
+            }
+            $subMissionPointTotal = $subMissionPointFindings.Count
+            $subMissionPointPassed = @($subMissionPointFindings | Where-Object { $_.Status -eq 'PASS' }).Count
+            $subMissionPointScore = if ($subMissionPointTotal -gt 0) { [math]::Round(($subMissionPointPassed / $subMissionPointTotal) * 100, 1) } else { 0 }
+            
             $subscriptionScores[$subName] = @{
                 Total = $subTotal
                 Passed = $subPassed
@@ -217,6 +247,9 @@ $(Get-ReportNavigation -ActivePage "Security")
                 AsbTotal = $subAsbTotal
                 AsbPassed = $subAsbPassed
                 AsbScore = $subAsbScore
+                MissionPointTotal = $subMissionPointTotal
+                MissionPointPassed = $subMissionPointPassed
+                MissionPointScore = $subMissionPointScore
             }
         }
         
@@ -246,6 +279,9 @@ $(Get-ReportNavigation -ActivePage "Security")
         # Build searchable text for ASB score card
         $asbSearchableText = "azure security benchmark asb $asbSubscriptionNames".ToLower()
         
+        # Build searchable text for MissionPoint score card
+        $missionPointSearchableText = "missionpoint $missionPointSubscriptionNames".ToLower()
+        
         $html += @"
         <script>
             // Subscription-specific scores for dynamic updates
@@ -272,7 +308,7 @@ $(Get-ReportNavigation -ActivePage "Security")
                     <div class="score-label">All Controls</div>
                     <div class="score-value">$overallScore%</div>
                     <div class="score-details">$passedChecks / $totalChecks checks passed</div>
-                    <div class="score-context">$uniqueResources resources evaluated against $uniqueControlTypes control types</div>
+                    <div class="score-context">Scope: $uniqueResources resources, $uniqueControlTypes control types</div>
                 </div>
                 <div class="score-card l1-score $l1ScoreColor" 
                      data-subscription="$l1SubscriptionNames"
@@ -288,6 +324,7 @@ $(Get-ReportNavigation -ActivePage "Security")
                     <div class="score-label">CIS v.4.0.0 MANDATORY CONTROLS (L1)</div>
                     <div class="score-value">$l1Score%</div>
                     <div class="score-details">$l1Passed / $l1Total checks passed</div>
+                    <div class="score-context">Scope: $l1UniqueResources resources, $l1UniqueControls control types</div>
                 </div>
 "@
             if ($null -ne $l2Score) {
@@ -310,6 +347,7 @@ $(Get-ReportNavigation -ActivePage "Security")
                     <div class="score-label">CIS v.4.0.0 ENHANCED CONTROLS (L2)</div>
                     <div class="score-value">$l2Score%</div>
                     <div class="score-details">$l2Passed / $l2Total checks passed</div>
+                    <div class="score-context">Scope: $l2UniqueResources resources, $l2UniqueControls control types</div>
                 </div>
 "@
             }
@@ -333,6 +371,31 @@ $(Get-ReportNavigation -ActivePage "Security")
                     <div class="score-label">AZURE SECURITY BENCHMARK (ASB)</div>
                     <div class="score-value">$asbScore%</div>
                     <div class="score-details">$asbPassed / $asbTotal checks passed</div>
+                    <div class="score-context">Scope: $asbUniqueResources resources, $asbUniqueControls control types</div>
+                </div>
+"@
+            }
+            if ($null -ne $missionPointScore) {
+                $missionPointScoreColor = if ($missionPointScore -ge 90) { "score-excellent" } 
+                                       elseif ($missionPointScore -ge 75) { "score-good" } 
+                                       elseif ($missionPointScore -ge 50) { "score-fair" } 
+                                       else { "score-poor" }
+                $html += @"
+                <div class="score-card missionpoint-score $missionPointScoreColor" 
+                     data-subscription="$missionPointSubscriptionNames"
+                     data-category="all"
+                     data-category-lower="all"
+                     data-severity="all"
+                     data-severity-lower="all"
+                     data-frameworks="missionpoint"
+                     data-searchable="$missionPointSearchableText"
+                     data-total-checks="$missionPointTotal"
+                     data-passed-checks="$missionPointPassed"
+                     data-overall-score="$missionPointScore">
+                    <div class="score-label">MISSIONPOINT</div>
+                    <div class="score-value">$missionPointScore%</div>
+                    <div class="score-details">$missionPointPassed / $missionPointTotal checks passed</div>
+                    <div class="score-context">Scope: $missionPointUniqueResources resources, $missionPointUniqueControls control types</div>
                 </div>
 "@
             }
@@ -362,6 +425,7 @@ $(Get-ReportNavigation -ActivePage "Security")
             <h4>Scores by Category</h4>
             <div class="category-scores-grid">
 "@
+        # Render category score cards if we have categories
         if ($scoresByCategory -and $scoresByCategory.Count -gt 0) {
             foreach ($category in ($scoresByCategory.Keys | Sort-Object)) {
                 $catScore = $scoresByCategory[$category]
@@ -459,8 +523,26 @@ $(Get-ReportNavigation -ActivePage "Security")
                 <label for="frameworkFilter">Framework:</label>
                 <select id="frameworkFilter" class="filter-select">
                     <option value="all">All Frameworks</option>
-                    <option value="cis">CIS</option>
-                    <option value="asb">ASB</option>
+"@
+        # Dynamically generate framework options from findings
+        $allFrameworks = @()
+        foreach ($finding in $findings) {
+            if ($finding.Frameworks) {
+                foreach ($fw in $finding.Frameworks) {
+                    if ($fw -and $fw -notin $allFrameworks) {
+                        $allFrameworks += $fw
+                    }
+                }
+            }
+        }
+        $allFrameworks = $allFrameworks | Sort-Object
+        foreach ($fw in $allFrameworks) {
+            $fwLower = $fw.ToLower()
+            $html += @"
+                    <option value="$fwLower">$fw</option>
+"@
+        }
+        $html += @"
                 </select>
             </div>
             <div class="filter-group">

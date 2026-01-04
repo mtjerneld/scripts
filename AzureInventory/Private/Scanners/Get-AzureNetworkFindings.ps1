@@ -312,6 +312,64 @@ function Get-AzureNetworkFindings {
             catch {
                 Write-Verbose "Could not retrieve rules for NSG $($nsg.Name): $_"
             }
+            
+            # Control: Network Security Groups Flow Logs Enabled
+            $flowLogControl = $controlLookup["Network Security Groups Flow Logs Enabled"]
+            if ($flowLogControl) {
+                $controlsEvaluated++
+                $flowLogEnabled = $false
+                try {
+                    # Get Network Watcher for the NSG's location
+                    $networkWatcher = Invoke-AzureApiWithRetry {
+                        Get-AzNetworkWatcher -Location $nsg.Location -ErrorAction SilentlyContinue
+                    }
+                    
+                    if ($networkWatcher) {
+                        # Try to get flow log for this NSG
+                        # Flow logs are typically named with NSG name or resource ID
+                        $flowLogs = Invoke-AzureApiWithRetry {
+                            Get-AzNetworkWatcherFlowLog -NetworkWatcherName $networkWatcher.Name -ResourceGroupName $networkWatcher.ResourceGroupName -ErrorAction SilentlyContinue
+                        }
+                        
+                        if ($flowLogs) {
+                            # Check if any flow log targets this NSG
+                            foreach ($flowLog in $flowLogs) {
+                                if ($flowLog.TargetResourceId -eq $nsg.Id -and $flowLog.Enabled) {
+                                    $flowLogEnabled = $true
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+                catch {
+                    Write-Verbose "Could not check flow logs for NSG $($nsg.Name): $_"
+                }
+                
+                $status = if ($flowLogEnabled) { "PASS" } else { "FAIL" }
+                $currentValue = if ($flowLogEnabled) { "Flow logs enabled" } else { "Flow logs not enabled" }
+                
+                $remediationCmd = $flowLogControl.remediationCommand -replace '\{nsgName\}', $nsg.Name -replace '\{rg\}', $nsg.ResourceGroupName
+                $finding = New-SecurityFinding `
+                    -SubscriptionId $SubscriptionId `
+                    -SubscriptionName $SubscriptionName `
+                    -ResourceGroup $nsg.ResourceGroupName `
+                    -ResourceType "Microsoft.Network/networkSecurityGroups" `
+                    -ResourceName $nsg.Name `
+                    -ResourceId $nsg.Id `
+                    -ControlId $flowLogControl.controlId `
+                    -ControlName $flowLogControl.controlName `
+                    -Category $flowLogControl.category `
+                    -Frameworks $flowLogControl.frameworks `
+                    -Severity $flowLogControl.severity `
+                    -CisLevel $flowLogControl.level `
+                    -CurrentValue $currentValue `
+                    -ExpectedValue $flowLogControl.expectedValue `
+                    -Status $status `
+                    -RemediationSteps $flowLogControl.businessImpact `
+                    -RemediationCommand $remediationCmd
+                $findings.Add($finding)
+            }
         }
     }
     

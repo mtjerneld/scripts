@@ -97,6 +97,120 @@ function New-TestSecurityData {
         $findings.Add($finding)
     }
     
+    # Add specific test findings for newly implemented controls
+    # Storage - File Share Controls
+    $fileShareControls = @(
+        @{ ControlName = "Soft Delete for Azure File Shares"; ControlId = "10.1.1"; Status = "FAIL"; CurrentValue = "Disabled" }
+        @{ ControlName = "Soft Delete for Azure File Shares"; ControlId = "10.1.1"; Status = "PASS"; CurrentValue = "Enabled" }
+        @{ ControlName = "SMB Protocol Version 3.1.1 or Higher"; ControlId = "10.1.2"; Status = "PASS"; CurrentValue = "SMB3.1.1 or higher" }
+        @{ ControlName = "SMB Protocol Version 3.1.1 or Higher"; ControlId = "10.1.2"; Status = "FAIL"; CurrentValue = "SMB version below 3.1.1" }
+        @{ ControlName = "SMB Channel Encryption AES-256-GCM"; ControlId = "10.1.3"; Status = "PASS"; CurrentValue = "AES-256-GCM encryption enabled" }
+        @{ ControlName = "SMB Channel Encryption AES-256-GCM"; ControlId = "10.1.3"; Status = "FAIL"; CurrentValue = "SMB channel encryption not enabled" }
+    )
+    
+    # Storage - Cross Tenant Replication
+    $crossTenantFindings = @(
+        @{ ControlName = "Cross Tenant Replication Disabled"; ControlId = "10.3.8"; Status = "PASS"; CurrentValue = "Disabled" }
+        @{ ControlName = "Cross Tenant Replication Disabled"; ControlId = "10.3.8"; Status = "FAIL"; CurrentValue = "Enabled" }
+    )
+    
+    # Storage - Private Endpoints
+    $privateEndpointFindings = @(
+        @{ ControlName = "Storage Private Endpoints"; ControlId = "NS-2"; Status = "PASS"; CurrentValue = "Private endpoint configured" }
+        @{ ControlName = "Storage Private Endpoints"; ControlId = "NS-2"; Status = "FAIL"; CurrentValue = "No private endpoint configured" }
+    )
+    
+    # SQL - Threat Detection
+    $threatDetectionFindings = @(
+        @{ ControlName = "Enable Threat Detection"; ControlId = "LT-1"; Status = "PASS"; CurrentValue = "Enabled" }
+        @{ ControlName = "Enable Threat Detection"; ControlId = "LT-1"; Status = "FAIL"; CurrentValue = "Disabled" }
+    )
+    
+    # Network - Flow Logs
+    $flowLogFindings = @(
+        @{ ControlName = "Network Security Groups Flow Logs Enabled"; ControlId = "8.7"; Status = "PASS"; CurrentValue = "Flow logs enabled" }
+        @{ ControlName = "Network Security Groups Flow Logs Enabled"; ControlId = "8.7"; Status = "FAIL"; CurrentValue = "Flow logs not enabled" }
+    )
+    
+    # VM - Disk Encryption
+    $diskEncryptionFindings = @(
+        @{ ControlName = "VM Disk Encryption"; ControlId = "DP-4"; Status = "PASS"; CurrentValue = "Encryption enabled" }
+        @{ ControlName = "VM Disk Encryption"; ControlId = "DP-4"; Status = "FAIL"; CurrentValue = "Encryption not enabled" }
+    )
+    
+    # KeyVault - Key/Secret Expiration
+    $keyExpirationFindings = @(
+        @{ ControlName = "Expiration Date Set for All Keys in RBAC Key Vaults"; ControlId = "9.3.1"; Status = "PASS"; CurrentValue = "All 5 key(s) have expiration dates" }
+        @{ ControlName = "Expiration Date Set for All Keys in Non-RBAC Key Vaults"; ControlId = "9.3.2"; Status = "FAIL"; CurrentValue = "2 of 3 key(s) missing expiration dates" }
+        @{ ControlName = "Expiration Date Set for All Secrets in RBAC Key Vaults"; ControlId = "9.3.3"; Status = "PASS"; CurrentValue = "All 8 secret(s) have expiration dates" }
+        @{ ControlName = "Expiration Date Set for All Secrets in Non-RBAC Key Vaults"; ControlId = "9.3.4"; Status = "FAIL"; CurrentValue = "1 of 4 secret(s) missing expiration dates" }
+    )
+    
+    # Monitor - Log Analytics Retention
+    $retentionFindings = @(
+        @{ ControlName = "Log Analytics Workspace Retention Period"; ControlId = "7.1.4"; Status = "PASS"; CurrentValue = "365 days" }
+        @{ ControlName = "Log Analytics Workspace Retention Period"; ControlId = "7.1.4"; Status = "FAIL"; CurrentValue = "30 days" }
+    )
+    
+    # Combine all new control findings
+    $allNewControlFindings = @()
+    $allNewControlFindings += $fileShareControls
+    $allNewControlFindings += $crossTenantFindings
+    $allNewControlFindings += $privateEndpointFindings
+    $allNewControlFindings += $threatDetectionFindings
+    $allNewControlFindings += $flowLogFindings
+    $allNewControlFindings += $diskEncryptionFindings
+    $allNewControlFindings += $keyExpirationFindings
+    $allNewControlFindings += $retentionFindings
+    
+    # Create findings for each new control
+    $findingIndex = $FindingCount
+    foreach ($controlData in $allNewControlFindings) {
+        $category = switch -Wildcard ($controlData.ControlName) {
+            "*File Share*" { "Storage"; break }
+            "*Cross Tenant*" { "Storage"; break }
+            "*Private Endpoint*" { "Storage"; break }
+            "*Threat Detection*" { "SQL"; break }
+            "*Flow Log*" { "Network"; break }
+            "*Disk Encryption*" { "VM"; break }
+            "*Secret*" { "KeyVault"; break }  # Check Secret before Key to avoid matching both
+            "*Key*" { "KeyVault"; break }
+            "*Retention*" { "Monitor"; break }
+            default { "Storage" }
+        }
+        
+        $severity = switch ($controlData.Status) {
+            "FAIL" { if ($category -eq "Storage" -or $category -eq "KeyVault") { "Medium" } else { "High" } }
+            "PASS" { "Low" }
+            default { "Medium" }
+        }
+        
+        $subIndex = $findingIndex % 3
+        $subscriptionId = "sub-$subIndex"
+        $subscriptionName = $subscriptions[$subIndex]
+        
+        $finding = [PSCustomObject]@{
+            ResourceId = "/subscriptions/12345/resourceGroups/RG-$category/providers/Microsoft.$category/resource-$findingIndex"
+            ResourceName = "resource-$category-$findingIndex"
+            ResourceType = "Microsoft.$category/resource"
+            ResourceGroup = "RG-$category"
+            Category = $category
+            ControlId = $controlData.ControlId
+            ControlName = $controlData.ControlName
+            Status = $controlData.Status
+            Severity = $severity
+            Description = "Test finding for $($controlData.ControlName)"
+            Remediation = "Test remediation steps for $($controlData.ControlName)"
+            SubscriptionId = $subscriptionId
+            SubscriptionName = $subscriptionName
+            CisLevel = "L1"
+            Frameworks = @("CIS")
+            CurrentValue = $controlData.CurrentValue
+        }
+        $findings.Add($finding)
+        $findingIndex++
+    }
+    
     # Calculate L1 scores based on findings (skip L2 for now)
     $l1Findings = $findings | Where-Object { $_.CisLevel -eq "L1" }
     $l1Total = $l1Findings.Count
@@ -872,6 +986,13 @@ function New-TestCostTrackingData {
                                 CostUSD = $vmCostUSD
                             }
                         }
+                        ByMeter = @{
+                            # Assume VM cost comes from a primary meter for simplicity in test data
+                            'D2s v3' = @{
+                                CostLocal = $vmCost
+                                CostUSD = $vmCostUSD
+                            }
+                        }
                     }
                 }
             }
@@ -904,6 +1025,13 @@ function New-TestCostTrackingData {
                         }
                         BySubscription = @{
                             $subName = @{
+                                CostLocal = $storCost
+                                CostUSD = $storCostUSD
+                            }
+                        }
+                        ByMeter = @{
+                            # Assume Storage cost comes from a primary meter
+                            'Standard_LRS' = @{
                                 CostLocal = $storCost
                                 CostUSD = $storCostUSD
                             }

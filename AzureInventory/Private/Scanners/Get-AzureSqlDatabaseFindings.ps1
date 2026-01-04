@@ -331,40 +331,50 @@ function Get-AzureSqlDatabaseFindings {
             $findings.Add($finding)
         }
         
-        # P1 Control 4.2.1: Defender for SQL (DISABLED - Commercial Feature)
-        # This control is disabled as it requires a commercial subscription ($15/server/month)
-        # Uncomment the code below to enable this check:
-        <#
-        try {
-            $defender = Invoke-AzureApiWithRetry {
-                Get-AzSqlServerAdvancedThreatProtectionSetting -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction SilentlyContinue
+        # Control: Enable Threat Detection
+        $threatControl = $controlLookup["Enable Threat Detection"]
+        if ($threatControl) {
+            $controlsEvaluated++
+            $threatEnabled = $false
+            try {
+                $threatSetting = Invoke-AzureApiWithRetry {
+                    Get-AzSqlServerAdvancedThreatProtectionSetting -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction SilentlyContinue
+                }
+                if ($threatSetting) {
+                    # Check both State and ThreatDetectionState properties (API may use either)
+                    if ($threatSetting.State -eq 'Enabled' -or $threatSetting.ThreatDetectionState -eq 'Enabled') {
+                        $threatEnabled = $true
+                    }
+                }
             }
-            $defenderEnabled = if ($defender) { $defender.State -eq "Enabled" } else { $false }
+            catch {
+                Write-Verbose "Could not get threat detection setting for $($server.ServerName): $_"
+            }
+            
+            $status = if ($threatEnabled) { "PASS" } else { "FAIL" }
+            $currentValue = if ($threatEnabled) { "Enabled" } else { "Disabled" }
+            
+            $remediationCmd = $threatControl.remediationCommand -replace '\{rg\}', $server.ResourceGroupName -replace '\{serverName\}', $server.ServerName
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $server.ResourceGroupName `
+                -ResourceType "Microsoft.Sql/servers" `
+                -ResourceName $server.ServerName `
+                -ResourceId $server.ResourceId `
+                -ControlId $threatControl.controlId `
+                -ControlName $threatControl.controlName `
+                -Category $threatControl.category `
+                -Frameworks $threatControl.frameworks `
+                -Severity $threatControl.severity `
+                -CisLevel $threatControl.level `
+                -CurrentValue $currentValue `
+                -ExpectedValue $threatControl.expectedValue `
+                -Status $status `
+                -RemediationSteps $threatControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
         }
-        catch {
-            $defenderEnabled = $false
-        }
-        
-        $defenderStatus = if ($defenderEnabled) { "PASS" } else { "FAIL" }
-        
-        $finding = New-SecurityFinding `
-            -SubscriptionId $SubscriptionId `
-            -SubscriptionName $SubscriptionName `
-            -ResourceGroup $server.ResourceGroupName `
-            -ResourceType "Microsoft.Sql/servers" `
-            -ResourceName $server.ServerName `
-            -ResourceId $server.ResourceId `
-            -ControlId "4.2.1" `
-            -ControlName "Defender for SQL" `
-            -Category "SQL" `
-            -Severity "High" `
-            -CurrentValue $(if ($defenderEnabled) { "Enabled" } else { "Disabled" }) `
-            -ExpectedValue "Enabled" `
-            -Status $defenderStatus `
-            -RemediationSteps "Enable Microsoft Defender for SQL to detect anomalous activities and potential threats." `
-            -RemediationCommand "az sql server threat-policy update --resource-group $($server.ResourceGroupName) --server $($server.ServerName) --state Enabled"
-        $findings.Add($finding)
-        #>
         
         # Control: Azure AD-Only Authentication
         $adOnlyControl = $controlLookup["Azure AD-Only Authentication"]

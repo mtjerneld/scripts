@@ -678,11 +678,12 @@ function Get-LiveSecurityData {
     # Calculate aggregated summary
     if ($allFindings.Count -gt 0) {
         $uniqueResources = $allFindings | Select-Object -ExpandProperty ResourceId -Unique | Measure-Object | Select-Object -ExpandProperty Count
-        $uniqueChecks = $allFindings | Select-Object -Property Category, ControlId -Unique | Measure-Object | Select-Object -ExpandProperty Count
+        # Count unique control types (by ControlId) - same logic as report
+        $uniqueControlTypes = $allFindings | Select-Object -ExpandProperty ControlId -Unique | Measure-Object | Select-Object -ExpandProperty Count
         $failureCount = ($allFindings | Where-Object { $_.Status -eq 'FAIL' }).Count
-        
+
         $color = if ($failureCount -gt 0) { 'Red' } else { 'Green' }
-        Write-Host "    $uniqueResources unique resources evaluated against $uniqueChecks checks ($failureCount failures)" -ForegroundColor $color
+        Write-Host "    Scope: $uniqueResources resources, $uniqueControlTypes control types ($failureCount failures)" -ForegroundColor $color
     }
 
     return [PSCustomObject]@{

@@ -471,6 +471,79 @@ function Get-AzureVirtualMachineFindings {
                 -RemediationCommand $remediationCmd
             $findings.Add($finding)
         }
+
+        # Control: VM Disk Encryption
+        $diskEncryptionControl = $controlLookup["VM Disk Encryption"]
+        if ($diskEncryptionControl) {
+            $controlsEvaluated++
+            $encryptionEnabled = $false
+            try {
+                # Method 1: Check if disk encryption extension is present
+                if ($extensions) {
+                    $encryptionExtension = $extensions | Where-Object { 
+                        $_.Publisher -eq "Microsoft.Azure.Security" -and 
+                        ($_.Type -eq "AzureDiskEncryption" -or $_.Type -eq "AzureDiskEncryptionForLinux")
+                    }
+                    if ($encryptionExtension) {
+                        $encryptionEnabled = $true
+                    }
+                }
+                
+                # Method 2: Check disk encryption settings (if extension check didn't find it)
+                if (-not $encryptionEnabled -and $vm.StorageProfile.OsDisk.ManagedDisk) {
+                    $diskName = $vm.StorageProfile.OsDisk.Name
+                    if ($diskName) {
+                        $disk = Invoke-AzureApiWithRetry {
+                            Get-AzDisk -ResourceGroupName $vm.ResourceGroupName -DiskName $diskName -ErrorAction SilentlyContinue
+                        }
+                        if ($disk -and $disk.EncryptionSettingsCollection -and $disk.EncryptionSettingsCollection.Enabled) {
+                            $encryptionEnabled = $true
+                        }
+                    }
+                }
+                
+                # Method 3: Server-Side Encryption (SSE) - check if disk encryption type is set
+                if (-not $encryptionEnabled -and $vm.StorageProfile.OsDisk.ManagedDisk) {
+                    $diskName = $vm.StorageProfile.OsDisk.Name
+                    if ($diskName) {
+                        $disk = Invoke-AzureApiWithRetry {
+                            Get-AzDisk -ResourceGroupName $vm.ResourceGroupName -DiskName $diskName -ErrorAction SilentlyContinue
+                        }
+                        # SSE is enabled by default on managed disks, check EncryptionType property
+                        if ($disk -and ($disk.EncryptionType -eq "EncryptionAtRestWithPlatformKey" -or $disk.EncryptionType -eq "EncryptionAtRestWithCustomerKey")) {
+                            $encryptionEnabled = $true
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Could not check disk encryption for VM $($vm.Name): $_"
+            }
+            
+            $status = if ($encryptionEnabled) { "PASS" } else { "FAIL" }
+            $currentValue = if ($encryptionEnabled) { "Encryption enabled" } else { "Encryption not enabled" }
+            
+            $remediationCmd = $diskEncryptionControl.remediationCommand -replace '\{vmName\}', $vm.Name -replace '\{rg\}', $vm.ResourceGroupName
+            $finding = New-SecurityFinding `
+                -SubscriptionId $SubscriptionId `
+                -SubscriptionName $SubscriptionName `
+                -ResourceGroup $vm.ResourceGroupName `
+                -ResourceType "Microsoft.Compute/virtualMachines" `
+                -ResourceName $vm.Name `
+                -ResourceId $resourceId `
+                -ControlId $diskEncryptionControl.controlId `
+                -ControlName $diskEncryptionControl.controlName `
+                -Category $diskEncryptionControl.category `
+                -Frameworks $diskEncryptionControl.frameworks `
+                -Severity $diskEncryptionControl.severity `
+                -CisLevel $diskEncryptionControl.level `
+                -CurrentValue $currentValue `
+                -ExpectedValue $diskEncryptionControl.expectedValue `
+                -Status $status `
+                -RemediationSteps $diskEncryptionControl.businessImpact `
+                -RemediationCommand $remediationCmd
+            $findings.Add($finding)
+        }
     }
     
     # Calculate failure count
