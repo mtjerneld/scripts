@@ -213,17 +213,16 @@ h3[onclick],
 }
 
 /* Category content - must be more specific than sections.css and override all other rules */
+/* CRITICAL: Use display only, NOT visibility - visibility:hidden on parent breaks child rows */
 .category-card .category-content {
     padding: 12px 0 0 20px !important;
     display: none !important;
-    visibility: hidden !important;
     height: 0 !important;
     overflow: hidden !important;
 }
 
 .category-card.expanded .category-content {
     display: block !important;
-    visibility: visible !important;
     height: auto !important;
     overflow: visible !important;
 }
@@ -231,7 +230,6 @@ h3[onclick],
 /* Ensure category-card is collapsed by default - override any other rules */
 .category-card:not(.expanded) .category-content {
     display: none !important;
-    visibility: hidden !important;
     height: 0 !important;
     overflow: hidden !important;
 }
@@ -239,7 +237,6 @@ h3[onclick],
 /* Also handle the case where category-header might have collapsed class (legacy) */
 .category-header.collapsed + .category-content {
     display: none !important;
-    visibility: hidden !important;
     height: 0 !important;
     overflow: hidden !important;
 }
@@ -252,7 +249,6 @@ h3[onclick],
 
 .category-card.expanded .category-header:not(.collapsed) + .category-content {
     display: block !important;
-    visibility: visible !important;
     height: auto !important;
     overflow: visible !important;
 }
@@ -265,12 +261,12 @@ h3[onclick],
 /* Subcategory content - must be more specific and override all other rules */
 /* Override expandable__content rules from sections.css - subcategory uses subcategory-content, not expandable__content */
 /* IMPORTANT: This must override any default display rules from sections.css */
+/* CRITICAL: Use display only, NOT visibility - visibility:hidden on parent breaks child rows */
 .subcategory-drilldown .subcategory-content,
 .subcategory-drilldown .expandable__header + .subcategory-content,
 .subcategory-drilldown .subcategory-header + .subcategory-content {
     padding: 12px 0 0 20px !important;
     display: none !important;
-    visibility: hidden !important;
     height: 0 !important;
     overflow: hidden !important;
     max-height: 0 !important;
@@ -280,7 +276,6 @@ h3[onclick],
 
 .subcategory-drilldown.expanded .subcategory-content {
     display: block !important;
-    visibility: visible !important;
     height: auto !important;
     overflow: visible !important;
     max-height: none !important;
@@ -290,7 +285,6 @@ h3[onclick],
 /* Ensure subcategory-drilldown is collapsed by default - override any other rules */
 .subcategory-drilldown:not(.expanded) .subcategory-content {
     display: none !important;
-    visibility: hidden !important;
     height: 0 !important;
     overflow: hidden !important;
     max-height: 0 !important;
@@ -301,7 +295,6 @@ h3[onclick],
 .subcategory-drilldown .subcategory-header + .subcategory-content,
 .subcategory-drilldown .expandable__header.subcategory-header + .subcategory-content {
     display: none !important;
-    visibility: hidden !important;
     height: 0 !important;
     overflow: hidden !important;
 }
@@ -309,7 +302,6 @@ h3[onclick],
 .subcategory-drilldown.expanded .subcategory-header + .subcategory-content,
 .subcategory-drilldown.expanded .expandable__header.subcategory-header + .subcategory-content {
     display: block !important;
-    visibility: visible !important;
     height: auto !important;
     overflow: visible !important;
 }

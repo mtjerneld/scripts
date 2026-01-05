@@ -91,6 +91,95 @@ function Export-CostTrackingReport {
     $byMeterCategory = $CostTrackingData.ByMeterCategory
     # Recalculate top resources from RawData to ensure we get the truly most expensive ones
     $rawData = if ($CostTrackingData.RawData) { $CostTrackingData.RawData } else { @() }
+    
+    # Helper function for robust Date parsing (handles DateTime objects and /Date(ms)/ format strings)
+    function Get-DateObj {
+        param($d)
+        if ($d -is [DateTime]) { return $d }
+        
+        # "/Date(1767254991215)/" or "\/Date(1767)\/"
+        $s = [string]$d
+        if ($s -match 'Date\((\d+)\)') {
+            $ms = [long]$matches[1]
+            return [DateTimeOffset]::FromUnixTimeMilliseconds($ms).UtcDateTime
+        }
+        
+        # Fallback if it's already epoch ms as string
+        if ($s -match '^\d+$') {
+            return [DateTimeOffset]::FromUnixTimeMilliseconds([long]$s).UtcDateTime
+        }
+        
+        throw "Unparseable Date: $s"
+    }
+    
+    # Build canonical factRows from RawData (one row per cost record)
+    # Use List for O(n) performance instead of array += which is O(n²)
+    $factRows = [System.Collections.Generic.List[object]]::new()
+    if ($rawData.Count -gt 0) {
+        foreach ($row in $rawData) {
+            # Ensure we have required fields (only Date is required, ResourceId is optional)
+            if (-not $row.Date) { continue }
+            
+            # Parse date robustly
+            try {
+                $dateObj = Get-DateObj -d $row.Date
+            } catch {
+                Write-Warning "Failed to parse date for row: $($row.Date). Skipping."
+                continue
+            }
+            
+            $dateKeyStr = $dateObj.ToString("yyyy-MM-dd")
+            
+            # Precompute resourceKey (canonical key for resources)
+            $resourceId = if ($row.ResourceId) { $row.ResourceId } else { "" }
+            $resourceKey = if ($resourceId -and $resourceId.Trim() -ne "") {
+                $resourceId
+            } else {
+                $subId = if ($row.SubscriptionId) { $row.SubscriptionId } else { "" }
+                $rg = if ($row.ResourceGroup) { $row.ResourceGroup } else { "" }
+                $resName = if ($row.ResourceName) { $row.ResourceName } else { "noresource" }
+                "sub:" + $subId + "|rg:" + $rg + "|res:" + $resName
+            }
+            
+            # Precompute subscriptionKey (ID-first: use SubscriptionId as key)
+            $subscriptionKey = if ($row.SubscriptionId) { $row.SubscriptionId } else { "" }
+            
+            # Precompute meterKey (normalized composite for Phase 4)
+            $meterCategoryNorm = if ($row.MeterCategory) { ($row.MeterCategory).Trim().ToLower() } else { "unknown" }
+            $meterSubcategoryNorm = if ($row.MeterSubCategory) { ($row.MeterSubCategory).Trim().ToLower() } else { "n/a" }
+            $meterNameNorm = if ($row.Meter) { ($row.Meter).Trim().ToLower() } else { "unknown" }
+            $meterKey = ($meterCategoryNorm + "|" + $meterSubcategoryNorm + "|" + $meterNameNorm) -replace '\s+', ' '
+            
+            $factRow = [PSCustomObject]@{
+                day = $dateKeyStr
+                dateKey = $dateKeyStr  # Precomputed
+                subscriptionId = if ($row.SubscriptionId) { $row.SubscriptionId } else { "" }
+                subscriptionName = if ($row.SubscriptionName) { $row.SubscriptionName } else { "Unknown" }
+                subscriptionKey = $subscriptionKey  # Precomputed (ID-first)
+                resourceId = $resourceId
+                resourceName = if ($row.ResourceId) { 
+                    if ($row.ResourceName) { $row.ResourceName } else { "" }
+                } else { 
+                    "(no resource)" 
+                }
+                resourceGroup = if ($row.ResourceGroup) { $row.ResourceGroup } else { "" }
+                resourceKey = $resourceKey  # Precomputed
+                meterCategory = if ($row.MeterCategory) { $row.MeterCategory } else { "Unknown" }
+                meterSubcategory = if ($row.MeterSubCategory) { $row.MeterSubCategory } else { "N/A" }
+                # Note: Property name is MeterSubCategory (capital C) as per Get-AzureCostData.ps1
+                meterName = if ($row.Meter) { $row.Meter } else { "Unknown" }
+                meterKey = $meterKey  # Precomputed (normalized, for Phase 4)
+                # Keep full precision - round only at presentation layer
+                costLocal = [double]$row.CostLocal
+                costUSD = [double]$row.CostUSD
+                currency = if ($row.Currency) { $row.Currency } else { $currency }
+            }
+            $factRows.Add($factRow)
+        }
+    }
+    # Convert to array for JSON serialization
+    $factRows = @($factRows)
+    
     if ($rawData.Count -gt 0) {
         # Group by ResourceId and calculate totals
         $resourceGroups = $rawData | Where-Object { $_.ResourceId -and -not [string]::IsNullOrWhiteSpace($_.ResourceId) } | Group-Object ResourceId
@@ -757,6 +846,15 @@ function Export-CostTrackingReport {
     }
     
     # Convert raw daily data to JSON for JavaScript
+    # Serialize factRows for JavaScript embedding (robust: no escaping needed)
+    $factRowsJson = "[]"
+    if ($factRows.Count -gt 0) {
+        $factRowsJson = $factRows | ConvertTo-Json -Depth 4 -Compress
+        # Protect against </script> in JSON (edge case but zero cost)
+        $factRowsJson = $factRowsJson -replace '</script', '<\/script'
+        # No other escaping needed - we'll use <script type="application/json">
+    }
+    
     # Ensure we always have a valid JSON array, even if empty
     if ($rawDailyData -and $rawDailyData.Count -gt 0) {
         $rawDailyDataJson = $rawDailyData | ConvertTo-Json -Depth 6 -Compress
@@ -905,8 +1003,11 @@ function Export-CostTrackingReport {
         $subCostLocal = Format-NumberWithSeparator -Number $sub.CostLocal
         $subCostUSD = Format-NumberWithSeparator -Number $sub.CostUSD
         $subCount = $sub.ItemCount
+        $subId = if ($sub.SubscriptionId) { $sub.SubscriptionId } else { "" }
+        $subIdEncoded = if ($subId) { [System.Web.HttpUtility]::HtmlEncode($subId) } else { "" }
+        $subNameEncodedForAttr = [System.Web.HttpUtility]::HtmlEncode($subName)
         $subscriptionRowsHtml += @"
-                        <tr data-subscription="$subName">
+                        <tr data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncodedForAttr" data-subscription="$subIdEncoded">
                             <td>$subName</td>
                             <td class="cost-value">$currency $subCostLocal</td>
                             <td class="cost-value">`$$subCostUSD</td>
@@ -994,8 +1095,11 @@ $meterCardsHtml
         }
         
         $resNameEncoded = [System.Web.HttpUtility]::HtmlEncode($resNameRaw)
+        $resSubId = if ($res.SubscriptionId) { $res.SubscriptionId } else { "" }
+        $resSubIdEncoded = if ($resSubId) { [System.Web.HttpUtility]::HtmlEncode($resSubId) } else { "" }
+        $resSubNameEncodedForAttr = [System.Web.HttpUtility]::HtmlEncode($resSub)
         $topResourcesSectionsHtml += @"
-                    <div class="category-card resource-card" data-subscription="$resSub" data-resource="$resNameEncoded">
+                    <div class="category-card resource-card" data-subscription-id="$resSubIdEncoded" data-subscription-name="$resSubNameEncodedForAttr" data-subscription="$resSubIdEncoded" data-resource="$resNameEncoded">
                         <div class="category-header" onclick="handleResourceCardSelection(this, event) || toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$resName</span>
@@ -1105,8 +1209,11 @@ $meterCardsHtml
         }
         
         $resNameEncoded = [System.Web.HttpUtility]::HtmlEncode($resNameRaw)
+        $resSubIdForIncreased = if ($res.SubscriptionId) { $res.SubscriptionId } else { "" }
+        $resSubIdForIncreasedEncoded = if ($resSubIdForIncreased) { [System.Web.HttpUtility]::HtmlEncode($resSubIdForIncreased) } else { "" }
+        $resSubNameForIncreasedEncoded = [System.Web.HttpUtility]::HtmlEncode($resSub)
         $topIncreasedResourcesSectionsHtml += @"
-                    <div class="category-card resource-card increased-cost-card" data-subscription="$resSub" data-resource="$resNameEncoded">
+                    <div class="category-card resource-card increased-cost-card" data-subscription-id="$resSubIdForIncreasedEncoded" data-subscription-name="$resSubNameForIncreasedEncoded" data-subscription="$resSubIdForIncreasedEncoded" data-resource="$resNameEncoded">
                         <div class="category-header" onclick="handleResourceCardSelection(this, event) || toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$resName</span>
@@ -1170,22 +1277,28 @@ $categoryHtml
                     $meterCostUSD = ($meterItems | Measure-Object -Property CostUSD -Sum).Sum
                     $meterCount = $meterItems.Count
                     
-                    # Build Resources structure
-                    $resourceGroups = $meterItems | Where-Object { $_.ResourceName -and -not [string]::IsNullOrWhiteSpace($_.ResourceName) } | Group-Object ResourceName
+                    # Build Resources structure (Phase 3: group by ResourceId for consistency with engine)
+                    $resourceGroups = $meterItems | Where-Object { $_.ResourceId -and -not [string]::IsNullOrWhiteSpace($_.ResourceId) } | Group-Object ResourceId
                     $resources = @{}
                     foreach ($resGroup in ($resourceGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
-                        $resName = $resGroup.Name
+                        $resId = $resGroup.Name  # ResourceId from the group
                         $resItems = $resGroup.Group
+                        $resName = if ($resItems[0].ResourceName) { $resItems[0].ResourceName } else { "Unknown" }
                         $resCostLocal = ($resItems | Measure-Object -Property CostLocal -Sum).Sum
                         $resCostUSD = ($resItems | Measure-Object -Property CostUSD -Sum).Sum
-                        $resources[$resName] = @{
+                        $resources[$resId] = @{
+                            ResourceId = $resId
                             ResourceName = $resName
                             ResourceGroup = if ($resItems[0].ResourceGroup) { $resItems[0].ResourceGroup } else { "N/A" }
+                            SubscriptionId = if ($resItems[0].SubscriptionId) { $resItems[0].SubscriptionId } else { "" }
                             SubscriptionName = if ($resItems[0].SubscriptionName) { $resItems[0].SubscriptionName } else { "N/A" }
                             CostLocal = $resCostLocal
                             CostUSD = $resCostUSD
                         }
                     }
+                    
+                    # Also keep Resources indexed by ResourceName for backward compatibility (if needed)
+                    # But primary key is ResourceId
                     
                     $meters[$meterName] = @{
                         Meter = $meterName
@@ -1253,15 +1366,38 @@ $categoryHtml
                                 $res = $resEntry.Value
                                 $resName = if ($res.ResourceName) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceName) } else { "Unknown" }
                                 $resNameEncoded = $resName
+                                $resId = if ($res.ResourceId) { $res.ResourceId } else { "" }
+                                $resIdEncoded = if ($resId) { [System.Web.HttpUtility]::HtmlEncode($resId) } else { "" }
                                 $resGroup = if ($res.ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($res.ResourceGroup) } else { "N/A" }
-                                $resSub = if ($res.SubscriptionName) { [System.Web.HttpUtility]::HtmlEncode($res.SubscriptionName) } else { "N/A" }
+                                $resSubName = if ($res.SubscriptionName) { [System.Web.HttpUtility]::HtmlEncode($res.SubscriptionName) } else { "N/A" }
+                                $resSubId = if ($res.SubscriptionId) { $res.SubscriptionId } else { "" }
+                                $resSubIdEncoded = if ($resSubId) { [System.Web.HttpUtility]::HtmlEncode($resSubId) } else { "" }
+                                
+                                # Compute resourceKey (canonical key for resources)
+                                $resourceKey = if ($resId -and $resId.Trim() -ne "") {
+                                    $resId
+                                } else {
+                                    $subId = if ($resSubId) { $resSubId } else { "" }
+                                    $rg = if ($res.ResourceGroup) { $res.ResourceGroup } else { "" }
+                                    $resNameRaw = if ($res.ResourceName) { $res.ResourceName } else { "noresource" }
+                                    "sub:" + $subId + "|rg:" + $rg + "|res:" + $resNameRaw
+                                }
+                                $resourceKeyEncoded = [System.Web.HttpUtility]::HtmlEncode($resourceKey)
+                                
+                                # Build attributes: always data-resource-key, data-resource-id only if ResourceId exists
+                                $attr = "class=""clickable"" data-resource-key=""$resourceKeyEncoded"""
+                                if ($resIdEncoded) { $attr += " data-resource-id=""$resIdEncoded""" }
+                                
+                                # Build subscription attributes: data-subscription = GUID (ID-first), data-subscription-name = display name
+                                $subscriptionAttr = if ($resSubIdEncoded) { "data-subscription-id=""$resSubIdEncoded"" data-subscription-name=""$resSubName"" data-subscription=""$resSubIdEncoded""" } else { "" }
+                                
                                 $resCostLocalFormatted = Format-NumberWithSeparator -Number $res.CostLocal
                                 $resCostUSDFormatted = Format-NumberWithSeparator -Number $res.CostUSD
                                 $resourceRowsHtml += @"
-                                            <tr data-subscription="$resSub" data-resource="$resNameEncoded" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" onclick="handleResourceSelection(this, event)" style="cursor: pointer;">
+                                            <tr $attr $subscriptionAttr data-resource="$resNameEncoded" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" style="cursor: pointer;">
                                                 <td>$resName</td>
                                                 <td>$resGroup</td>
-                                                <td>$resSub</td>
+                                                <td>$resSubName</td>
                                                 <td class="cost-value text-right">$currency $resCostLocalFormatted</td>
                                                 <td class="cost-value text-right">`$$resCostUSDFormatted</td>
                                             </tr>
@@ -1281,7 +1417,7 @@ $categoryHtml
                                     </div>
                                 </div>
                                 <div class="meter-content">
-                                    <table class="data-table">
+                                    <table class="data-table resource-table">
                                         <thead>
                                             <tr>
                                                 <th>Resource</th>
@@ -1350,7 +1486,7 @@ $subCatHtml
     if ($rawData.Count -gt 0) {
         $subscriptionGroups = $rawData | Group-Object SubscriptionId
         foreach ($subGroup in ($subscriptionGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
-            $subId = $subGroup.Name
+            $subId = $subGroup.Name  # SubscriptionId (GUID)
             $subItems = $subGroup.Group
             $subName = if ($subItems[0].SubscriptionName) { $subItems[0].SubscriptionName } else { "Unknown" }
             $subCostLocal = ($subItems | Measure-Object -Property CostLocal -Sum).Sum
@@ -1358,6 +1494,7 @@ $subCatHtml
             $subCostLocalRounded = Format-NumberWithSeparator -Number $subCostLocal
             $subCostUSDRounded = Format-NumberWithSeparator -Number $subCostUSD
             $subNameEncoded = [System.Web.HttpUtility]::HtmlEncode($subName)
+            $subIdEncoded = if ($subId) { [System.Web.HttpUtility]::HtmlEncode($subId) } else { "" }
             
             # Group by category within subscription
             $categoryGroups = $subItems | Group-Object MeterCategory
@@ -1411,25 +1548,45 @@ $subCatHtml
                         
                         $subscriptionMeterIdCounter++
                         
-                        # Group by resource within meter
-                        $resourceGroups = $meterItems | Where-Object { $_.ResourceName -and -not [string]::IsNullOrWhiteSpace($_.ResourceName) } | Group-Object ResourceName
+                        # Group by resource within meter (by ResourceId for consistency with engine)
+                        $resourceGroups = $meterItems | Where-Object { $_.ResourceId -and -not [string]::IsNullOrWhiteSpace($_.ResourceId) } | Group-Object ResourceId
                         $resourceRowsHtml = ""
                         $hasResources = $false
                         
                         if ($resourceGroups.Count -gt 0) {
                             $hasResources = $true
                             foreach ($resGroup in ($resourceGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
-                                $resName = $resGroup.Name
+                                $resId = $resGroup.Name  # ResourceId from the group
                                 $resItems = $resGroup.Group
+                                $resName = if ($resItems[0].ResourceName) { $resItems[0].ResourceName } else { "Unknown" }
                                 $resCostLocal = ($resItems | Measure-Object -Property CostLocal -Sum).Sum
                                 $resCostUSD = ($resItems | Measure-Object -Property CostUSD -Sum).Sum
                                 $resCostLocalFormatted = Format-NumberWithSeparator -Number $resCostLocal
                                 $resCostUSDFormatted = Format-NumberWithSeparator -Number $resCostUSD
                                 $resNameEncoded = [System.Web.HttpUtility]::HtmlEncode($resName)
+                                $resIdEncoded = if ($resId) { [System.Web.HttpUtility]::HtmlEncode($resId) } else { "" }
                                 $resGroupName = if ($resItems[0].ResourceGroup) { [System.Web.HttpUtility]::HtmlEncode($resItems[0].ResourceGroup) } else { "N/A" }
                                 
+                                # Compute resourceKey (canonical key for resources)
+                                $resourceKey = if ($resId -and $resId.Trim() -ne "") {
+                                    $resId
+                                } else {
+                                    $resSubId = if ($resItems[0].SubscriptionId) { $resItems[0].SubscriptionId } else { $subId }
+                                    $rg = if ($resItems[0].ResourceGroup) { $resItems[0].ResourceGroup } else { "" }
+                                    $resNameRaw = if ($resItems[0].ResourceName) { $resItems[0].ResourceName } else { "noresource" }
+                                    "sub:" + $resSubId + "|rg:" + $rg + "|res:" + $resNameRaw
+                                }
+                                $resourceKeyEncoded = [System.Web.HttpUtility]::HtmlEncode($resourceKey)
+                                
+                                # Build attributes: always data-resource-key, data-resource-id only if ResourceId exists
+                                $attr = "class=""clickable"" data-resource-key=""$resourceKeyEncoded"""
+                                if ($resIdEncoded) { $attr += " data-resource-id=""$resIdEncoded""" }
+                                
+                                # Build subscription attributes: data-subscription = GUID (ID-first), data-subscription-name = display name
+                                $subscriptionAttr = if ($subIdEncoded) { "data-subscription-id=""$subIdEncoded"" data-subscription-name=""$subNameEncoded"" data-subscription=""$subIdEncoded""" } else { "" }
+                                
                                 $resourceRowsHtml += @"
-                                            <tr data-subscription="$subNameEncoded" data-resource="$resNameEncoded" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" onclick="handleResourceSelection(this, event)" style="cursor: pointer;">
+                                            <tr $attr $subscriptionAttr data-resource="$resNameEncoded" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" style="cursor: pointer;">
                                                 <td>$resNameEncoded</td>
                                                 <td>$resGroupName</td>
                                                 <td class="cost-value text-right">$currency $resCostLocalFormatted</td>
@@ -1441,8 +1598,8 @@ $subCatHtml
                         
                         if ($hasResources) {
                             $meterCardsHtml += @"
-                            <div class="meter-card" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded">
-                                <div class="meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
+                            <div class="meter-card" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
+                                <div class="meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="expand-arrow">&#9654;</span>
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
@@ -1451,7 +1608,7 @@ $subCatHtml
                                     </div>
                                 </div>
                                 <div class="meter-content">
-                                    <table class="data-table">
+                                    <table class="data-table resource-table">
                                         <thead>
                                             <tr>
                                                 <th>Resource</th>
@@ -1469,8 +1626,8 @@ $subCatHtml
 "@
                         } else {
                             $meterCardsHtml += @"
-                            <div class="meter-card no-expand" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded">
-                                <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded" style="display: flex; align-items: center; justify-content: space-between;">
+                            <div class="meter-card no-expand" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
+                                <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
                                     <span class="meter-count">$meterCount records</span>
@@ -1481,8 +1638,8 @@ $subCatHtml
                     }
                     
                     $subCatHtml += @"
-                        <div class="subcategory-drilldown" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded">
-                            <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription="$subNameEncoded" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
+                        <div class="subcategory-drilldown" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
+                            <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$subCatNameEncoded</span>
                                 <span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $subCatCostLocalRounded (`$$subCatCostUSDRounded)</span>
@@ -1495,8 +1652,8 @@ $meterCardsHtml
                 }
                 
                 $categoryHtml += @"
-                        <div class="category-card collapsed" data-category="$catNameEncoded" data-subscription="$subNameEncoded">
-                            <div class="expandable__header category-header collapsed" data-category="$catNameEncoded" data-subscription="$subNameEncoded" onclick="handleCategorySelection(this, event)">
+                        <div class="category-card collapsed" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
+                            <div class="expandable__header category-header collapsed" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleCategorySelection(this, event)">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="category-title">$catNameEncoded</span>
                                 <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
@@ -1509,8 +1666,8 @@ $subCatHtml
             }
             
             $subscriptionSectionsHtml += @"
-                    <div class="category-card subscription-card collapsed" data-subscription="$subNameEncoded">
-                        <div class="category-header collapsed" data-subscription="$subNameEncoded" onclick="if (!handleSubscriptionSelection(this, event)) return; toggleCategory(this, event)">
+                    <div class="category-card subscription-card collapsed" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
+                        <div class="category-header collapsed" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="if (!handleSubscriptionSelection(this, event)) return; toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
                             <span class="category-title">$subNameEncoded</span>
                             <span class="category-cost">$currency $subCostLocalRounded (`$$subCostUSDRounded)</span>
@@ -1685,7 +1842,15 @@ $topIncreasedResourcesSectionsHtml
         </div>
     </div>
     
+    <!-- Canonical factRows embedded as JSON (robust, no escaping issues) -->
+    <script id="factRowsJson" type="application/json">
+$factRowsJson
+</script>
     <script>
+        // Parse factRows from embedded JSON (robust method)
+        const factRows = JSON.parse(document.getElementById('factRowsJson').textContent);
+        console.log('factRows loaded:', factRows.length, 'rows');
+        
         // Chart data
         const chartLabels = [$chartLabelsJson];
         const datasetsByCategory = [
@@ -1741,6 +1906,469 @@ $datasetsByResourceJsonString
             meters: new Map(), // meter -> Set({subcategory, category, subscription})
             resources: new Map() // resource -> Set({meter, subcategory, category, subscription})
         };
+        
+        // ============================================================================
+        // Cost Tracking Engine - Single Source of Truth for Filtering & Aggregation
+        // ============================================================================
+        
+        function createEngine(factRows) {
+            // Build indices: dimension -> Set<rowId>
+            const index = {
+                bySubscriptionId: new Map(),
+                bySubscriptionName: new Map(),
+                byCategory: new Map(),
+                byMeter: new Map(),
+                byResourceId: new Map(),
+                byResourceKey: new Map(),  // Canonical resource key index
+                byResourceName: new Map(),
+                byResourceGroup: new Map(),
+                byDay: new Map()
+            };
+            
+            // Build allRowIds once (reuse instead of creating new Set each time)
+            const allRowIds = new Set(factRows.map((_, i) => i));
+            
+            // Build indices by iterating factRows once
+            factRows.forEach((row, rowId) => {
+                // Subscription indices
+                if (row.subscriptionId) {
+                    if (!index.bySubscriptionId.has(row.subscriptionId)) {
+                        index.bySubscriptionId.set(row.subscriptionId, new Set());
+                    }
+                    index.bySubscriptionId.get(row.subscriptionId).add(rowId);
+                }
+                if (row.subscriptionName) {
+                    if (!index.bySubscriptionName.has(row.subscriptionName)) {
+                        index.bySubscriptionName.set(row.subscriptionName, new Set());
+                    }
+                    index.bySubscriptionName.get(row.subscriptionName).add(rowId);
+                }
+                
+                // Category index
+                if (row.meterCategory) {
+                    if (!index.byCategory.has(row.meterCategory)) {
+                        index.byCategory.set(row.meterCategory, new Set());
+                    }
+                    index.byCategory.get(row.meterCategory).add(rowId);
+                }
+                
+                // Meter index
+                if (row.meterName) {
+                    if (!index.byMeter.has(row.meterName)) {
+                        index.byMeter.set(row.meterName, new Set());
+                    }
+                    index.byMeter.get(row.meterName).add(rowId);
+                }
+                
+                // Resource indices
+                if (row.resourceId) {
+                    if (!index.byResourceId.has(row.resourceId)) {
+                        index.byResourceId.set(row.resourceId, new Set());
+                    }
+                    index.byResourceId.get(row.resourceId).add(rowId);
+                }
+                
+                // Canonical resourceKey index (only for clickable rows, i.e. where resourceId exists)
+                // "no-resource"-rows (subscription-level costs) should be counted in totals but are not pickable
+                // This prevents "noresource" fallbacks from being pickable and causing bugs
+                if (row.resourceId && typeof row.resourceId === 'string' && row.resourceId.trim() !== '') {
+                    const resourceKey = row.resourceKey || row.resourceId; // Use precomputed key from PowerShell
+                    if (!index.byResourceKey.has(resourceKey)) {
+                        index.byResourceKey.set(resourceKey, new Set());
+                    }
+                    index.byResourceKey.get(resourceKey).add(rowId);
+                }
+                
+                if (row.resourceName) {
+                    if (!index.byResourceName.has(row.resourceName)) {
+                        index.byResourceName.set(row.resourceName, new Set());
+                    }
+                    index.byResourceName.get(row.resourceName).add(rowId);
+                }
+                if (row.resourceGroup) {
+                    if (!index.byResourceGroup.has(row.resourceGroup)) {
+                        index.byResourceGroup.set(row.resourceGroup, new Set());
+                    }
+                    index.byResourceGroup.get(row.resourceGroup).add(rowId);
+                }
+                
+                // Day index
+                if (row.day) {
+                    if (!index.byDay.has(row.day)) {
+                        index.byDay.set(row.day, new Set());
+                    }
+                    index.byDay.get(row.day).add(rowId);
+                }
+            });
+            
+            // Selection state: union picks + scope intersection
+            const state = {
+                scope: {
+                    subscriptionIds: new Set(),  // Checkbox selections
+                    subscriptionNames: new Set(), // For compatibility
+                    dayFrom: null,
+                    dayTo: null
+                },
+                picks: {
+                    resourceIds: new Set(),
+                    resourceKeys: new Set(),  // Canonical resource keys (Phase 3)
+                    resourceNames: new Set(),
+                    resourceGroups: new Set(),
+                    meterNames: new Set(),
+                    categories: new Set()
+                }
+            };
+            
+            // Helper: intersect two Sets (used internally and exposed for chart breakdown)
+            // Optimized: iterate over smallest set for better performance
+            function intersectSets(setA, setB) {
+                // Swap if needed to iterate over smallest set
+                if (setA.size > setB.size) {
+                    [setA, setB] = [setB, setA];
+                }
+                const result = new Set();
+                for (const item of setA) {
+                    if (setB.has(item)) {
+                        result.add(item);
+                    }
+                }
+                return result;
+            }
+            
+            // Helper: union multiple Sets
+            function unionSets(...sets) {
+                const result = new Set();
+                for (const s of sets) {
+                    for (const item of s) {
+                        result.add(item);
+                    }
+                }
+                return result;
+            }
+            
+            // Get rowIds matching scope filters (AND logic)
+            function getScopeRowIds() {
+                let scopeRowIds = null;
+                
+                // Start with all rows if no scope filters
+                // Always return a copy to prevent mutation of internal state
+                if (state.scope.subscriptionIds.size === 0 && 
+                    state.scope.subscriptionNames.size === 0 &&
+                    !state.scope.dayFrom && !state.scope.dayTo) {
+                    return new Set(allRowIds); // Return copy, never allRowIds directly
+                }
+                
+                // Apply subscription scope (ID-first: subscriptionIds is primary, subscriptionNames is for compatibility/debug)
+                if (state.scope.subscriptionIds.size > 0 || state.scope.subscriptionNames.size > 0) {
+                    const subRowIds = new Set();
+                    // Primary path: subscriptionIds (GUID)
+                    state.scope.subscriptionIds.forEach(subId => {
+                        const rows = index.bySubscriptionId.get(subId);
+                        if (rows) {
+                            rows.forEach(rowId => subRowIds.add(rowId));
+                        }
+                    });
+                    // Secondary path: subscriptionNames (for compatibility/debug, not primary)
+                    state.scope.subscriptionNames.forEach(subName => {
+                        const rows = index.bySubscriptionName.get(subName);
+                        if (rows) {
+                            rows.forEach(rowId => subRowIds.add(rowId));
+                        }
+                    });
+                    scopeRowIds = subRowIds.size > 0 ? subRowIds : new Set();
+                }
+                
+                // Apply day range scope (intersect with subscription scope if exists)
+                // Use ISO string comparison (YYYY-MM-DD) - faster and deterministic
+                if (state.scope.dayFrom || state.scope.dayTo) {
+                    const dayRowIds = new Set();
+                    for (const [day, rows] of index.byDay.entries()) {
+                        // String comparison for ISO dates (YYYY-MM-DD) - no Date parsing needed
+                        if (state.scope.dayFrom && day < state.scope.dayFrom) continue;
+                        if (state.scope.dayTo && day > state.scope.dayTo) continue;
+                        rows.forEach(rowId => dayRowIds.add(rowId));
+                    }
+                    
+                    if (scopeRowIds) {
+                        scopeRowIds = intersectSets(scopeRowIds, dayRowIds);
+                    } else {
+                        scopeRowIds = dayRowIds;
+                    }
+                }
+                
+                // CRITICAL: Always return a copy to prevent mutation of internal state
+                // Never return allRowIds directly - always create new Set(allRowIds)
+                // This ensures no external code can mutate the engine's internal state
+                return scopeRowIds || new Set(allRowIds);
+            }
+            
+            // Get rowIds from picks (UNION logic)
+            function getPickedRowIdsUnion() {
+                const pickedSets = [];
+                
+                // Canonical resourceKeys (Phase 3 - primary)
+                if (state.picks.resourceKeys.size > 0) {
+                    state.picks.resourceKeys.forEach(resourceKey => {
+                        const rows = index.byResourceKey.get(resourceKey);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                // Legacy resourceIds (for backward compatibility)
+                if (state.picks.resourceIds.size > 0) {
+                    state.picks.resourceIds.forEach(resId => {
+                        const rows = index.byResourceId.get(resId);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                if (state.picks.resourceNames.size > 0) {
+                    state.picks.resourceNames.forEach(resName => {
+                        const rows = index.byResourceName.get(resName);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                if (state.picks.resourceGroups.size > 0) {
+                    state.picks.resourceGroups.forEach(rg => {
+                        const rows = index.byResourceGroup.get(rg);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                if (state.picks.meterNames.size > 0) {
+                    state.picks.meterNames.forEach(meter => {
+                        const rows = index.byMeter.get(meter);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                if (state.picks.categories.size > 0) {
+                    state.picks.categories.forEach(cat => {
+                        const rows = index.byCategory.get(cat);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                return unionSets(...pickedSets);
+            }
+            
+            // Get active rowIds: scope ∩ picks (or just scope if no picks)
+            function getActiveRowIds() {
+                const scope = getScopeRowIds();
+                const picked = getPickedRowIdsUnion();
+                
+                if (picked.size === 0) {
+                    return scope;
+                }
+                
+                return intersectSets(scope, picked);
+            }
+            
+            // State management functions
+            function togglePick(dimension, value, mode = 'toggle') {
+                const pickSet = state.picks[dimension];
+                if (!pickSet) {
+                    console.warn('Unknown pick dimension:', dimension);
+                    return;
+                }
+                
+                if (mode === 'replace') {
+                    pickSet.clear();
+                    pickSet.add(value);
+                } else if (mode === 'toggle') {
+                    if (pickSet.has(value)) {
+                        pickSet.delete(value);
+                    } else {
+                        pickSet.add(value);
+                    }
+                } else if (mode === 'add') {
+                    pickSet.add(value);
+                } else if (mode === 'remove') {
+                    pickSet.delete(value);
+                }
+            }
+            
+            function setScopeSubscriptions(subIds) {
+                state.scope.subscriptionIds.clear();
+                if (Array.isArray(subIds)) {
+                    subIds.forEach(id => state.scope.subscriptionIds.add(id));
+                }
+            }
+            
+            function setScopeSubscriptionNames(subNames) {
+                state.scope.subscriptionNames.clear();
+                if (Array.isArray(subNames)) {
+                    subNames.forEach(name => state.scope.subscriptionNames.add(name));
+                }
+            }
+            
+            function setScopeDayRange(from, to) {
+                state.scope.dayFrom = from;
+                state.scope.dayTo = to;
+            }
+            
+            function clearPicks() {
+                Object.values(state.picks).forEach(set => set.clear());
+            }
+            
+            function clearScope() {
+                state.scope.subscriptionIds.clear();
+                state.scope.subscriptionNames.clear();
+                state.scope.dayFrom = null;
+                state.scope.dayTo = null;
+            }
+            
+            // Aggregation functions
+            function sumCosts(rowIds) {
+                let totalLocal = 0;
+                let totalUSD = 0;
+                
+                rowIds.forEach(rowId => {
+                    const row = factRows[rowId];
+                    if (row) {
+                        totalLocal += row.costLocal || 0;
+                        totalUSD += row.costUSD || 0;
+                    }
+                });
+                
+                return { local: totalLocal, usd: totalUSD };
+            }
+            
+            function trendByDay(rowIds) {
+                const byDay = new Map();
+                
+                rowIds.forEach(rowId => {
+                    const row = factRows[rowId];
+                    if (!row || !row.day) return;
+                    
+                    if (!byDay.has(row.day)) {
+                        byDay.set(row.day, { day: row.day, local: 0, usd: 0 });
+                    }
+                    
+                    const dayData = byDay.get(row.day);
+                    dayData.local += row.costLocal || 0;
+                    dayData.usd += row.costUSD || 0;
+                });
+                
+                // Convert to sorted array
+                return Array.from(byDay.values()).sort((a, b) => a.day.localeCompare(b.day));
+            }
+            
+            function groupByResource(rowIds) {
+                const byResource = new Map();
+                
+                rowIds.forEach(rowId => {
+                    const row = factRows[rowId];
+                    if (!row || !row.resourceId) return;
+                    
+                    if (!byResource.has(row.resourceId)) {
+                        byResource.set(row.resourceId, {
+                            resourceId: row.resourceId,
+                            resourceName: row.resourceName || '',
+                            resourceGroup: row.resourceGroup || '',
+                            subscriptionId: row.subscriptionId || '',
+                            subscriptionName: row.subscriptionName || '',
+                            local: 0,
+                            usd: 0
+                        });
+                    }
+                    
+                    const resData = byResource.get(row.resourceId);
+                    resData.local += row.costLocal || 0;
+                    resData.usd += row.costUSD || 0;
+                });
+                
+                return Array.from(byResource.values())
+                    .sort((a, b) => b.local - a.local);
+            }
+            
+            function groupByCategory(rowIds) {
+                const byCategory = new Map();
+                
+                rowIds.forEach(rowId => {
+                    const row = factRows[rowId];
+                    if (!row || !row.meterCategory) return;
+                    
+                    if (!byCategory.has(row.meterCategory)) {
+                        byCategory.set(row.meterCategory, {
+                            category: row.meterCategory,
+                            local: 0,
+                            usd: 0
+                        });
+                    }
+                    
+                    const catData = byCategory.get(row.meterCategory);
+                    catData.local += row.costLocal || 0;
+                    catData.usd += row.costUSD || 0;
+                });
+                
+                return Array.from(byCategory.values())
+                    .sort((a, b) => b.local - a.local);
+            }
+            
+            function groupByMeter(rowIds) {
+                const byMeter = new Map();
+                
+                rowIds.forEach(rowId => {
+                    const row = factRows[rowId];
+                    if (!row || !row.meterName) return;
+                    
+                    if (!byMeter.has(row.meterName)) {
+                        byMeter.set(row.meterName, {
+                            meter: row.meterName,
+                            category: row.meterCategory || '',
+                            local: 0,
+                            usd: 0
+                        });
+                    }
+                    
+                    const meterData = byMeter.get(row.meterName);
+                    meterData.local += row.costLocal || 0;
+                    meterData.usd += row.costUSD || 0;
+                });
+                
+                return Array.from(byMeter.values())
+                    .sort((a, b) => b.local - a.local);
+            }
+            
+            return {
+                state,
+                index,
+                // Note: allRowIds is NOT exposed - always use getActiveRowIds() or return new Set(allRowIds)
+                togglePick,
+                setScopeSubscriptions,
+                setScopeSubscriptionNames,
+                setScopeDayRange,
+                clearPicks,
+                clearScope,
+                getActiveRowIds,
+                sumCosts,
+                trendByDay,
+                groupByResource,
+                groupByCategory,
+                groupByMeter,
+                intersectSets // Expose for chart breakdown (O(k) performance, iterates smallest set)
+            };
+        }
+        
+        // Initialize engine
+        const engine = createEngine(factRows);
+        console.log('Engine initialized with', factRows.length, 'fact rows');
+        
+        // Build subscription ID to name mapping (for UI filtering)
+        function buildSubscriptionIdToNameMap() {
+            const map = new Map();
+            factRows.forEach(r => {
+                if (r.subscriptionId && r.subscriptionName && !map.has(r.subscriptionId)) {
+                    map.set(r.subscriptionId, r.subscriptionName);
+                }
+            });
+            return map;
+        }
+        
+        // Store mapping globally for reuse
+        window._subIdToName = buildSubscriptionIdToNameMap();
         
         // Helper functions to extract identifiers from DOM elements
         function getSubscriptionFromElement(element) {
@@ -1828,11 +2456,12 @@ $datasetsByResourceJsonString
                 card.classList.remove('expanded');
                 const categoryContent = card.querySelector('.category-content');
                 if (categoryContent) {
-                    // Force hide with multiple methods to ensure it works
+                    // Hide content using display only (NOT visibility - breaks child rows)
                     categoryContent.style.display = 'none';
-                    categoryContent.style.visibility = 'hidden';
                     categoryContent.style.height = '0';
                     categoryContent.style.overflow = 'hidden';
+                    // Remove any existing visibility property to avoid inherited hidden state
+                    categoryContent.style.removeProperty('visibility');
                 }
                 const categoryHeader = card.querySelector('.category-header, .expandable__header.category-header');
                 if (categoryHeader) {
@@ -1850,14 +2479,15 @@ $datasetsByResourceJsonString
                 const subcategoryContent = drilldown.querySelector('.subcategory-content');
                 if (subcategoryContent) {
                     // Force hide with multiple methods to ensure it works - use !important via setProperty
-                    // Also remove any inline styles that might make it visible
+                    // Hide content using display only (NOT visibility - breaks child rows)
                     subcategoryContent.removeAttribute('style');
                     subcategoryContent.style.setProperty('display', 'none', 'important');
-                    subcategoryContent.style.setProperty('visibility', 'hidden', 'important');
                     subcategoryContent.style.setProperty('height', '0', 'important');
                     subcategoryContent.style.setProperty('overflow', 'hidden', 'important');
                     subcategoryContent.style.setProperty('max-height', '0', 'important');
                     subcategoryContent.style.setProperty('opacity', '0', 'important');
+                    // Remove any existing visibility property to avoid inherited hidden state
+                    subcategoryContent.style.removeProperty('visibility');
                 }
                 const subcategoryHeader = drilldown.querySelector('.subcategory-header, .expandable__header.subcategory-header');
                 if (subcategoryHeader) {
@@ -1902,6 +2532,15 @@ $datasetsByResourceJsonString
             populateCategoryFilter();
             // Update chart to show default view (Total Cost)
             updateChart();
+            
+            // Initialize DOM-index after DOM is ready (Phase 3)
+            initDomIndex();
+            
+            // Sync selection visuals with current engine state (if any)
+            if (typeof updateResourceSelectionVisual === 'function') {
+                updateResourceSelectionVisual();
+            }
+            
             // Calculate trend with JavaScript (same logic as when filters are applied)
             updateSummaryCards();
             
@@ -2595,18 +3234,250 @@ $datasetsByResourceJsonString
         }
         
         function updateChart() {
-            // Ensure chart is initialized before updating
             if (!costChart) {
                 console.warn('Chart not initialized yet, skipping update');
                 return;
             }
             
-            // Ensure rawDailyData is available
-            if (!rawDailyData || !Array.isArray(rawDailyData) || rawDailyData.length === 0) {
-                console.warn('rawDailyData not available or empty, skipping chart update');
+            // Get active rowIds from engine
+            const activeRowIds = engine.getActiveRowIds();
+            const trend = engine.trendByDay(activeRowIds);
+            
+            // Build chart datasets based on current view
+            const view = currentView || 'total';
+            let datasets = [];
+            let labels = [];
+            
+            if (trend.length === 0) {
+                costChart.data.labels = [];
+                costChart.data.datasets = [];
+                costChart.update();
                 return;
             }
             
+            labels = trend.map(d => d.day);
+            
+            if (view === 'total') {
+                // Total cost view - single dataset
+                datasets = [{
+                    label: 'Total Cost (' + currency + ')',
+                    data: trend.map(d => d.local),
+                    backgroundColor: chartColors[0],
+                    borderColor: chartColors[0],
+                    borderWidth: 1
+                }];
+            } else if (view === 'stacked-category' || view === 'category') {
+                // Category breakdown - use intersection for O(k) performance (not O(k*N))
+                const categories = engine.groupByCategory(activeRowIds);
+                
+                categories.slice(0, 10).forEach((cat, idx) => {
+                    // Use intersection: activeRowIds ∩ index.byCategory.get(cat) - much faster
+                    const catIndexRows = engine.index.byCategory.get(cat.category);
+                    if (!catIndexRows) return;
+                    
+                    const categoryRowIds = engine.intersectSets(activeRowIds, catIndexRows);
+                    const catTrend = engine.trendByDay(categoryRowIds);
+                    const dayMap = new Map(catTrend.map(d => [d.day, d.local]));
+                    
+                    datasets.push({
+                        label: cat.category,
+                        data: labels.map(day => dayMap.get(day) || 0),
+                        backgroundColor: chartColors[idx % chartColors.length],
+                        borderColor: chartColors[idx % chartColors.length],
+                        borderWidth: 1
+                    });
+                });
+            } else if (view === 'stacked-subscription' || view === 'subscription') {
+                // Subscription breakdown - use intersection for performance
+                const subscriptions = new Set();
+                activeRowIds.forEach(rowId => {
+                    const row = factRows[rowId];
+                    if (row && row.subscriptionName) {
+                        subscriptions.add(row.subscriptionName);
+                    }
+                });
+                
+                let subIdx = 0;
+                subscriptions.forEach(subName => {
+                    // Use intersection: activeRowIds ∩ index.bySubscriptionName.get(subName)
+                    const subIndexRows = engine.index.bySubscriptionName.get(subName);
+                    if (!subIndexRows) return;
+                    
+                    const subRowIds = engine.intersectSets(activeRowIds, subIndexRows);
+                    const subTrend = engine.trendByDay(subRowIds);
+                    const dayMap = new Map(subTrend.map(d => [d.day, d.local]));
+                    
+                    datasets.push({
+                        label: subName,
+                        data: labels.map(day => dayMap.get(day) || 0),
+                        backgroundColor: chartColors[subIdx % chartColors.length],
+                        borderColor: chartColors[subIdx % chartColors.length],
+                        borderWidth: 1
+                    });
+                    subIdx++;
+                });
+            } else {
+                // Fallback for other views - use total for now
+                datasets = [{
+                    label: 'Total Cost (' + currency + ')',
+                    data: trend.map(d => d.local),
+                    backgroundColor: chartColors[0],
+                    borderColor: chartColors[0],
+                    borderWidth: 1
+                }];
+            }
+            
+            // Update chart
+            const stacked = view !== 'total';
+            costChart.options.scales.x.stacked = stacked;
+            costChart.options.scales.y.stacked = stacked;
+            costChart.data.labels = labels;
+            costChart.data.datasets = datasets;
+            costChart.update();
+            
+            // Dev-mode validation (optional - add to updateSummaryCards and updateChart)
+            if (window.DEBUG_COST_REPORT) {
+                const activeRowIdsCheck = engine.getActiveRowIds();
+                const totalsCheck = engine.sumCosts(activeRowIdsCheck);
+                const trendCheck = engine.trendByDay(activeRowIdsCheck);
+                const chartTotal = trendCheck.reduce((sum, d) => sum + d.local, 0);
+                const diff = Math.abs(totalsCheck.local - chartTotal);
+                const epsilon = 0.01; // Allow small floating point differences
+                if (diff > epsilon) {
+                    console.warn('⚠️ Mismatch detected: totals.local =', totalsCheck.local, 'chartTotal =', chartTotal, 'diff =', diff);
+                    console.warn('Active rowIds:', activeRowIdsCheck.size, 'rows');
+                } else {
+                    console.log('✓ Validation passed: totals match chart (', totalsCheck.local, 'SEK)');
+                }
+            }
+        }
+        
+        // DOM-index for resource selection visuals (Phase 3: replaces CSS.escape, more robust)
+        const domIndex = {
+            byResourceKey: new Map()
+        };
+        
+        // Track previously selected resource keys for optimized updates
+        let previousSelectedResourceKeys = new Set();
+        
+        // Initialize DOM-index (build once after DOM is ready)
+        function initDomIndex() {
+            const byResourceKey = new Map();
+            
+            // Index all rows that advertise a resource key.
+            // If you want stricter scoping, use: 'tr.clickable[data-resource-key]'
+            const rows = document.querySelectorAll('tr[data-resource-key]');
+            
+            rows.forEach(tr => {
+                const key = tr.getAttribute('data-resource-key');
+                if (!key) return;
+                
+                let arr = byResourceKey.get(key);
+                if (!arr) {
+                    arr = [];
+                    byResourceKey.set(key, arr);
+                }
+                arr.push(tr);
+            });
+            
+            const idx = { byResourceKey };
+            
+            // Update local domIndex variable (for backward compatibility)
+            domIndex.byResourceKey.clear();
+            byResourceKey.forEach((arr, key) => {
+                domIndex.byResourceKey.set(key, arr);
+            });
+            
+            // Expose globally for updateResourceSelectionVisual() and debugging
+            window.domIndex = idx;
+            
+            return idx;
+        }
+        
+        // Visual update for resource selections (Phase 3: DOM-index/cache, optimized O(#val) instead of O(#DOM-nodes))
+        function updateResourceSelectionVisual() {
+            // Use window.domIndex if available (global), otherwise fallback to local domIndex
+            const domIdx = window.domIndex || domIndex;
+            if (!domIdx || !domIdx.byResourceKey) {
+                console.warn('DOM index not available, skipping visual update');
+                return;
+            }
+            
+            const currentKeys = engine.state.picks.resourceKeys;
+            
+            // Remove from previously selected (but no longer selected)
+            previousSelectedResourceKeys.forEach(key => {
+                if (!currentKeys.has(key)) {
+                    const elements = domIdx.byResourceKey.get(key) || [];
+                    elements.forEach(el => el.classList.remove('chart-selected'));
+                }
+            });
+            
+            // Add for newly selected keys
+            currentKeys.forEach(key => {
+                if (!previousSelectedResourceKeys.has(key)) {
+                    const elements = domIdx.byResourceKey.get(key) || [];
+                    elements.forEach(el => el.classList.add('chart-selected'));
+                }
+            });
+            
+            // Update previous set
+            previousSelectedResourceKeys = new Set(currentKeys);
+            
+            // Update clear button visibility (engine picks changed)
+            updateClearSelectionsButtonVisibility();
+        }
+        
+        // Event delegation for resource clicks (Phase 3: use data-resource-key, canonical keys)
+        // Resource tables are in multiple locations (category sections, subscription sections)
+        // Use event delegation on document but check for data-resource-key attribute
+        document.addEventListener('click', function(e) {
+            // Protect against clicks on links/buttons in row (links should work without toggling selection)
+            if (e.target.closest('a,button,input,select,textarea,label')) return;
+            
+            const resourceRow = e.target.closest('tr[data-resource-key]');
+            if (!resourceRow) return;
+            
+            const resourceKey = resourceRow.getAttribute('data-resource-key');
+            if (!resourceKey) return;
+            
+            if (resourceRow.tagName !== 'TR') return;
+            
+            // Toggle pick in engine (Phase 3: use resourceKeys, not resourceIds)
+            const isCtrl = e.ctrlKey || e.metaKey;
+            engine.togglePick('resourceKeys', resourceKey, isCtrl ? 'toggle' : 'replace');
+            
+            // Update visual state from engine (not toggle - ensures correctness)
+            updateResourceSelectionVisual();
+            
+            // Debug logging (Phase 3)
+            if (window.DEBUG_COST_REPORT) {
+                console.debug('Resource selection state:', {
+                    scopeSubscriptionIds: Array.from(engine.state.scope.subscriptionIds),
+                    pickedResourceKeys: Array.from(engine.state.picks.resourceKeys),
+                    activeRowIdsSize: engine.getActiveRowIds().size
+                });
+                
+                // Validate DOM index
+                if (!window.domIndex || !window.domIndex.byResourceKey) {
+                    console.warn('⚠️ DOM index missing - run initDomIndex()');
+                } else {
+                    const mapSize = window.domIndex.byResourceKey.size;
+                    if (mapSize === 0) {
+                        console.warn('⚠️ DOM index empty - no resource rows found');
+                    } else {
+                        console.debug('✓ DOM index valid:', { mapSize });
+                    }
+                }
+            }
+            
+            // Update UI
+            updateSummaryCards();
+            updateChart();
+        });
+        
+        // Legacy updateChart code removed - keeping for reference but not used
+        function updateChart_OLD() {
             // Combine category dropdown with chartSelections if dropdown is set to a specific category
             // The dropdown acts as an additional filter that intersects with table selections
             if (currentCategoryFilter !== 'all') {
@@ -3524,29 +4395,105 @@ $datasetsByResourceJsonString
             updateChart();
         }
         
+        // Hard hide subscription cards not in scope (GUID-based)
+        // This hides entire subscription-card containers in "Cost by Subscription" section
+        function applySubscriptionScopeToCards() {
+            const scopeIds = engine.state.scope.subscriptionIds || new Set();
+            
+            document.querySelectorAll('.category-card.subscription-card[data-subscription]').forEach(card => {
+                const sid = card.getAttribute('data-subscription'); // GUID
+                const show = (scopeIds.size === 0) || scopeIds.has(sid);
+                
+                // Hard hide: use display only (not visibility)
+                card.style.display = show ? '' : 'none';
+                
+                // Remove any stale visibility state
+                card.style.removeProperty('visibility');
+            });
+        }
+        
+        // Apply subscription scope to UI tables (hide/show rows/sections based on scope)
+        // This is a UI mirror of engine scope - doesn't replace engine logic, just prevents
+        // user from clicking/interacting with rows from non-scoped subscriptions
+        // Phase 3.2: data-subscription now contains subscriptionId (GUID), not subscriptionName
+        // Use display:none only (not visibility) to avoid stale visibility state bugs
+        function applySubscriptionScopeToTables() {
+            const scopeIds = engine.state.scope.subscriptionIds || new Set();
+            
+            document.querySelectorAll('tr[data-subscription]').forEach(tr => {
+                const sid = tr.getAttribute('data-subscription'); // GUID
+                const show = (scopeIds.size === 0) || scopeIds.has(sid);
+                
+                // Endast display styr "hide". Visibility ska alltid vara default/visible.
+                tr.style.display = show ? '' : 'none';
+                
+                // KRITISKT: rensa tidigare visibility:hidden för att undvika stale state
+                tr.style.removeProperty('visibility');
+            });
+        }
+        
         function filterBySubscription() {
-            // Update selected subscriptions set
-            selectedSubscriptions.clear();
-            document.querySelectorAll('.subscription-checkbox input:checked').forEach(cb => {
-                selectedSubscriptions.add(cb.value);
+            const checkboxes = document.querySelectorAll('.subscription-checkbox input[type="checkbox"]');
+            
+            const selectedSubIds = [];
+            const selectedSubNames = [];
+            const allSubIds = []; // All possible subscription IDs (for normalization)
+            
+            checkboxes.forEach(cb => {
+                const subId = cb.getAttribute('data-subid');
+                if (subId) {
+                    allSubIds.push(subId);
+                    if (cb.checked) {
+                        selectedSubIds.push(subId);
+                    }
+                }
+                
+                // display name (ofta i value)
+                if (cb.checked) {
+                    const name = cb.value || cb.getAttribute('value');
+                    if (name) selectedSubNames.push(name);
+                }
             });
             
-            // Filter category sections, subscription sections, and resource sections
-            filterCategorySections();
+            // Normalize: if user selects all subscriptions, treat as 'no filter' (empty scope)
+            // This avoids redundant state and special cases in later phases (Top 20, caching, logging, etc.)
+            // UI still shows all checkboxes as checked - this is only internal state normalization
+            const normalizedSubIds = (allSubIds.length > 0 && selectedSubIds.length === allSubIds.length) 
+                ? [] 
+                : selectedSubIds;
             
-            // Apply search filter to all sections (if search input exists)
-            if (document.getElementById('resourceSearch')) {
-                filterResources();
-            } else {
-                // If no search input, still recalculate top resources with subscription filter
-                recalculateTopResources();
+            // Single source of truth
+            engine.setScopeSubscriptions(normalizedSubIds);
+            
+            // Optional (compat/debug)
+            engine.setScopeSubscriptionNames(selectedSubNames);
+            
+            // Legacy (tills den tas bort)
+            selectedSubscriptions = new Set(selectedSubNames);
+            
+            // Apply subscription scope: hard hide cards + filter rows (GUID-based)
+            applySubscriptionScopeToCards();  // Hide subscription-cards not in scope
+            applySubscriptionScopeToTables(); // Hide table rows not in scope
+            
+            // Debug logging (Phase 3)
+            if (window.DEBUG_COST_REPORT) {
+                console.debug('Subscription filter state:', {
+                    scopeSubscriptionIds: Array.from(engine.state.scope.subscriptionIds),
+                    activeRowIdsSize: engine.getActiveRowIds().size
+                });
+                
+                // Validate DOM index (quick check)
+                if (!window.domIndex || !window.domIndex.byResourceKey || window.domIndex.byResourceKey.size === 0) {
+                    console.warn('⚠️ DOM index missing or empty');
+                }
             }
             
-            // Update summary cards with filtered data
+            // UI refresh
             updateSummaryCards();
-            
-            // Update chart with new subscription filter
             updateChart();
+            if (typeof applySearchAndSubscriptionFilters === 'function') {
+                applySearchAndSubscriptionFilters();
+            }
         }
         
         function updateSummaryCards() {
@@ -3556,346 +4503,85 @@ $datasetsByResourceJsonString
             const categoryCountEl = document.getElementById('summary-category-count');
             const trendPercentEl = document.getElementById('summary-trend-percent');
             
-            // Check if any filters are active (checkbox subscriptions OR chart selections)
-            const hasChartSelections = chartSelections.subscriptions.size > 0 ||
-                                      chartSelections.categories.size > 0 ||
-                                      chartSelections.subcategories.size > 0 ||
-                                      chartSelections.meters.size > 0 ||
-                                      chartSelections.resources.size > 0;
-            const hasAnyFilters = selectedSubscriptions.size > 0 || hasChartSelections;
+            if (!totalCostLocalEl || !totalCostUsdEl) return;
             
-            // Use the same filtered data that the chart uses
-            // Always calculate trend from JavaScript data (even when no filters) to ensure consistent logic
-            let dataToUse;
+            // Get active rowIds from engine (single source of truth)
+            const activeRowIds = engine.getActiveRowIds();
+            const totals = engine.sumCosts(activeRowIds);
             
-            if (!hasAnyFilters) {
-                // No filter - restore original values for totals and counts, but calculate trend from data
-                // Use rawDailyData directly for trend calculation (no filtering needed)
-                dataToUse = rawDailyData;
-                
-                if (totalCostLocalEl && originalSummaryValues.totalCostLocal !== null) {
-                    totalCostLocalEl.textContent = originalSummaryValues.totalCostLocal;
-                }
-                if (totalCostUsdEl && originalSummaryValues.totalCostUSD !== null) {
-                    totalCostUsdEl.textContent = originalSummaryValues.totalCostUSD;
-                }
-                if (subscriptionCountEl && originalSummaryValues.subscriptionCount !== null) {
-                    subscriptionCountEl.textContent = originalSummaryValues.subscriptionCount;
-                }
-                if (categoryCountEl && originalSummaryValues.categoryCount !== null) {
-                    categoryCountEl.textContent = originalSummaryValues.categoryCount;
-                }
-                // Note: Trend is calculated below using same logic as filtered case
-            } else {
-                // Apply chart selections filter if any selections exist
-                dataToUse = filterRawDailyDataBySelections(rawDailyData);
-                
-                // Also apply subscription checkbox filter if active (separate from chart selections)
-                if (selectedSubscriptions.size > 0) {
-                    // Check if all subscriptions are selected
-                    const allSelected = selectedSubscriptions.size > 0 && 
-                        selectedSubscriptions.size === allKnownSubscriptions.size &&
-                        Array.from(selectedSubscriptions).every(sub => allKnownSubscriptions.has(sub));
-                    
-                    // If all subscriptions selected AND no chart selections, use original values for totals/counts
-                    // But still calculate trend from data to ensure consistent logic
-                    if (allSelected && !hasChartSelections) {
-                        // Restore original values for totals and counts (same as when no filters are applied)
-                        if (totalCostLocalEl && originalSummaryValues.totalCostLocal !== null) {
-                            totalCostLocalEl.textContent = originalSummaryValues.totalCostLocal;
-                        }
-                        if (totalCostUsdEl && originalSummaryValues.totalCostUSD !== null) {
-                            totalCostUsdEl.textContent = originalSummaryValues.totalCostUSD;
-                        }
-                        if (subscriptionCountEl && originalSummaryValues.subscriptionCount !== null) {
-                            subscriptionCountEl.textContent = originalSummaryValues.subscriptionCount;
-                        }
-                        if (categoryCountEl && originalSummaryValues.categoryCount !== null) {
-                            categoryCountEl.textContent = originalSummaryValues.categoryCount;
-                        }
-                        // Note: Trend is calculated below using same logic as filtered case
-                        // Use rawDailyData for trend calculation when all subscriptions selected (no filtering needed)
-                        dataToUse = rawDailyData;
-                    } else {
-                        // Re-apply filter if needed (dataToUse already filtered by chart selections above)
-                        
-                        if (!allSelected) {
-                            // Some subscriptions selected - filter by selected subscriptions
-                            dataToUse = dataToUse.map(day => {
-                                const filteredDay = {
-                                    date: day.date,
-                                    categories: {},
-                                    subscriptions: {},
-                                    meters: {},
-                                    resources: {},
-                                    totalCostLocal: 0,
-                                    totalCostUSD: 0
-                                };
-                                
-                                // Filter categories by selected subscriptions
-                                let dayTotalLocal = 0;
-                                let dayTotalUSD = 0;
-                                Object.keys(day.categories || {}).forEach(cat => {
-                                    const catData = day.categories[cat];
-                                    const filteredBySub = {};
-                                    let catTotalLocal = 0;
-                                    let catTotalUSD = 0;
-
-                                    if (catData.bySubscription) {
-                                        Object.keys(catData.bySubscription).forEach(sub => {
-                                            if (selectedSubscriptions.has(sub)) {
-                                                const subCost = catData.bySubscription[sub];
-                                                if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                                    filteredBySub[sub] = subCost;
-                                                    catTotalLocal += subCost.CostLocal || 0;
-                                                    catTotalUSD += subCost.CostUSD || 0;
-                                                } else if (typeof subCost === 'number') {
-                                                    filteredBySub[sub] = subCost;
-                                                    catTotalLocal += subCost;
-                                                    catTotalUSD += subCost; // Assume same if no USD provided
-                                                }
-                                            }
-                                        });
-                                    }
-
-                                    if (catTotalLocal > 0 || catTotalUSD > 0) {
-                                        filteredDay.categories[cat] = { total: catTotalLocal, totalUSD: catTotalUSD, bySubscription: filteredBySub };
-                                        dayTotalLocal += catTotalLocal;
-                                        dayTotalUSD += catTotalUSD;
-                                    }
-                                });
-
-                                // Filter subscriptions
-                                Object.keys(day.subscriptions || {}).forEach(sub => {
-                                    if (selectedSubscriptions.has(sub)) {
-                                        filteredDay.subscriptions[sub] = day.subscriptions[sub];
-                                    }
-                                });
-
-                                filteredDay.totalCostLocal = dayTotalLocal;
-                                filteredDay.totalCostUSD = dayTotalUSD;
-                                
-                                return filteredDay;
-                            });
-                        }
-                        // else: allSelected = true, so use original data (no filtering needed)
-                    }
-                }
-            }
+            // Update cost totals
+            const formattedLocal = formatNumberNoDecimals(totals.local);
+            const formattedUSD = formatNumberNoDecimals(totals.usd);
+            totalCostLocalEl.textContent = formattedLocal;
+            totalCostUsdEl.textContent = formattedUSD;
             
-            // Calculate filtered totals from filtered data using INTERSECTION logic when chart selections are active
-            // This ensures correct totals when both subscription AND category are selected (Issue 7)
-            let filteredTotalCostLocal = 0;
-            let filteredTotalCostUSD = 0;
-            const filteredSubscriptions = new Set();
-            const filteredCategories = new Set();
+            // Count unique subscriptions and categories from active rows
+            const activeSubscriptions = new Set();
+            const activeCategories = new Set();
             
-            // Check if we need INTERSECTION logic (when chart selections are active)
-            const hasResourceSelections = chartSelections.resources.size > 0;
-            const hasSubscriptionSelections = chartSelections.subscriptions.size > 0;
-            const hasCategorySelections = chartSelections.categories.size > 0;
-            const needsIntersectionLogic = hasChartSelections && (hasSubscriptionSelections || hasCategorySelections);
-            
-            dataToUse.forEach(day => {
-                let dayTotalLocal = 0;
-                let dayTotalUSD = 0;
-                
-                if (needsIntersectionLogic && !hasResourceSelections) {
-                    // Use INTERSECTION logic for subscription/category selections (same as Total Cost chart)
-                    Object.entries(day.categories || {}).forEach(([cat, catData]) => {
-                        // Check if category should be included
-                        const catSubs = chartSelections.categories.get(cat);
-                        const categoryIncluded = !hasCategorySelections || (catSubs && catSubs.size > 0);
-                        if (!categoryIncluded) return; // Skip this category
-                        
-                        // Determine which subscriptions to include for this category (INTERSECTION logic)
-                        let subsToInclude = [];
-                        
-                        if (hasSubscriptionSelections && hasCategorySelections) {
-                            // INTERSECTION: Both filters active - include only subscriptions in both
-                            if (catSubs && catSubs.has('')) {
-                                // Category selected from "Cost by Meter Category" - intersect with subscription selections
-                                subsToInclude = Array.from(chartSelections.subscriptions).filter(sub =>
-                                    catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                );
-                            } else if (catSubs && catSubs.size > 0) {
-                                // Category has specific subscription selections - intersect with chartSelections.subscriptions
-                                subsToInclude = Array.from(catSubs).filter(sub =>
-                                    chartSelections.subscriptions.has(sub) &&
-                                    catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                );
-                            }
-                        } else if (hasSubscriptionSelections) {
-                            // Only subscription filter - include selected subscriptions for this category
-                            subsToInclude = Array.from(chartSelections.subscriptions).filter(sub =>
-                                catData.bySubscription && catData.bySubscription[sub] !== undefined
-                            );
-                        } else if (hasCategorySelections) {
-                            // Only category filter
-                            if (catSubs && catSubs.has('')) {
-                                // Category selected from "Cost by Meter Category" - include all subscriptions
-                                subsToInclude = Object.keys(catData.bySubscription || {});
-                            } else if (catSubs && catSubs.size > 0) {
-                                // Category has specific subscription selections
-                                subsToInclude = Array.from(catSubs).filter(sub =>
-                                    catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                );
-                            }
-                        }
-                        
-                        // Sum costs for included subscriptions
-                        subsToInclude.forEach(sub => {
-                            const subCost = catData.bySubscription && catData.bySubscription[sub];
-                            const costLocal = getCostValue(subCost);
-                            dayTotalLocal += costLocal;
-                            if (subCost && typeof subCost === 'object' && subCost.CostUSD !== undefined) {
-                                dayTotalUSD += subCost.CostUSD || 0;
-                            }
-                        });
-                    });
-                } else if (hasResourceSelections) {
-                    // Resources selected - use resource totals
-                    const selectedResources = new Set(chartSelections.resources.keys());
-                    selectedResources.forEach(resource => {
-                        const resData = day.resources && day.resources[resource];
-                        if (resData) {
-                            dayTotalLocal += resData.total || 0;
-                            if (resData.totalUSD !== undefined && resData.totalUSD !== null) {
-                                dayTotalUSD += resData.totalUSD || 0;
-                            }
-                        }
-                    });
-                } else {
-                    // No chart selections or simple case - use pre-calculated totals from filtered data
-                    dayTotalLocal = day.totalCostLocal || 0;
-                    if (day.totalCostUSD !== undefined && day.totalCostUSD !== null) {
-                        dayTotalUSD = day.totalCostUSD;
-                    }
+            activeRowIds.forEach(rowId => {
+                const row = factRows[rowId];
+                if (row) {
+                    if (row.subscriptionName) activeSubscriptions.add(row.subscriptionName);
+                    if (row.meterCategory) activeCategories.add(row.meterCategory);
                 }
-                
-                filteredTotalCostLocal += dayTotalLocal;
-                filteredTotalCostUSD += dayTotalUSD;
-                
-                // Collect unique subscriptions and categories from filtered data
-                Object.keys(day.subscriptions || {}).forEach(subName => {
-                    filteredSubscriptions.add(subName);
-                });
-                Object.keys(day.categories || {}).forEach(catName => {
-                    filteredCategories.add(catName);
-                });
             });
             
-            // Update summary card values (rounded to nearest integer with thousand separator)
-            if (totalCostLocalEl) {
-                totalCostLocalEl.textContent = formatNumberNoDecimals(filteredTotalCostLocal);
-            }
-            if (totalCostUsdEl) {
-                totalCostUsdEl.textContent = formatNumberNoDecimals(filteredTotalCostUSD);
-            }
             if (subscriptionCountEl) {
-                subscriptionCountEl.textContent = filteredSubscriptions.size;
+                subscriptionCountEl.textContent = activeSubscriptions.size;
             }
             if (categoryCountEl) {
-                categoryCountEl.textContent = filteredCategories.size;
+                categoryCountEl.textContent = activeCategories.size;
             }
             
-            // Calculate trend for filtered data
-            // Remove highest and lowest day from each half to reduce outlier impact
-            if (dataToUse.length >= 4) {  // Need at least 4 days (2 per half after removing outliers)
-                const totalDays = dataToUse.length;
-                const daysPerHalf = Math.floor(totalDays / 2);
-                
-                // If odd number of days, exclude the middle day(s) to ensure equal comparison
-                // First half: first N days
-                // Second half: last N days
-                
-                // Build first half data with costs from filtered data
-                const firstHalfDays = [];
-                for (let i = 0; i < daysPerHalf; i++) {
-                    const day = dataToUse[i];
-                    // Use totalCostLocal from filtered data (already filtered by all selections)
-                    const dayCost = day.totalCostLocal || 0;
-                    firstHalfDays.push({ index: i, cost: dayCost });
-                }
-                
-                // Build second half data with costs from filtered data
-                const secondHalfDays = [];
-                for (let i = totalDays - daysPerHalf; i < totalDays; i++) {
-                    const day = dataToUse[i];
-                    // Use totalCostLocal from filtered data (already filtered by all selections)
-                    const dayCost = day.totalCostLocal || 0;
-                    secondHalfDays.push({ index: i, cost: dayCost });
-                }
-                
-                // Remove highest and lowest day from first half
-                let firstHalf = 0;
-                if (firstHalfDays.length >= 3) {
-                    firstHalfDays.sort((a, b) => a.cost - b.cost);  // Sort by cost ascending
-                    const firstHalfFiltered = firstHalfDays.slice(1, -1);  // Remove first (lowest) and last (highest)
-                    firstHalf = firstHalfFiltered.reduce((sum, day) => sum + day.cost, 0);
-                } else {
-                    firstHalf = firstHalfDays.reduce((sum, day) => sum + day.cost, 0);
-                }
-                
-                // Remove highest and lowest day from second half
-                let secondHalf = 0;
-                if (secondHalfDays.length >= 3) {
-                    secondHalfDays.sort((a, b) => a.cost - b.cost);  // Sort by cost ascending
-                    const secondHalfFiltered = secondHalfDays.slice(1, -1);  // Remove first (lowest) and last (highest)
-                    secondHalf = secondHalfFiltered.reduce((sum, day) => sum + day.cost, 0);
-                } else {
-                    secondHalf = secondHalfDays.reduce((sum, day) => sum + day.cost, 0);
-                }
-                
-                let trendPercent = 0;
-                let trendDirection = 'neutral';
-                if (firstHalf > 0) {
-                    // Calculate percentage change: ((new - old) / old) * 100
-                    trendPercent = ((secondHalf - firstHalf) / firstHalf) * 100;
-                    trendDirection = trendPercent > 0 ? 'up' : (trendPercent < 0 ? 'down' : 'neutral');
-                }
-                
-                const trendPercentEl = document.getElementById('summary-trend-percent');
-                
-                if (trendPercentEl) {
-                    // Determine arrow and color class
-                    let arrow = '&#8594;'; // Default: stable
-                    let colorClass = 'trend-stable';
-                    let borderClass = 'gray-border'; // Default: gray for neutral
+            // Calculate trend (compare first half vs second half of period)
+            if (trendPercentEl && activeRowIds.size > 0) {
+                const trend = engine.trendByDay(activeRowIds);
+                if (trend.length >= 2) {
+                    const midpoint = Math.floor(trend.length / 2);
+                    const firstHalf = trend.slice(0, midpoint);
+                    const secondHalf = trend.slice(midpoint);
                     
-                    if (trendDirection === 'up') {
-                        arrow = '&#8593;';
-                        colorClass = 'trend-increasing';
-                        borderClass = 'red-border'; // Red for increasing cost
-                    } else if (trendDirection === 'down') {
-                        arrow = '&#8595;';
-                        colorClass = 'trend-decreasing';
-                        borderClass = 'green-border'; // Green for decreasing cost
+                    const firstHalfTotal = firstHalf.reduce((sum, d) => sum + d.local, 0);
+                    const secondHalfTotal = secondHalf.reduce((sum, d) => sum + d.local, 0);
+                    
+                    let trendPercent = 0;
+                    if (firstHalfTotal > 0) {
+                        trendPercent = ((secondHalfTotal - firstHalfTotal) / firstHalfTotal) * 100;
                     }
                     
-                    // Update content with arrow (using innerHTML to render HTML entities)
-                    trendPercentEl.innerHTML = arrow + ' ' + Math.abs(trendPercent).toFixed(1) + '%';
+                    const trendArrow = trendPercent > 0 ? '↑' : trendPercent < 0 ? '↓' : '→';
+                    const trendColor = trendPercent > 0 ? 'trend-increasing' : trendPercent < 0 ? 'trend-decreasing' : 'trend-stable';
                     
-                    // Update color class for the value
-                    trendPercentEl.classList.remove('trend-increasing', 'trend-decreasing', 'trend-stable');
-                    trendPercentEl.classList.add(colorClass);
-                    
-                    // Update border class for the summary card box (parent element)
-                    const summaryCardBox = trendPercentEl.closest('.summary-card');
-                    if (summaryCardBox) {
-                        summaryCardBox.classList.remove('red-border', 'green-border', 'gray-border');
-                        summaryCardBox.classList.add(borderClass);
-                    }
+                    trendPercentEl.innerHTML = '<span class="' + trendColor + '">' + trendArrow + ' ' + Math.abs(trendPercent).toFixed(1) + '%</span>';
+                }
+            }
+            
+            // Dev-mode validation (optional - add to updateSummaryCards and updateChart)
+            if (window.DEBUG_COST_REPORT) {
+                const activeRowIdsCheck = engine.getActiveRowIds();
+                const totalsCheck = engine.sumCosts(activeRowIdsCheck);
+                const trendCheck = engine.trendByDay(activeRowIdsCheck);
+                const chartTotal = trendCheck.reduce((sum, d) => sum + d.local, 0);
+                const diff = Math.abs(totalsCheck.local - chartTotal);
+                const epsilon = 0.01; // Allow small floating point differences
+                if (diff > epsilon) {
+                    console.warn('⚠️ Mismatch detected: totals.local =', totalsCheck.local, 'chartTotal =', chartTotal, 'diff =', diff);
+                    console.warn('Active rowIds:', activeRowIdsCheck.size, 'rows');
+                } else {
+                    console.log('✓ Validation passed: totals match chart (', totalsCheck.local, 'SEK)');
                 }
             }
         }
         
         function filterTableBySubscription(tableId) {
+            // GUID-based filtering: use engine scope (subscriptionIds) instead of names
+            const scopeIds = engine.state.scope.subscriptionIds || new Set();
             const rows = document.querySelectorAll('#' + tableId + ' tbody tr');
             rows.forEach(row => {
-                const subscription = row.getAttribute('data-subscription');
-                if (subscription && selectedSubscriptions.size > 0) {
-                    row.classList.toggle('filtered-out', !selectedSubscriptions.has(subscription));
+                const subscriptionId = row.getAttribute('data-subscription'); // GUID
+                if (subscriptionId && scopeIds.size > 0) {
+                    row.classList.toggle('filtered-out', !scopeIds.has(subscriptionId));
                 } else {
                     row.classList.remove('filtered-out');
                 }
@@ -3907,15 +4593,20 @@ $datasetsByResourceJsonString
             const searchInput = document.getElementById('resourceSearch');
             const searchText = searchInput ? searchInput.value.toLowerCase().trim() : '';
             
+            // GUID-based filtering: use engine scope (subscriptionIds) instead of names
+            const scopeIds = engine.state.scope.subscriptionIds || new Set();
+            
             // Filter subscription cards first (for subscription drilldown section)
+            // Note: applySubscriptionScopeToCards() handles hard hide, this is for search-only filtering
             document.querySelectorAll('.subscription-card').forEach(subCard => {
-                const subscription = subCard.getAttribute('data-subscription');
-                const matchesSubscription = selectedSubscriptions.size === 0 || 
-                    (subscription && selectedSubscriptions.has(subscription));
+                const subscriptionId = subCard.getAttribute('data-subscription'); // GUID
+                const matchesSubscription = scopeIds.size === 0 || 
+                    (subscriptionId && scopeIds.has(subscriptionId));
                 const cardText = subCard.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || cardText.includes(searchText);
                 
-                subCard.classList.toggle('filtered-out', !matchesSubscription || !matchesSearch);
+                // Only apply filtered-out class if search doesn't match (subscription filtering handled by applySubscriptionScopeToCards)
+                subCard.classList.toggle('filtered-out', !matchesSearch);
             });
             
             // Filter resource rows within meter sections by subscription and search
@@ -4639,27 +5330,50 @@ $datasetsByResourceJsonString
                 });
             });
             
-            // Show/hide clear button
-            const clearBtn = document.getElementById('clearChartSelections');
-            if (clearBtn) {
-                const hasSelections = chartSelections.subscriptions.size > 0 ||
-                    chartSelections.categories.size > 0 ||
-                    chartSelections.subcategories.size > 0 ||
-                    chartSelections.meters.size > 0 ||
-                    chartSelections.resources.size > 0;
-                clearBtn.style.display = hasSelections ? 'block' : 'none';
-            }
+            // Update clear button visibility (checks both chartSelections and engine picks)
+            updateClearSelectionsButtonVisibility();
         }
         
-        // Clear all selections
+        // Update clear selections button visibility (checks both chartSelections and engine picks)
+        function updateClearSelectionsButtonVisibility() {
+            const clearBtn = document.getElementById('clearChartSelections');
+            if (!clearBtn) return;
+            
+            const hasChartSelections =
+                chartSelections.subscriptions.size > 0 ||
+                chartSelections.categories.size > 0 ||
+                chartSelections.subcategories.size > 0 ||
+                chartSelections.meters.size > 0 ||
+                chartSelections.resources.size > 0;
+            
+            const hasEnginePicks = engine && engine.state && engine.state.picks &&
+                Object.values(engine.state.picks).some(s => s && s.size > 0);
+            
+            clearBtn.style.display = (hasChartSelections || hasEnginePicks) ? 'block' : 'none';
+        }
+        
+        // Clear all selections (both chartSelections and engine picks)
         function clearAllChartSelections() {
+            // Clear chartSelections (Ctrl+Click-based selections)
             chartSelections.subscriptions.clear();
             chartSelections.categories.clear();
             chartSelections.subcategories.clear();
             chartSelections.meters.clear();
             chartSelections.resources.clear();
+            
+            // Clear engine picks (row clicks / canonical resourceKeys)
+            if (engine && typeof engine.clearPicks === 'function') {
+                engine.clearPicks();
+            } else if (engine && engine.state && engine.state.picks) {
+                Object.values(engine.state.picks).forEach(s => s && s.clear && s.clear());
+            }
+            
+            // Update visuals + data
             updateChartSelectionsVisual();
-            updateChartWithSelections();
+            updateResourceSelectionVisual();
+            updateSummaryCards();
+            updateChart();
+            updateClearSelectionsButtonVisibility();
         }
         
         // Ctrl+Click event handlers
@@ -4839,14 +5553,16 @@ $datasetsByResourceJsonString
                 if (categoryContent) {
                     if (isNowExpanded) {
                         categoryContent.style.setProperty('display', 'block', 'important');
-                        categoryContent.style.setProperty('visibility', 'visible', 'important');
                         categoryContent.style.setProperty('height', 'auto', 'important');
                         categoryContent.style.setProperty('overflow', 'visible', 'important');
+                        // Remove any existing visibility property when expanding
+                        categoryContent.style.removeProperty('visibility');
                     } else {
                         categoryContent.style.setProperty('display', 'none', 'important');
-                        categoryContent.style.setProperty('visibility', 'hidden', 'important');
                         categoryContent.style.setProperty('height', '0', 'important');
                         categoryContent.style.setProperty('overflow', 'hidden', 'important');
+                        // Remove any existing visibility property when collapsing
+                        categoryContent.style.removeProperty('visibility');
                     }
                 }
                 
@@ -4881,18 +5597,20 @@ $datasetsByResourceJsonString
                 if (subcategoryContent) {
                     if (isNowExpanded) {
                         subcategoryContent.style.setProperty('display', 'block', 'important');
-                        subcategoryContent.style.setProperty('visibility', 'visible', 'important');
                         subcategoryContent.style.setProperty('height', 'auto', 'important');
                         subcategoryContent.style.setProperty('overflow', 'visible', 'important');
                         subcategoryContent.style.setProperty('max-height', 'none', 'important');
                         subcategoryContent.style.setProperty('opacity', '1', 'important');
+                        // Remove any existing visibility property when expanding
+                        subcategoryContent.style.removeProperty('visibility');
                     } else {
                         subcategoryContent.style.setProperty('display', 'none', 'important');
-                        subcategoryContent.style.setProperty('visibility', 'hidden', 'important');
                         subcategoryContent.style.setProperty('height', '0', 'important');
                         subcategoryContent.style.setProperty('overflow', 'hidden', 'important');
                         subcategoryContent.style.setProperty('max-height', '0', 'important');
                         subcategoryContent.style.setProperty('opacity', '0', 'important');
+                        // Remove any existing visibility property when collapsing
+                        subcategoryContent.style.removeProperty('visibility');
                     }
                 }
                 
@@ -4928,15 +5646,20 @@ $datasetsByResourceJsonString
             const searchInput = document.getElementById('resourceSearch');
             const searchText = searchInput ? searchInput.value.toLowerCase().trim() : '';
             
+            // GUID-based filtering: use engine scope (subscriptionIds) instead of names
+            const scopeIds = engine.state.scope.subscriptionIds || new Set();
+            
             // Filter subscription cards (Cost by Subscription section) - respect both subscription and search filters
+            // Note: applySubscriptionScopeToCards() handles hard hide, this is for search-only filtering
             document.querySelectorAll('.subscription-card').forEach(card => {
-                const subscription = card.getAttribute('data-subscription');
-                const matchesSubscription = selectedSubscriptions.size === 0 || 
-                    (subscription && selectedSubscriptions.has(subscription));
+                const subscriptionId = card.getAttribute('data-subscription'); // GUID
+                const matchesSubscription = scopeIds.size === 0 || 
+                    (subscriptionId && scopeIds.has(subscriptionId));
                 const cardText = card.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || cardText.includes(searchText);
                 
-                card.classList.toggle('filtered-out', !matchesSubscription || !matchesSearch);
+                // Only apply filtered-out class if search doesn't match (subscription filtering handled by applySubscriptionScopeToCards)
+                card.classList.toggle('filtered-out', !matchesSearch);
             });
             
             // Filter category cards (Cost by Meter Category section) - exclude subscription-card and resource-card
@@ -4944,17 +5667,20 @@ $datasetsByResourceJsonString
                 const cardText = card.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || cardText.includes(searchText);
                 
+                // GUID-based filtering: use engine scope (subscriptionIds) instead of names
+                const scopeIds = engine.state.scope.subscriptionIds || new Set();
+                
                 // Check if this category card has any resources from selected subscriptions
-                let matchesSubscription = selectedSubscriptions.size === 0;
-                if (selectedSubscriptions.size > 0 && !matchesSubscription) {
+                let matchesSubscription = scopeIds.size === 0;
+                if (scopeIds.size > 0 && !matchesSubscription) {
                     // Check if any resource rows within this category match selected subscriptions
                     const categoryContent = card.querySelector('.category-content');
                     if (categoryContent) {
                         const visibleResourceRows = categoryContent.querySelectorAll('tr[data-subscription]');
                         if (visibleResourceRows.length > 0) {
                             visibleResourceRows.forEach(row => {
-                                const rowSub = row.getAttribute('data-subscription');
-                                if (rowSub && selectedSubscriptions.has(rowSub)) {
+                                const rowSubId = row.getAttribute('data-subscription'); // GUID
+                                if (rowSubId && scopeIds.has(rowSubId)) {
                                     matchesSubscription = true;
                                 }
                             });
@@ -4962,15 +5688,15 @@ $datasetsByResourceJsonString
                             // Check subcategories and meters for subscription match
                             const subcats = categoryContent.querySelectorAll('.subcategory-drilldown');
                             subcats.forEach(subcat => {
-                                const subcatSub = subcat.getAttribute('data-subscription');
-                                if (subcatSub && selectedSubscriptions.has(subcatSub)) {
+                                const subcatSubId = subcat.getAttribute('data-subscription'); // GUID
+                                if (subcatSubId && scopeIds.has(subcatSubId)) {
                                     matchesSubscription = true;
                                 } else {
                                     // Check meters within subcategory
                                     const meters = subcat.querySelectorAll('.meter-card[data-subscription]');
                                     meters.forEach(meter => {
-                                        const meterSub = meter.getAttribute('data-subscription');
-                                        if (meterSub && selectedSubscriptions.has(meterSub)) {
+                                        const meterSubId = meter.getAttribute('data-subscription'); // GUID
+                                        if (meterSubId && scopeIds.has(meterSubId)) {
                                             matchesSubscription = true;
                                         }
                                     });
@@ -4988,21 +5714,24 @@ $datasetsByResourceJsonString
                 const subcatText = subcat.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || subcatText.includes(searchText);
                 
+                // GUID-based filtering: use engine scope (subscriptionIds) instead of names
+                const scopeIds = engine.state.scope.subscriptionIds || new Set();
+                
                 // Check subscription match - subcategories in "Cost by Meter Category" don't have data-subscription
                 // but subcategories in "Cost by Subscription" do
-                let matchesSubscription = selectedSubscriptions.size === 0;
-                if (selectedSubscriptions.size > 0 && !matchesSubscription) {
-                    const subcatSub = subcat.getAttribute('data-subscription');
-                    if (subcatSub) {
+                let matchesSubscription = scopeIds.size === 0;
+                if (scopeIds.size > 0 && !matchesSubscription) {
+                    const subcatSubId = subcat.getAttribute('data-subscription'); // GUID
+                    if (subcatSubId) {
                         // Has subscription attribute - check directly
-                        matchesSubscription = selectedSubscriptions.has(subcatSub);
+                        matchesSubscription = scopeIds.has(subcatSubId);
                     } else {
                         // No subscription attribute - check if any meters/resources within match
                         const meters = subcat.querySelectorAll('.meter-card[data-subscription]');
                         if (meters.length > 0) {
                             meters.forEach(meter => {
-                                const meterSub = meter.getAttribute('data-subscription');
-                                if (meterSub && selectedSubscriptions.has(meterSub)) {
+                                const meterSubId = meter.getAttribute('data-subscription'); // GUID
+                                if (meterSubId && scopeIds.has(meterSubId)) {
                                     matchesSubscription = true;
                                 }
                             });
@@ -5010,8 +5739,8 @@ $datasetsByResourceJsonString
                             // Check resource rows
                             const resourceRows = subcat.querySelectorAll('tr[data-subscription]');
                             resourceRows.forEach(row => {
-                                const rowSub = row.getAttribute('data-subscription');
-                                if (rowSub && selectedSubscriptions.has(rowSub)) {
+                                const rowSubId = row.getAttribute('data-subscription'); // GUID
+                                if (rowSubId && scopeIds.has(rowSubId)) {
                                     matchesSubscription = true;
                                 }
                             });
