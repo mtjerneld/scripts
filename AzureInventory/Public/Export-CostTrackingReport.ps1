@@ -1812,7 +1812,7 @@ $subscriptionSectionsHtml
                     </div>
                 </div>
                 <div class="expandable__content">
-$categorySectionsHtml
+                    <div id="meterCategoryDynamicRoot"></div>
                 </div>
             </div>
             
@@ -2075,7 +2075,7 @@ $datasetsByResourceJsonString
                             rows.forEach(rowId => subRowIds.add(rowId));
                         }
                     });
-                    scopeRowIds = subRowIds.size > 0 ? subRowIds : new Set();
+                    scopeRowIds = subRowIds.size > 0 ? subRowIds : null; // Use null instead of empty Set to indicate "no filter applied"
                 }
                 
                 // Apply day range scope (intersect with subscription scope if exists)
@@ -2092,14 +2092,15 @@ $datasetsByResourceJsonString
                     if (scopeRowIds) {
                         scopeRowIds = intersectSets(scopeRowIds, dayRowIds);
                     } else {
-                        scopeRowIds = dayRowIds;
+                        scopeRowIds = dayRowIds.size > 0 ? dayRowIds : null;
                     }
                 }
                 
                 // CRITICAL: Always return a copy to prevent mutation of internal state
                 // Never return allRowIds directly - always create new Set(allRowIds)
-                // This ensures no external code can mutate the engine's internal state
-                return scopeRowIds || new Set(allRowIds);
+                // If scopeRowIds is null, it means no filters were applied, so return all rows
+                // If scopeRowIds is an empty Set, it means filters were applied but matched nothing
+                return scopeRowIds !== null ? scopeRowIds : new Set(allRowIds);
             }
             
             // Get rowIds from picks (UNION logic)
@@ -2342,6 +2343,7 @@ $datasetsByResourceJsonString
                 setScopeDayRange,
                 clearPicks,
                 clearScope,
+                getScopeRowIds,  // Expose for Meter Category (scope-only, ignores picks)
                 getActiveRowIds,
                 sumCosts,
                 trendByDay,
@@ -2532,6 +2534,9 @@ $datasetsByResourceJsonString
             populateCategoryFilter();
             // Update chart to show default view (Total Cost)
             updateChart();
+            
+            // Initial render of "Cost by Meter Category" (dynamic, based on engine state)
+            renderCostByMeterCategory();
             
             // Initialize DOM-index after DOM is ready (Phase 3)
             initDomIndex();
@@ -3435,20 +3440,61 @@ $datasetsByResourceJsonString
             // Protect against clicks on links/buttons in row (links should work without toggling selection)
             if (e.target.closest('a,button,input,select,textarea,label')) return;
             
-            const resourceRow = e.target.closest('tr[data-resource-key]');
-            if (!resourceRow) return;
+            // A) Stop collapse on resource click - prevent event from bubbling to expandable handlers
+            const row = e.target.closest('tr.clickable[data-resource-key]');
+            if (!row) return;
             
-            const resourceKey = resourceRow.getAttribute('data-resource-key');
-            if (!resourceKey) return;
+            // Stop propagation to prevent collapse/expand of parent expandable sections
+            e.stopPropagation();
             
-            if (resourceRow.tagName !== 'TR') return;
+            // B) Get resource key
+            const key = row.getAttribute('data-resource-key') || row.dataset.resourceKey;
+            if (!key) return;
             
-            // Toggle pick in engine (Phase 3: use resourceKeys, not resourceIds)
-            const isCtrl = e.ctrlKey || e.metaKey;
-            engine.togglePick('resourceKeys', resourceKey, isCtrl ? 'toggle' : 'replace');
+            if (row.tagName !== 'TR') return;
             
-            // Update visual state from engine (not toggle - ensures correctness)
+            // B) Implement Explorer selection logic for picks.resourceKeys
+            const isMulti = e.ctrlKey || e.metaKey; // Ctrl on Win/Linux, Cmd on Mac
+            const set = engine.state.picks.resourceKeys;
+            
+            if (isMulti) {
+                // Ctrl/Cmd-click → toggle (multi)
+                if (set.has(key)) {
+                    set.delete(key);
+                } else {
+                    set.add(key);
+                }
+            } else {
+                // Single-click → exclusive select or clear
+                const isOnlyThis = (set.size === 1 && set.has(key));
+                if (isOnlyThis) {
+                    set.clear(); // Single-click on already-selected item => deselect
+                } else {
+                    set.clear();
+                    set.add(key); // Single-click replaces selection
+                }
+            }
+            
+            // Clear other picks to avoid split-brain (strict policy)
+            engine.state.picks.resourceIds.clear();
+            engine.state.picks.resourceNames.clear();
+            engine.state.picks.resourceGroups.clear();
+            engine.state.picks.meterNames.clear();
+            engine.state.picks.categories.clear();
+            
+            // C) Run refresh pipeline after selection change
+            // Note: Meter Category is scope-only, so we don't re-render it on picks
+            // (renderCostByMeterCategory() is not called here)
+            
+            // Re-index DOM (in case rows were added/removed)
+            initDomIndex();
+            
+            // Update visual state from engine
             updateResourceSelectionVisual();
+            
+            // Update summary and chart
+            updateSummaryCards();
+            updateChart();
             
             // Debug logging (Phase 3)
             if (window.DEBUG_COST_REPORT) {
@@ -4475,6 +4521,13 @@ $datasetsByResourceJsonString
             applySubscriptionScopeToCards();  // Hide subscription-cards not in scope
             applySubscriptionScopeToTables(); // Hide table rows not in scope
             
+            // Dynamic re-aggregation for "Cost by Meter Category" (reflects current scope)
+            renderCostByMeterCategory();
+            
+            // Re-index DOM after dynamic render
+            initDomIndex();
+            updateResourceSelectionVisual();
+            
             // Debug logging (Phase 3)
             if (window.DEBUG_COST_REPORT) {
                 console.debug('Subscription filter state:', {
@@ -4494,6 +4547,305 @@ $datasetsByResourceJsonString
             if (typeof applySearchAndSubscriptionFilters === 'function') {
                 applySearchAndSubscriptionFilters();
             }
+        }
+        
+        // Dynamic re-aggregation for "Cost by Meter Category" based on engine.getScopeRowIds()
+        // Meter Category should only reflect scope (subscription filter), NOT picks (resource selections)
+        // This allows users to pick resources in other sections without affecting Meter Category breakdown
+        function renderCostByMeterCategory() {
+            const container = document.getElementById('meterCategoryDynamicRoot');
+            if (!container) {
+                console.warn('meterCategoryDynamicRoot not found, skipping renderCostByMeterCategory');
+                return;
+            }
+            
+            // Safety check: ensure engine and factRows are initialized
+            if (!engine || typeof engine.getScopeRowIds !== 'function') {
+                console.warn('Engine not ready, skipping renderCostByMeterCategory');
+                return;
+            }
+            
+            if (!factRows || !Array.isArray(factRows) || factRows.length === 0) {
+                console.warn('factRows not available or empty, skipping renderCostByMeterCategory');
+                container.innerHTML = '<p>No cost data available.</p>';
+                return;
+            }
+            
+            // Get scope-only rows (Bug 2 fix: Meter Category ignores picks, only uses scope)
+            let scopeRowIds;
+            try {
+                scopeRowIds = engine.getScopeRowIds();
+            } catch (error) {
+                console.error('Error calling engine.getScopeRowIds():', error);
+                container.innerHTML = '<p>Error loading cost data.</p>';
+                return;
+            }
+            
+            // Safety check: ensure we have a valid Set
+            if (!scopeRowIds || !(scopeRowIds instanceof Set)) {
+                console.error('engine.getScopeRowIds() did not return a Set:', scopeRowIds);
+                container.innerHTML = '<p>Error: Invalid data structure.</p>';
+                return;
+            }
+            
+            // Debug: log scope state for troubleshooting
+            if (window.DEBUG_COST_REPORT) {
+                console.debug('renderCostByMeterCategory:', {
+                    scopeRowIdsSize: scopeRowIds.size,
+                    scopeSubscriptionIds: Array.from(engine.state.scope.subscriptionIds),
+                    factRowsLength: factRows ? factRows.length : 0,
+                    hasEngine: !!engine,
+                    hasGetScopeRowIds: typeof engine.getScopeRowIds === 'function'
+                });
+            }
+            
+            // Safety check: if scopeRowIds is empty but we have factRows, something is wrong
+            if (scopeRowIds.size === 0) {
+                // Check if this is because of filters or because there's no data at all
+                if (!factRows || factRows.length === 0) {
+                    container.innerHTML = '<p>No cost data available.</p>';
+                } else {
+                    // This shouldn't happen at initial load (no filters = all rows should be returned)
+                    // Fallback: try to render with all factRows as a last resort
+                    console.warn('renderCostByMeterCategory: scopeRowIds is empty but factRows exist. Using all factRows as fallback.');
+                    // Create a Set with all row indices as fallback
+                    const fallbackRowIds = new Set(factRows.map((_, i) => i));
+                    if (fallbackRowIds.size > 0) {
+                        // Use fallback and continue rendering
+                        scopeRowIds = fallbackRowIds;
+                    } else {
+                        container.innerHTML = '<p>No data available for selected filters.</p>';
+                        return;
+                    }
+                }
+            }
+            
+            // Helper to format numbers (match PowerShell Format-NumberWithSeparator)
+            function formatNumber(num) {
+                if (typeof num !== 'number' || isNaN(num)) return '0';
+                return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            }
+            
+            // Build hierarchy: Category -> SubCategory -> Meter -> Resource (aggregated by resourceKey)
+            const categoryMap = new Map();
+            
+            scopeRowIds.forEach(rowId => {
+                const row = factRows[rowId];
+                if (!row) return;
+                
+                const catName = row.meterCategory || '(Unknown Category)';
+                const subCatName = row.meterSubcategory || '(Unknown Subcategory)';
+                const meterName = row.meterName || '(Unknown Meter)';
+                const resourceKey = row.resourceKey || '';
+                const resourceId = row.resourceId || '';
+                const resourceName = row.resourceName || 'Unknown';
+                const resourceGroup = row.resourceGroup || 'N/A';
+                const subscriptionId = row.subscriptionId || '';
+                const subscriptionName = row.subscriptionName || 'N/A';
+                const costLocal = parseFloat(row.costLocal) || 0;
+                const costUSD = parseFloat(row.costUSD) || 0;
+                
+                // Get or create category
+                if (!categoryMap.has(catName)) {
+                    categoryMap.set(catName, {
+                        name: catName,
+                        costLocal: 0,
+                        costUSD: 0,
+                        subCategories: new Map()
+                    });
+                }
+                const category = categoryMap.get(catName);
+                category.costLocal += costLocal;
+                category.costUSD += costUSD;
+                
+                // Get or create subcategory
+                if (!category.subCategories.has(subCatName)) {
+                    category.subCategories.set(subCatName, {
+                        name: subCatName,
+                        costLocal: 0,
+                        costUSD: 0,
+                        meters: new Map()
+                    });
+                }
+                const subCategory = category.subCategories.get(subCatName);
+                subCategory.costLocal += costLocal;
+                subCategory.costUSD += costUSD;
+                
+                // Get or create meter
+                if (!subCategory.meters.has(meterName)) {
+                    subCategory.meters.set(meterName, {
+                        name: meterName,
+                        costLocal: 0,
+                        costUSD: 0,
+                        recordCount: 0,
+                        resources: new Map() // Aggregated by resourceKey
+                    });
+                }
+                const meter = subCategory.meters.get(meterName);
+                meter.costLocal += costLocal;
+                meter.costUSD += costUSD;
+                meter.recordCount++;
+                
+                // Aggregate resources by resourceKey
+                if (!meter.resources.has(resourceKey)) {
+                    meter.resources.set(resourceKey, {
+                        resourceKey: resourceKey,
+                        resourceId: resourceId,
+                        resourceName: resourceName,
+                        resourceGroup: resourceGroup,
+                        subscriptionId: subscriptionId,
+                        subscriptionName: subscriptionName,
+                        costLocal: 0,
+                        costUSD: 0
+                    });
+                }
+                const resource = meter.resources.get(resourceKey);
+                resource.costLocal += costLocal;
+                resource.costUSD += costUSD;
+            });
+            
+            // Sort and render: Categories (desc by costLocal), then SubCategories, then Meters, then Resources
+            const sortedCategories = Array.from(categoryMap.values())
+                .sort((a, b) => b.costLocal - a.costLocal);
+            
+            let html = '';
+            
+            sortedCategories.forEach(category => {
+                const catNameEncoded = escapeHtml(category.name);
+                const catCostLocalFormatted = formatNumber(category.costLocal);
+                const catCostUSDFormatted = formatNumber(category.costUSD);
+                
+                // Sort subcategories
+                const sortedSubCats = Array.from(category.subCategories.values())
+                    .sort((a, b) => b.costLocal - a.costLocal);
+                
+                let subCatHtml = '';
+                
+                sortedSubCats.forEach(subCat => {
+                    const subCatNameEncoded = escapeHtml(subCat.name);
+                    const subCatCostLocalFormatted = formatNumber(subCat.costLocal);
+                    const subCatCostUSDFormatted = formatNumber(subCat.costUSD);
+                    
+                    // Sort meters
+                    const sortedMeters = Array.from(subCat.meters.values())
+                        .sort((a, b) => b.costLocal - a.costLocal);
+                    
+                    let meterCardsHtml = '';
+                    
+                    sortedMeters.forEach(meter => {
+                        const meterNameEncoded = escapeHtml(meter.name);
+                        const meterCostLocalFormatted = formatNumber(meter.costLocal);
+                        const meterCostUSDFormatted = formatNumber(meter.costUSD);
+                        
+                        // Sort resources
+                        const sortedResources = Array.from(meter.resources.values())
+                            .sort((a, b) => b.costLocal - a.costLocal);
+                        
+                        let resourceRowsHtml = '';
+                        let hasResources = sortedResources.length > 0;
+                        
+                        if (hasResources) {
+                            sortedResources.forEach(resource => {
+                                const resNameEncoded = escapeHtml(resource.resourceName);
+                                const resGroupEncoded = escapeHtml(resource.resourceGroup);
+                                const resSubNameEncoded = escapeHtml(resource.subscriptionName);
+                                const resIdEncoded = escapeHtml(resource.resourceId);
+                                const resourceKeyEncoded = escapeHtml(resource.resourceKey);
+                                const resSubIdEncoded = escapeHtml(resource.subscriptionId);
+                                
+                                const resCostLocalFormatted = formatNumber(resource.costLocal);
+                                const resCostUSDFormatted = formatNumber(resource.costUSD);
+                                
+                                // Build attributes: always data-resource-key, data-resource-id only if ResourceId exists
+                                let attr = 'class="clickable" data-resource-key="' + resourceKeyEncoded + '"';
+                                if (resIdEncoded) {
+                                    attr += ' data-resource-id="' + resIdEncoded + '"';
+                                }
+                                
+                                // Build subscription attributes: data-subscription = GUID (ID-first)
+                                const subscriptionAttr = resSubIdEncoded 
+                                    ? 'data-subscription-id="' + resSubIdEncoded + '" data-subscription-name="' + resSubNameEncoded + '" data-subscription="' + resSubIdEncoded + '"'
+                                    : '';
+                                
+                                resourceRowsHtml += '<tr ' + attr + ' ' + subscriptionAttr + 
+                                    ' data-resource="' + resNameEncoded + '" data-meter="' + meterNameEncoded + 
+                                    ' data-subcategory="' + subCatNameEncoded + '" data-category="' + catNameEncoded + 
+                                    '" style="cursor: pointer;">' +
+                                    '<td>' + resNameEncoded + '</td>' +
+                                    '<td>' + resGroupEncoded + '</td>' +
+                                    '<td>' + resSubNameEncoded + '</td>' +
+                                    '<td class="cost-value text-right">' + currency + ' ' + resCostLocalFormatted + '</td>' +
+                                    '<td class="cost-value text-right">$' + resCostUSDFormatted + '</td>' +
+                                    '</tr>';
+                            });
+                        }
+                        
+                        if (hasResources) {
+                            meterCardsHtml += '<div class="meter-card" data-meter="' + meterNameEncoded + 
+                                '" data-subcategory="' + subCatNameEncoded + '" data-category="' + catNameEncoded + '">' +
+                                '<div class="meter-header" data-meter="' + meterNameEncoded + '" data-subcategory="' + subCatNameEncoded + 
+                                '" data-category="' + catNameEncoded + '" onclick="handleMeterSelection(this, event)" ' +
+                                'style="display: flex; align-items: center; justify-content: space-between;">' +
+                                '<span class="expand-arrow">&#9654;</span>' +
+                                '<span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">' + meterNameEncoded + '</span>' +
+                                '<div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">' +
+                                '<span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap;">' +
+                                currency + ' ' + meterCostLocalFormatted + ' ($' + meterCostUSDFormatted + ')</span>' +
+                                '<span class="meter-count">' + meter.recordCount + ' records</span>' +
+                                '</div></div>' +
+                                '<div class="meter-content">' +
+                                '<table class="data-table resource-table">' +
+                                '<thead><tr><th>Resource</th><th>Resource Group</th><th>Subscription</th>' +
+                                '<th class="text-right">Cost (Local)</th><th class="text-right">Cost (USD)</th></tr></thead>' +
+                                '<tbody>' + resourceRowsHtml + '</tbody></table></div></div>';
+                        } else {
+                            meterCardsHtml += '<div class="meter-card no-expand" data-meter="' + meterNameEncoded + 
+                                '" data-subcategory="' + subCatNameEncoded + '" data-category="' + catNameEncoded + '">' +
+                                '<div class="expandable__header meter-header" data-meter="' + meterNameEncoded + 
+                                '" data-subcategory="' + subCatNameEncoded + '" data-category="' + catNameEncoded + 
+                                '" style="display: flex; align-items: center; justify-content: space-between;">' +
+                                '<span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">' + meterNameEncoded + '</span>' +
+                                '<span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">' +
+                                currency + ' ' + meterCostLocalFormatted + ' ($' + meterCostUSDFormatted + ')</span>' +
+                                '<span class="meter-count">' + meter.recordCount + ' records</span></div></div>';
+                        }
+                    });
+                    
+                    subCatHtml += '<div class="subcategory-drilldown" data-subcategory="' + subCatNameEncoded + 
+                        '" data-category="' + catNameEncoded + '">' +
+                        '<div class="expandable__header subcategory-header" data-subcategory="' + subCatNameEncoded + 
+                        '" data-category="' + catNameEncoded + '" onclick="handleSubcategorySelection(this, event)" ' +
+                        'style="display: flex; align-items: center; justify-content: space-between;">' +
+                        '<span class="expand-arrow">&#9654;</span>' +
+                        '<span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">' + subCatNameEncoded + '</span>' +
+                        '<span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">' +
+                        currency + ' ' + subCatCostLocalFormatted + ' ($' + subCatCostUSDFormatted + ')</span>' +
+                        '</div>' +
+                        '<div class="subcategory-content" style="display: none !important;">' + meterCardsHtml + '</div></div>';
+                });
+                
+                html += '<div class="category-card collapsed" data-category="' + catNameEncoded + '">' +
+                    '<div class="category-header collapsed" data-category="' + catNameEncoded + 
+                    '" onclick="handleCategorySelection(this, event)">' +
+                    '<span class="expand-arrow">&#9654;</span>' +
+                    '<span class="category-title">' + catNameEncoded + '</span>' +
+                    '<span class="category-cost">' + currency + ' ' + catCostLocalFormatted + ' ($' + catCostUSDFormatted + ')</span>' +
+                    '</div>' +
+                    '<div class="category-content" style="display: none !important;">' + subCatHtml + '</div></div>';
+            });
+            
+            // Render content - do NOT manipulate display styles
+            // Expand/collapse state is controlled solely by toggle handlers (toggleSection, etc.)
+            container.innerHTML = html;
+        }
+        
+        // Helper to escape HTML (for both text content and attribute values)
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            // Also escape quotes for attribute values
+            return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
         
         function updateSummaryCards() {
@@ -4550,7 +4902,8 @@ $datasetsByResourceJsonString
                         trendPercent = ((secondHalfTotal - firstHalfTotal) / firstHalfTotal) * 100;
                     }
                     
-                    const trendArrow = trendPercent > 0 ? '↑' : trendPercent < 0 ? '↓' : '→';
+                    // Use HTML entities to avoid encoding issues (same as PowerShell uses)
+                    const trendArrow = trendPercent > 0 ? '&#8593;' : trendPercent < 0 ? '&#8595;' : '&#8594;';
                     const trendColor = trendPercent > 0 ? 'trend-increasing' : trendPercent < 0 ? 'trend-decreasing' : 'trend-stable';
                     
                     trendPercentEl.innerHTML = '<span class="' + trendColor + '">' + trendArrow + ' ' + Math.abs(trendPercent).toFixed(1) + '%</span>';
