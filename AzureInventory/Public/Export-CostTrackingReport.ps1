@@ -3332,8 +3332,18 @@ $datasetsByResourceJsonString
                 }];
             }
             
-            // Update chart
+            // Helper function to calculate total for a dataset
+            function datasetTotal(ds) {
+                return (ds.data || []).reduce((a, v) => a + (Number(v) || 0), 0);
+            }
+            
+            // For stacked views: draw largest at bottom (first dataset)
             const stacked = view !== 'total';
+            if (stacked && Array.isArray(datasets) && datasets.length > 1) {
+                datasets.sort((a, b) => datasetTotal(b) - datasetTotal(a)); // DESC
+            }
+            
+            // Update chart
             costChart.options.scales.x.stacked = stacked;
             costChart.options.scales.y.stacked = stacked;
             costChart.data.labels = labels;
