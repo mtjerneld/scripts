@@ -1408,7 +1408,7 @@ $categoryHtml
                         if ($hasResources) {
                             $meterCardsHtml += @"
                             <div class="meter-card" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName">
-                                <div class="meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
+                                <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="expand-arrow">&#9654;</span>
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterName</span>
                                     <div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
@@ -1599,7 +1599,7 @@ $subCatHtml
                         if ($hasResources) {
                             $meterCardsHtml += @"
                             <div class="meter-card" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
-                                <div class="meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
+                                <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="expand-arrow">&#9654;</span>
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <div class="meter-header-right" style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
@@ -1627,7 +1627,7 @@ $subCatHtml
                         } else {
                             $meterCardsHtml += @"
                             <div class="meter-card no-expand" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
-                                <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" style="display: flex; align-items: center; justify-content: space-between;">
+                                <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
                                     <span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $meterCostLocalRounded (`$$meterCostUSDRounded)</span>
                                     <span class="meter-count">$meterCount records</span>
@@ -1752,8 +1752,8 @@ $(Get-ReportStylesheet)
                 <select id="chartView" onchange="updateChartView()">
                     <option value="stacked-category">Stacked by Category</option>
                     <option value="stacked-subscription">Stacked by Subscription</option>
-                    <option value="stacked-meter">Stacked by Meter (Top 15)</option>
-                    <option value="stacked-resource">Stacked by Resource (Top 15)</option>
+                    <option value="stacked-meter">Stacked by Meter</option>
+                    <option value="stacked-resource">Stacked by Resource</option>
                     <option value="total" selected>Total Cost</option>
                 </select>
                 <select id="categoryFilter" onchange="filterChartCategory()">
@@ -1917,6 +1917,8 @@ $datasetsByResourceJsonString
                 bySubscriptionId: new Map(),
                 bySubscriptionName: new Map(),
                 byCategory: new Map(),
+                bySubcategory: new Map(),  // P4-1: Subcategory index (composite key = subscriptionId|category|subcategory)
+                bySubcategoryGlobal: new Map(),  // FIX: Global subcategory index (key = category|subcategory) for Meter Category section
                 byMeter: new Map(),
                 byResourceId: new Map(),
                 byResourceKey: new Map(),  // Canonical resource key index
@@ -1950,6 +1952,25 @@ $datasetsByResourceJsonString
                         index.byCategory.set(row.meterCategory, new Set());
                     }
                     index.byCategory.get(row.meterCategory).add(rowId);
+                }
+                
+                // P4-1: Subcategory index (subscription+category-scoped: composite key = subscriptionId|category|subcategory)
+                // This prevents false matches when same subcategory exists under different categories
+                if (row.meterSubcategory) {
+                    const subcatKey = (row.subscriptionId || '') + '|' + 
+                                     (row.meterCategory || '') + '|' + 
+                                     row.meterSubcategory;
+                    if (!index.bySubcategory.has(subcatKey)) {
+                        index.bySubcategory.set(subcatKey, new Set());
+                    }
+                    index.bySubcategory.get(subcatKey).add(rowId);
+                    
+                    // FIX: Also build global subcategory index (category|subcategory) for Meter Category section
+                    const globalSubcatKey = (row.meterCategory || '') + '|' + row.meterSubcategory;
+                    if (!index.bySubcategoryGlobal.has(globalSubcatKey)) {
+                        index.bySubcategoryGlobal.set(globalSubcatKey, new Set());
+                    }
+                    index.bySubcategoryGlobal.get(globalSubcatKey).add(rowId);
                 }
                 
                 // Meter index
@@ -2015,7 +2036,8 @@ $datasetsByResourceJsonString
                     resourceNames: new Set(),
                     resourceGroups: new Set(),
                     meterNames: new Set(),
-                    categories: new Set()
+                    categories: new Set(),
+                    subcategories: new Set()  // P4-2: Subcategory picks (composite key = subscriptionId|category|subcategory)
                 }
             };
             
@@ -2148,6 +2170,27 @@ $datasetsByResourceJsonString
                     state.picks.categories.forEach(cat => {
                         const rows = index.byCategory.get(cat);
                         if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                // P4-3: Subcategory picks (composite key = subscriptionId|category|subcategory OR category|subcategory for global)
+                // FIX: Handle both composite (subscription-scoped) and global (category|subcategory) keys
+                if (state.picks.subcategories.size > 0) {
+                    state.picks.subcategories.forEach(subcatKey => {
+                        // Simple check: if key has exactly 2 parts (category|subcategory), it's a global key
+                        // If it has 3 parts (subscriptionId|category|subcategory), it's a composite key
+                        const parts = subcatKey.split('|');
+                        const isGlobalKey = parts.length === 2;
+                        
+                        if (isGlobalKey) {
+                            // Global key: category|subcategory (for Meter Category section)
+                            const rows = index.bySubcategoryGlobal.get(subcatKey);
+                            if (rows) pickedSets.push(rows);
+                        } else {
+                            // Composite key: subscriptionId|category|subcategory (for Cost Breakdown)
+                            const rows = index.bySubcategory.get(subcatKey);
+                            if (rows) pickedSets.push(rows);
+                        }
                     });
                 }
                 
@@ -2541,13 +2584,20 @@ $datasetsByResourceJsonString
             // Initialize DOM-index after DOM is ready (Phase 3)
             initDomIndex();
             
-            // Sync selection visuals with current engine state (if any)
+            // Sync UI from engine state (central sync function)
+            if (typeof syncUIFromEngine === 'function') {
+                syncUIFromEngine();
+            } else {
+                // Fallback to individual updates if syncUIFromEngine not available
             if (typeof updateResourceSelectionVisual === 'function') {
                 updateResourceSelectionVisual();
             }
-            
-            // Calculate trend with JavaScript (same logic as when filters are applied)
+                if (typeof updateHeaderSelectionVisual === 'function') {
+                    updateHeaderSelectionVisual();
+                }
             updateSummaryCards();
+                updateChart();
+            }
             
             // Initially hide resources beyond top 20 in "Top 20 Resources" section only
             // Don't hide cards in "Top 20 Cost Increase Drivers" section (they use .increased-cost-card class)
@@ -3234,8 +3284,14 @@ $datasetsByResourceJsonString
         
         // Update chart with selections
         function updateChartWithSelections() {
+            // Use central sync function for consistency
+            if (typeof syncUIFromEngine === 'function') {
+                syncUIFromEngine();
+            } else {
+                // Fallback to individual updates
             updateChart();
             updateSummaryCards();
+            }
         }
         
         function updateChart() {
@@ -3272,11 +3328,32 @@ $datasetsByResourceJsonString
                     borderWidth: 1
                 }];
             } else if (view === 'stacked-category' || view === 'category') {
-                // Category breakdown - use intersection for O(k) performance (not O(k*N))
+                // Category breakdown - Top 15 categories with "Other" dataset
+                // Edge case: empty activeRowIds (RETURN EARLY)
+                if (activeRowIds.size === 0) {
+                    datasets = [{
+                        label: 'No data',
+                        data: labels.map(() => 0)
+                    }];
+                } else {
+                    // Use groupByCategory to get top categories
                 const categories = engine.groupByCategory(activeRowIds);
                 
-                categories.slice(0, 10).forEach((cat, idx) => {
-                    // Use intersection: activeRowIds ∩ index.byCategory.get(cat) - much faster
+                    // Ensure desc sort with tie-breaker for determinism
+                    const sortedCategories = [...categories].sort((a, b) => {
+                        const costDiff = b.local - a.local;
+                        if (costDiff !== 0) return costDiff;
+                        // Tie-breaker: alphabetical by category name for stability
+                        return (a.category || '').localeCompare(b.category || '');
+                    });
+                    const top15Categories = sortedCategories.slice(0, 15);
+                    
+                    // Build datasets per category
+                    top15Categories.forEach((cat, idx) => {
+                        // Filter out null/empty category names
+                        if (!cat.category || cat.category.trim() === '') return; // Skip, will be in "Other"
+                        
+                        // Use intersection: activeRowIds ∩ index.byCategory.get(cat) - O(k) performance
                     const catIndexRows = engine.index.byCategory.get(cat.category);
                     if (!catIndexRows) return;
                     
@@ -3292,20 +3369,75 @@ $datasetsByResourceJsonString
                         borderWidth: 1
                     });
                 });
+                    
+                    // Build day-level totals for "Other" calculation
+                    const trendForOther = engine.trendByDay(activeRowIds);
+                    const totalByDay = new Map(trendForOther.map(d => [d.day, d.local]));
+                    
+                    // Calculate "Other" per day (OPTIMIZED: use index loop, not indexOf)
+                    const otherData = [];
+                    for (let i = 0; i < labels.length; i++) {
+                        const day = labels[i];
+                        const totalDay = totalByDay.get(day) || 0;
+                        const top15Day = datasets.reduce((sum, ds) => {
+                            return sum + (Number(ds.data[i]) || 0);
+                        }, 0);
+                        // Clamp to avoid rounding issues (small negative values can occur)
+                        otherData.push(Math.max(0, totalDay - top15Day));
+                    }
+                    
+                    const otherTotal = otherData.reduce((sum, val) => sum + val, 0);
+                    if (otherTotal > 0.01) {
+                        datasets.push({
+                            label: 'Other',
+                            data: otherData,
+                            backgroundColor: 'rgba(128, 128, 128, 0.6)',
+                            borderColor: 'rgba(128, 128, 128, 0.8)',
+                            borderWidth: 1
+                        });
+                    }
+                    // NOTE: "Other" will be moved to end AFTER all sorting (see P4-8)
+                }
             } else if (view === 'stacked-subscription' || view === 'subscription') {
-                // Subscription breakdown - use intersection for performance
-                const subscriptions = new Set();
+                // Subscription breakdown - Top 15 subscriptions with "Other" dataset
+                // Edge case: empty activeRowIds (RETURN EARLY)
+                if (activeRowIds.size === 0) {
+                    datasets = [{
+                        label: 'No data',
+                        data: labels.map(() => 0)
+                    }];
+                } else {
+                    // Collect subscriptions and their totals
+                    const subscriptionMap = new Map();
                 activeRowIds.forEach(rowId => {
                     const row = factRows[rowId];
                     if (row && row.subscriptionName) {
-                        subscriptions.add(row.subscriptionName);
-                    }
-                });
-                
-                let subIdx = 0;
-                subscriptions.forEach(subName => {
+                            if (!subscriptionMap.has(row.subscriptionName)) {
+                                subscriptionMap.set(row.subscriptionName, {
+                                    name: row.subscriptionName,
+                                    local: 0
+                                });
+                            }
+                            subscriptionMap.get(row.subscriptionName).local += parseFloat(row.costLocal) || 0;
+                        }
+                    });
+                    
+                    // Sort subscriptions by total cost (desc) with tie-breaker
+                    const sortedSubscriptions = Array.from(subscriptionMap.values()).sort((a, b) => {
+                        const costDiff = b.local - a.local;
+                        if (costDiff !== 0) return costDiff;
+                        // Tie-breaker: alphabetical by subscription name for stability
+                        return (a.name || '').localeCompare(b.name || '');
+                    });
+                    const top15Subscriptions = sortedSubscriptions.slice(0, 15);
+                    
+                    // Build datasets per subscription
+                    top15Subscriptions.forEach((sub, idx) => {
+                        // Filter out null/empty subscription names
+                        if (!sub.name || sub.name.trim() === '') return; // Skip, will be in "Other"
+                        
                     // Use intersection: activeRowIds ∩ index.bySubscriptionName.get(subName)
-                    const subIndexRows = engine.index.bySubscriptionName.get(subName);
+                        const subIndexRows = engine.index.bySubscriptionName.get(sub.name);
                     if (!subIndexRows) return;
                     
                     const subRowIds = engine.intersectSets(activeRowIds, subIndexRows);
@@ -3313,14 +3445,345 @@ $datasetsByResourceJsonString
                     const dayMap = new Map(subTrend.map(d => [d.day, d.local]));
                     
                     datasets.push({
-                        label: subName,
+                            label: sub.name,
                         data: labels.map(day => dayMap.get(day) || 0),
-                        backgroundColor: chartColors[subIdx % chartColors.length],
-                        borderColor: chartColors[subIdx % chartColors.length],
+                            backgroundColor: chartColors[idx % chartColors.length],
+                            borderColor: chartColors[idx % chartColors.length],
                         borderWidth: 1
                     });
-                    subIdx++;
-                });
+                    });
+                    
+                    // Build day-level totals for "Other" calculation
+                    const trendForOther = engine.trendByDay(activeRowIds);
+                    const totalByDay = new Map(trendForOther.map(d => [d.day, d.local]));
+                    
+                    // Calculate "Other" per day (OPTIMIZED: use index loop, not indexOf)
+                    const otherData = [];
+                    for (let i = 0; i < labels.length; i++) {
+                        const day = labels[i];
+                        const totalDay = totalByDay.get(day) || 0;
+                        const top15Day = datasets.reduce((sum, ds) => {
+                            return sum + (Number(ds.data[i]) || 0);
+                        }, 0);
+                        // Clamp to avoid rounding issues (small negative values can occur)
+                        otherData.push(Math.max(0, totalDay - top15Day));
+                    }
+                    
+                    const otherTotal = otherData.reduce((sum, val) => sum + val, 0);
+                    if (otherTotal > 0.01) {
+                        datasets.push({
+                            label: 'Other',
+                            data: otherData,
+                            backgroundColor: 'rgba(128, 128, 128, 0.6)',
+                            borderColor: 'rgba(128, 128, 128, 0.8)',
+                            borderWidth: 1
+                        });
+                    }
+                    // NOTE: "Other" will be moved to end AFTER all sorting (see P4-8)
+                }
+            } else if (view === 'stacked-meter' || view === 'meter') {
+                // Meter breakdown - Top 15 meters with "Other" dataset
+                // Edge case: empty activeRowIds (RETURN EARLY)
+                if (activeRowIds.size === 0) {
+                    datasets = [{
+                        label: 'No data',
+                        data: labels.map(() => 0)
+                        // Minimalistisk: använd default chartColors[0] styling (ingen special styling)
+                    }];
+                    // CRITICAL: Return early to skip all subsequent logic (no "Other" dataset, no sorting, etc.)
+                    // Go directly to chart update at end of updateChart()
+                    // Note: We'll set stacked and update chart below, so we need to continue
+                } else {
+                    // Use groupByMeter to get top meters
+                    const meters = engine.groupByMeter(activeRowIds);
+                    
+                    // Ensure desc sort with tie-breaker for determinism
+                    // CRITICAL: Use spread operator to avoid mutating groupBy result (may be reused elsewhere)
+                    const sortedMeters = [...meters].sort((a, b) => {
+                        const costDiff = b.local - a.local;
+                        if (costDiff !== 0) return costDiff;
+                        // Tie-breaker: alphabetical by meter name for stability
+                        return (a.meter || '').localeCompare(b.meter || '');
+                    });
+                    const top15Meters = sortedMeters.slice(0, 15);
+                    
+                    // Build friendly meter name mapping (use meterName as friendly name, handle collisions)
+                    // Note: meterName is already the friendly name displayed in tables
+                    // Since groupByMeter groups by meterName, collisions are unlikely, but we handle them for robustness
+                    const friendlyNameMap = new Map(); // canonical meterName -> friendly label (with collision handling)
+                    const friendlyNameCount = new Map(); // friendly name -> count of occurrences
+                    
+                    // First pass: count occurrences of each friendly name
+                    top15Meters.forEach((meter) => {
+                        if (!meter.meter || meter.meter.trim() === '') return;
+                        // Use meterName as friendly name (same as displayed in tables)
+                        const friendlyName = meter.meter;
+                        friendlyNameCount.set(friendlyName, (friendlyNameCount.get(friendlyName) || 0) + 1);
+                    });
+                    
+                    // Second pass: assign labels, suffixing duplicates if needed
+                    const friendlyNameUsage = new Map(); // friendly name -> usage counter
+                    top15Meters.forEach((meter) => {
+                        if (!meter.meter || meter.meter.trim() === '') return;
+                        
+                        const friendlyName = meter.meter;
+                        const count = friendlyNameCount.get(friendlyName);
+                        
+                        if (count > 1) {
+                            // Collision detected - suffix duplicates
+                            const usage = (friendlyNameUsage.get(friendlyName) || 0) + 1;
+                            friendlyNameUsage.set(friendlyName, usage);
+                            // First occurrence keeps original name, subsequent ones get numbered
+                            friendlyNameMap.set(meter.meter, usage === 1 ? friendlyName : friendlyName + ' (' + usage + ')');
+                        } else {
+                            // No collision - use friendly name as-is
+                            friendlyNameMap.set(meter.meter, friendlyName);
+                        }
+                    });
+                    
+                    // Build datasets per meter
+                    top15Meters.forEach((meter, idx) => {
+                        // Filter out null/empty meter names
+                        if (!meter.meter || meter.meter.trim() === '') return; // Skip, will be in "Other"
+                        
+                        // Use intersection: activeRowIds ∩ index.byMeter.get(meter) - O(k) performance
+                        const meterIndexRows = engine.index.byMeter.get(meter.meter);
+                        if (!meterIndexRows) return;
+                        
+                        const meterRowIds = engine.intersectSets(activeRowIds, meterIndexRows);
+                        const meterTrend = engine.trendByDay(meterRowIds);
+                        const dayMap = new Map(meterTrend.map(d => [d.day, d.local]));
+                        
+                        // Use friendly name for label (canonical meterName used for aggregation/index lookup)
+                        const friendlyLabel = friendlyNameMap.get(meter.meter) || meter.meter;
+                        
+                        datasets.push({
+                            label: friendlyLabel,
+                            data: labels.map(day => dayMap.get(day) || 0),
+                            backgroundColor: chartColors[idx % chartColors.length],
+                            borderColor: chartColors[idx % chartColors.length],
+                            borderWidth: 1
+                        });
+                    });
+                    
+                    // Build day-level totals for "Other" calculation
+                    const trendForOther = engine.trendByDay(activeRowIds);
+                    const totalByDay = new Map(trendForOther.map(d => [d.day, d.local]));
+                    
+                    // Calculate "Other" per day (OPTIMIZED: use index loop, not indexOf)
+                    const otherData = [];
+                    for (let i = 0; i < labels.length; i++) {
+                        const day = labels[i];
+                        const totalDay = totalByDay.get(day) || 0;
+                        const top15Day = datasets.reduce((sum, ds) => {
+                            return sum + (Number(ds.data[i]) || 0);
+                        }, 0);
+                        // Clamp to avoid rounding issues (small negative values can occur)
+                        otherData.push(Math.max(0, totalDay - top15Day));
+                    }
+                    
+                    const otherTotal = otherData.reduce((sum, val) => sum + val, 0);
+                    if (otherTotal > 0.01) {
+                        datasets.push({
+                            label: 'Other',
+                            data: otherData,
+                            backgroundColor: 'rgba(128, 128, 128, 0.6)',
+                            borderColor: 'rgba(128, 128, 128, 0.8)',
+                            borderWidth: 1
+                        });
+                    }
+                    // NOTE: "Other" will be moved to end AFTER all sorting (see P4-8)
+                }
+            } else if (view === 'stacked-resource' || view === 'resource') {
+                // Resource breakdown - Top 15 resources with "Other" dataset
+                // Edge case: empty activeRowIds (RETURN EARLY)
+                if (activeRowIds.size === 0) {
+                    datasets = [{
+                        label: 'No data',
+                        data: labels.map(() => 0)
+                        // Minimalistisk: använd default chartColors[0] styling (ingen special styling)
+                    }];
+                    // CRITICAL: Skip all subsequent logic (no "Other" dataset, no sorting, etc.)
+                    // Continue to chart update below
+                } else {
+                    // Use groupByResource to get top resources
+                    const resources = engine.groupByResource(activeRowIds);
+                    
+                    // CRITICAL: Use spread operator to avoid mutating groupBy result (may be reused elsewhere)
+                    const sortedResources = [...resources].sort((a, b) => {
+                        const costDiff = b.local - a.local;
+                        if (costDiff !== 0) return costDiff;
+                        // Tie-breaker: alphabetical by resourceKey (canonical) for stability
+                        return (a.resourceKey || a.resourceId || '').localeCompare(b.resourceKey || b.resourceId || '');
+                    });
+                    const top15Resources = sortedResources.slice(0, 15);
+                    
+                    // Build friendly resource name mapping (use resourceName as friendly name, handle collisions)
+                    // Note: resourceName is already the friendly name displayed in tables
+                    // Since groupByResource groups by resourceId, collisions are unlikely, but we handle them for robustness
+                    const friendlyNameMap = new Map(); // canonical resourceKey -> friendly label (with collision handling)
+                    const friendlyNameCount = new Map(); // friendly name -> count of occurrences
+                    
+                    // First pass: collect resourceKeys and resourceNames, count occurrences
+                    top15Resources.forEach((resource) => {
+                        if (!resource.resourceId) return;
+                        
+                        // Get resourceKey and resourceName from factRows
+                        let resourceKey = null;
+                        let resourceName = null;
+                        for (const rowId of activeRowIds) {
+                            const row = factRows[rowId];
+                            if (row && row.resourceId === resource.resourceId) {
+                                resourceKey = row.resourceKey || row.resourceId;
+                                resourceName = row.resourceName || resource.resourceName || resourceKey;
+                                break;
+                            }
+                        }
+                        if (!resourceKey) resourceKey = resource.resourceId;
+                        if (!resourceName) resourceName = resource.resourceName || resource.resourceId || resourceKey || 'Unknown';
+                        
+                        // Track usage count for collision detection
+                        friendlyNameCount.set(resourceName, (friendlyNameCount.get(resourceName) || 0) + 1);
+                    });
+                    
+                    // Second pass: assign labels, suffixing duplicates if needed
+                    const friendlyNameUsage = new Map(); // friendly name -> usage counter
+                    top15Resources.forEach((resource) => {
+                        if (!resource.resourceId) return;
+                        
+                        // Get resourceKey and resourceName from factRows
+                        let resourceKey = null;
+                        let resourceName = null;
+                        for (const rowId of activeRowIds) {
+                            const row = factRows[rowId];
+                            if (row && row.resourceId === resource.resourceId) {
+                                resourceKey = row.resourceKey || row.resourceId;
+                                resourceName = row.resourceName || resource.resourceName || resourceKey;
+                                break;
+                            }
+                        }
+                        if (!resourceKey) resourceKey = resource.resourceId;
+                        if (!resourceName) resourceName = resource.resourceName || resource.resourceId || resourceKey || 'Unknown';
+                        
+                        const count = friendlyNameCount.get(resourceName);
+                        if (count > 1) {
+                            // Collision detected - suffix duplicates
+                            const usage = (friendlyNameUsage.get(resourceName) || 0) + 1;
+                            friendlyNameUsage.set(resourceName, usage);
+                            // First occurrence keeps original name, subsequent ones get numbered
+                            friendlyNameMap.set(resourceKey, usage === 1 ? resourceName : resourceName + ' (' + usage + ')');
+                        } else {
+                            // No collision - use friendly name as-is
+                            friendlyNameMap.set(resourceKey, resourceName);
+                        }
+                    });
+                    
+                    // Build datasets per resource
+                    top15Resources.forEach((resource, idx) => {
+                        // CANONICAL KEY (CRITICAL): Get resourceKey from factRows
+                        // groupByResource uses resourceId as key, but we need resourceKey for index lookup
+                        let resourceKey = null;
+                        for (const rowId of activeRowIds) {
+                            const row = factRows[rowId];
+                            if (row && row.resourceId === resource.resourceId) {
+                                resourceKey = row.resourceKey || row.resourceId;
+                                break;
+                            }
+                        }
+                        // If no resourceKey found, use resourceId as fallback
+                        if (!resourceKey) {
+                            resourceKey = resource.resourceId;
+                        }
+                        
+                        // Filter out null/empty resource keys
+                        if (!resourceKey || resourceKey.trim() === '') return; // Skip, will be in "Other"
+                        
+                        // CANONICAL KEY (CRITICAL): Use resourceKey consistently
+                        // Index lookup: byResourceKey (primär)
+                        let resourceIndexRows = engine.index.byResourceKey.get(resourceKey);
+                        
+                        // Fallback byResourceId: Använd bara om resourceKey saknas OCH indexet finns
+                        if (!resourceIndexRows && resource.resourceId && engine.index.byResourceId) {
+                            // Fallback: use byResourceId only if index exists
+                            resourceIndexRows = engine.index.byResourceId.get(resource.resourceId);
+                        }
+                        
+                        // If still no index, fall back to scanning activeRowIds per day
+                        if (!resourceIndexRows) {
+                            // Fallback: scan activeRowIds for this resource
+                            const resourceRowIds = new Set();
+                            activeRowIds.forEach(rowId => {
+                                const row = factRows[rowId];
+                                if (row && (row.resourceKey === resourceKey || row.resourceId === resource.resourceId)) {
+                                    resourceRowIds.add(rowId);
+                                }
+                            });
+                            
+                            if (resourceRowIds.size > 0) {
+                                const resourceTrend = engine.trendByDay(resourceRowIds);
+                                const dayMap = new Map(resourceTrend.map(d => [d.day, d.local]));
+                                
+                                // Use friendly name for label (same as displayed in tables, with collision handling)
+                                // resourceKey used for aggregation/index lookup, friendlyName for display
+                                const friendlyLabel = friendlyNameMap.get(resourceKey) || resourceKey || resource.resourceId || 'Unknown';
+                                
+                                datasets.push({
+                                    label: friendlyLabel,
+                                    data: labels.map(day => dayMap.get(day) || 0),
+                                    backgroundColor: chartColors[idx % chartColors.length],
+                                    borderColor: chartColors[idx % chartColors.length],
+                                    borderWidth: 1
+                                });
+                            }
+                            return;
+                        }
+                        
+                        // Use intersection: activeRowIds ∩ index.byResourceKey.get(resourceKey) - O(k) performance
+                        const resourceRowIds = engine.intersectSets(activeRowIds, resourceIndexRows);
+                        const resourceTrend = engine.trendByDay(resourceRowIds);
+                        const dayMap = new Map(resourceTrend.map(d => [d.day, d.local]));
+                        
+                        // Use friendly name for label (same as displayed in tables, with collision handling)
+                        // resourceKey used for aggregation/index lookup, friendlyName for display
+                        const friendlyLabel = friendlyNameMap.get(resourceKey) || resourceKey || resource.resourceId || 'Unknown';
+                        
+                        datasets.push({
+                            label: friendlyLabel,
+                            data: labels.map(day => dayMap.get(day) || 0),
+                            backgroundColor: chartColors[idx % chartColors.length],
+                            borderColor: chartColors[idx % chartColors.length],
+                            borderWidth: 1
+                        });
+                    });
+                    
+                    // Build day-level totals for "Other" calculation
+                    const trendForOther = engine.trendByDay(activeRowIds);
+                    const totalByDay = new Map(trendForOther.map(d => [d.day, d.local]));
+                    
+                    // Calculate "Other" per day (OPTIMIZED: use index loop, not indexOf)
+                    const otherData = [];
+                    for (let i = 0; i < labels.length; i++) {
+                        const day = labels[i];
+                        const totalDay = totalByDay.get(day) || 0;
+                        const top15Day = datasets.reduce((sum, ds) => {
+                            return sum + (Number(ds.data[i]) || 0);
+                        }, 0);
+                        // Clamp to avoid rounding issues (small negative values can occur)
+                        otherData.push(Math.max(0, totalDay - top15Day));
+                    }
+                    
+                    const otherTotal = otherData.reduce((sum, val) => sum + val, 0);
+                    if (otherTotal > 0.01) {
+                        datasets.push({
+                            label: 'Other',
+                            data: otherData,
+                            backgroundColor: 'rgba(128, 128, 128, 0.6)',
+                            borderColor: 'rgba(128, 128, 128, 0.8)',
+                            borderWidth: 1
+                        });
+                    }
+                    // NOTE: "Other" will be moved to end AFTER all sorting (see P4-8)
+                }
             } else {
                 // Fallback for other views - use total for now
                 datasets = [{
@@ -3341,6 +3804,20 @@ $datasetsByResourceJsonString
             const stacked = view !== 'total';
             if (stacked && Array.isArray(datasets) && datasets.length > 1) {
                 datasets.sort((a, b) => datasetTotal(b) - datasetTotal(a)); // DESC
+            }
+            
+            // P4-8: Move "Other" Dataset to End (After All Sorting)
+            // CRITICAL: Move "Other" to end of array (always last in stack, visually on top)
+            // This must happen AFTER all dataset sorting to ensure "Other" is always last
+            // IMPORTANT: Apply to all views that create "Other" dataset (all stacked views now use Top 15 + Other)
+            // to avoid moving a legitimate dataset that happens to be named "Other"
+            const viewsWithOther = ['stacked-category', 'category', 'stacked-subscription', 'subscription', 'stacked-meter', 'meter', 'stacked-resource', 'resource'];
+            if (viewsWithOther.includes(view)) {
+                const otherIndex = datasets.findIndex(ds => ds.label === 'Other');
+                if (otherIndex >= 0 && otherIndex < datasets.length - 1) {
+                    const otherDataset = datasets.splice(otherIndex, 1)[0];
+                    datasets.push(otherDataset);
+                }
             }
             
             // Update chart
@@ -3410,6 +3887,162 @@ $datasetsByResourceJsonString
         }
         
         // Visual update for resource selections (Phase 3: DOM-index/cache, optimized O(#val) instead of O(#DOM-nodes))
+        // P4-5: Central sync function for UI updates
+        // P4.1: Updated to include renderCostByMeterCategory() for pick-sensitive updates
+        // FIX: Re-render Cost by Meter Category but preserve expand/collapse state
+        function syncUIFromEngine(skipMeterCategoryRender) {
+            // Re-render Cost by Meter Category (preserves expand/collapse state via CSS classes)
+            // Only skip if explicitly requested (e.g., when only visual feedback changes)
+            if (!skipMeterCategoryRender && typeof renderCostByMeterCategory === 'function') {
+                // Save expand/collapse state before re-render
+                const expandedCategories = new Set();
+                const expandedSubcategories = new Set();
+                const expandedMeters = new Set();
+                
+                document.querySelectorAll('#meterCategoryDynamicRoot .category-card.expanded').forEach(card => {
+                    const catName = card.getAttribute('data-category');
+                    if (catName) expandedCategories.add(catName);
+                });
+                
+                document.querySelectorAll('#meterCategoryDynamicRoot .subcategory-drilldown.expanded').forEach(drilldown => {
+                    const subcatName = drilldown.getAttribute('data-subcategory');
+                    const catName = drilldown.getAttribute('data-category');
+                    if (subcatName && catName) {
+                        expandedSubcategories.add(catName + '|' + subcatName);
+                    }
+                });
+                
+                document.querySelectorAll('#meterCategoryDynamicRoot .meter-card.expanded').forEach(card => {
+                    const meterName = card.getAttribute('data-meter');
+                    const subcatName = card.getAttribute('data-subcategory');
+                    const catName = card.getAttribute('data-category');
+                    if (meterName && subcatName && catName) {
+                        expandedMeters.add(catName + '|' + subcatName + '|' + meterName);
+                    }
+                });
+                
+                // Re-render
+                renderCostByMeterCategory();
+                
+                // Restore expand/collapse state after re-render
+                setTimeout(() => {
+                    expandedCategories.forEach(catName => {
+                        // Use attribute selector with escaped value
+                        const cards = document.querySelectorAll('#meterCategoryDynamicRoot .category-card[data-category]');
+                        cards.forEach(card => {
+                            if (card.getAttribute('data-category') === catName) {
+                                card.classList.add('expanded');
+                            }
+                        });
+                    });
+                    
+                    expandedSubcategories.forEach(key => {
+                        const [catName, subcatName] = key.split('|');
+                        const drilldowns = document.querySelectorAll('#meterCategoryDynamicRoot .subcategory-drilldown[data-category][data-subcategory]');
+                        drilldowns.forEach(drilldown => {
+                            if (drilldown.getAttribute('data-category') === catName && 
+                                drilldown.getAttribute('data-subcategory') === subcatName) {
+                                drilldown.classList.add('expanded');
+                            }
+                        });
+                    });
+                    
+                    expandedMeters.forEach(key => {
+                        const [catName, subcatName, meterName] = key.split('|');
+                        const cards = document.querySelectorAll('#meterCategoryDynamicRoot .meter-card[data-category][data-subcategory][data-meter]');
+                        cards.forEach(card => {
+                            if (card.getAttribute('data-category') === catName && 
+                                card.getAttribute('data-subcategory') === subcatName &&
+                                card.getAttribute('data-meter') === meterName) {
+                                card.classList.add('expanded');
+                            }
+                        });
+                    });
+                }, 0);
+            }
+            
+            updateSummaryCards();
+            updateChart();
+            updateResourceSelectionVisual();
+            updateHeaderSelectionVisual();
+        }
+        
+        // P4-5: Update visual feedback for header filters (sync function)
+        // P4.1: Updated to work with both Cost Breakdown and Cost by Meter Category tables
+        function updateHeaderSelectionVisual() {
+            if (!engine) return;
+            
+            // Update category headers (SCOPED to header elements only - works for both tables)
+            // Cost Breakdown uses .expandable__header.category-header, Meter Category uses .category-header
+            document.querySelectorAll('.expandable__header.category-header[data-category], .category-header[data-category]').forEach(element => {
+                const category = element.getAttribute('data-category');
+                if (engine.state.picks.categories.has(category)) {
+                    element.classList.add('filter-selected');
+                } else {
+                    element.classList.remove('filter-selected');
+                }
+            });
+            
+            // Update subcategory headers (SCOPED + match composite key OR global key - works for both tables)
+            // Cost Breakdown uses .expandable__header.subcategory-header, Meter Category uses .subcategory-header
+            document.querySelectorAll('.expandable__header.subcategory-header[data-subcategory][data-category][data-subscription-id], .subcategory-header[data-subcategory][data-category][data-subscription-id]').forEach(element => {
+                const subcategory = element.getAttribute('data-subcategory');
+                const category = element.getAttribute('data-category');
+                const subscriptionId = element.getAttribute('data-subscription-id') || '';
+                
+                // FIX: Check both composite key (subscriptionId|category|subcategory) and global key (category|subcategory)
+                const compositeKey = subscriptionId ? (subscriptionId + '|' + category + '|' + subcategory) : null;
+                const globalKey = category + '|' + subcategory;
+                
+                // Match if either key is in picks
+                const isSelected = (compositeKey && engine.state.picks.subcategories.has(compositeKey)) ||
+                                 engine.state.picks.subcategories.has(globalKey);
+                
+                if (isSelected) {
+                    element.classList.add('filter-selected');
+                } else {
+                    element.classList.remove('filter-selected');
+                }
+            });
+            
+            // Update meter headers (SCOPED to header elements only - works for both tables)
+            // Cost Breakdown uses .expandable__header.meter-header, Meter Category uses .meter-header
+            document.querySelectorAll('.expandable__header.meter-header[data-meter], .meter-header[data-meter]').forEach(element => {
+                const meter = element.getAttribute('data-meter');
+                if (engine.state.picks.meterNames.has(meter)) {
+                    element.classList.add('filter-selected');
+                } else {
+                    element.classList.remove('filter-selected');
+                }
+            });
+        }
+        
+        // P4.1: Common refresh function that updates all UI from engine state
+        function refreshFromEngine() {
+            // Re-render Cost by Meter Category (now pick-sensitive)
+            if (typeof renderCostByMeterCategory === 'function') {
+                renderCostByMeterCategory();
+            }
+            
+            // Update chart
+            if (typeof updateChart === 'function') {
+                updateChart();
+            }
+            
+            // Update summary cards
+            if (typeof updateSummaryCards === 'function') {
+                updateSummaryCards();
+            }
+            
+            // Update selection visuals (headers and resources)
+            if (typeof updateHeaderSelectionVisual === 'function') {
+                updateHeaderSelectionVisual();
+            }
+            if (typeof updateResourceSelectionVisual === 'function') {
+                updateResourceSelectionVisual();
+            }
+        }
+        
         function updateResourceSelectionVisual() {
             // Use window.domIndex if available (global), otherwise fallback to local domIndex
             const domIdx = window.domIndex || domIndex;
@@ -3491,20 +4124,18 @@ $datasetsByResourceJsonString
             engine.state.picks.resourceGroups.clear();
             engine.state.picks.meterNames.clear();
             engine.state.picks.categories.clear();
+            engine.state.picks.subcategories.clear();
             
             // C) Run refresh pipeline after selection change
-            // Note: Meter Category is scope-only, so we don't re-render it on picks
-            // (renderCostByMeterCategory() is not called here)
+            // FIX: Check if resource click is in Cost by Meter Category section
+            // If so, skip re-render to preserve expand/collapse state (costs are already calculated from activeRowIds)
+            const isInMeterCategory = row.closest('#meterCategoryDynamicRoot') !== null;
             
             // Re-index DOM (in case rows were added/removed)
             initDomIndex();
             
-            // Update visual state from engine
-            updateResourceSelectionVisual();
-            
-            // Update summary and chart
-            updateSummaryCards();
-            updateChart();
+            // Sync UI from engine state (skip meter category re-render if click is in that section)
+            syncUIFromEngine(isInMeterCategory);
             
             // Debug logging (Phase 3)
             if (window.DEBUG_COST_REPORT) {
@@ -4570,7 +5201,7 @@ $datasetsByResourceJsonString
             }
             
             // Safety check: ensure engine and factRows are initialized
-            if (!engine || typeof engine.getScopeRowIds !== 'function') {
+            if (!engine || typeof engine.getActiveRowIds !== 'function') {
                 console.warn('Engine not ready, skipping renderCostByMeterCategory');
                 return;
             }
@@ -4581,7 +5212,8 @@ $datasetsByResourceJsonString
                 return;
             }
             
-            // Get scope-only rows (Bug 2 fix: Meter Category ignores picks, only uses scope)
+            // P4.1 FIX: Use scope-only for building structure (show all categories), but apply picks for filtering content
+            // This ensures all categories are visible, but only selected items are highlighted/filtered
             let scopeRowIds;
             try {
                 scopeRowIds = engine.getScopeRowIds();
@@ -4591,21 +5223,35 @@ $datasetsByResourceJsonString
                 return;
             }
             
-            // Safety check: ensure we have a valid Set
+            // Get activeRowIds for filtering (scope + picks) - used to determine which rows to include in aggregation
+            let activeRowIds;
+            try {
+                activeRowIds = engine.getActiveRowIds();
+            } catch (error) {
+                console.error('Error calling engine.getActiveRowIds():', error);
+                activeRowIds = scopeRowIds; // Fallback to scope-only
+            }
+            
+            // Safety check: ensure we have valid Sets
             if (!scopeRowIds || !(scopeRowIds instanceof Set)) {
                 console.error('engine.getScopeRowIds() did not return a Set:', scopeRowIds);
                 container.innerHTML = '<p>Error: Invalid data structure.</p>';
                 return;
             }
+            if (!activeRowIds || !(activeRowIds instanceof Set)) {
+                activeRowIds = scopeRowIds; // Fallback
+            }
             
-            // Debug: log scope state for troubleshooting
+            // Debug: log state for troubleshooting
             if (window.DEBUG_COST_REPORT) {
                 console.debug('renderCostByMeterCategory:', {
                     scopeRowIdsSize: scopeRowIds.size,
+                    activeRowIdsSize: activeRowIds.size,
                     scopeSubscriptionIds: Array.from(engine.state.scope.subscriptionIds),
-                    factRowsLength: factRows ? factRows.length : 0,
-                    hasEngine: !!engine,
-                    hasGetScopeRowIds: typeof engine.getScopeRowIds === 'function'
+                    picksCategories: Array.from(engine.state.picks.categories),
+                    picksSubcategories: Array.from(engine.state.picks.subcategories),
+                    picksMeterNames: Array.from(engine.state.picks.meterNames),
+                    factRowsLength: factRows ? factRows.length : 0
                 });
             }
             
@@ -4615,18 +5261,9 @@ $datasetsByResourceJsonString
                 if (!factRows || factRows.length === 0) {
                     container.innerHTML = '<p>No cost data available.</p>';
                 } else {
-                    // This shouldn't happen at initial load (no filters = all rows should be returned)
-                    // Fallback: try to render with all factRows as a last resort
-                    console.warn('renderCostByMeterCategory: scopeRowIds is empty but factRows exist. Using all factRows as fallback.');
-                    // Create a Set with all row indices as fallback
-                    const fallbackRowIds = new Set(factRows.map((_, i) => i));
-                    if (fallbackRowIds.size > 0) {
-                        // Use fallback and continue rendering
-                        scopeRowIds = fallbackRowIds;
-                    } else {
-                        container.innerHTML = '<p>No data available for selected filters.</p>';
+                    // This can happen when scope filters exclude all data
+                    container.innerHTML = '<p>No data available for selected subscription filter.</p>';
                         return;
-                    }
                 }
             }
             
@@ -4637,8 +5274,10 @@ $datasetsByResourceJsonString
             }
             
             // Build hierarchy: Category -> SubCategory -> Meter -> Resource (aggregated by resourceKey)
+            // Use scopeRowIds to build structure (all categories visible), but activeRowIds to filter content
             const categoryMap = new Map();
             
+            // Build structure from scope (so all categories are visible)
             scopeRowIds.forEach(rowId => {
                 const row = factRows[rowId];
                 if (!row) return;
@@ -4646,16 +5285,8 @@ $datasetsByResourceJsonString
                 const catName = row.meterCategory || '(Unknown Category)';
                 const subCatName = row.meterSubcategory || '(Unknown Subcategory)';
                 const meterName = row.meterName || '(Unknown Meter)';
-                const resourceKey = row.resourceKey || '';
-                const resourceId = row.resourceId || '';
-                const resourceName = row.resourceName || 'Unknown';
-                const resourceGroup = row.resourceGroup || 'N/A';
-                const subscriptionId = row.subscriptionId || '';
-                const subscriptionName = row.subscriptionName || 'N/A';
-                const costLocal = parseFloat(row.costLocal) || 0;
-                const costUSD = parseFloat(row.costUSD) || 0;
                 
-                // Get or create category
+                // Get or create category (structure only - costs calculated separately)
                 if (!categoryMap.has(catName)) {
                     categoryMap.set(catName, {
                         name: catName,
@@ -4665,8 +5296,6 @@ $datasetsByResourceJsonString
                     });
                 }
                 const category = categoryMap.get(catName);
-                category.costLocal += costLocal;
-                category.costUSD += costUSD;
                 
                 // Get or create subcategory
                 if (!category.subCategories.has(subCatName)) {
@@ -4678,8 +5307,6 @@ $datasetsByResourceJsonString
                     });
                 }
                 const subCategory = category.subCategories.get(subCatName);
-                subCategory.costLocal += costLocal;
-                subCategory.costUSD += costUSD;
                 
                 // Get or create meter
                 if (!subCategory.meters.has(meterName)) {
@@ -4692,26 +5319,57 @@ $datasetsByResourceJsonString
                     });
                 }
                 const meter = subCategory.meters.get(meterName);
-                meter.costLocal += costLocal;
-                meter.costUSD += costUSD;
-                meter.recordCount++;
                 
-                // Aggregate resources by resourceKey
-                if (!meter.resources.has(resourceKey)) {
+                // Get or create resource (structure only)
+                const resourceKey = row.resourceKey || '';
+                if (resourceKey && !meter.resources.has(resourceKey)) {
                     meter.resources.set(resourceKey, {
                         resourceKey: resourceKey,
-                        resourceId: resourceId,
-                        resourceName: resourceName,
-                        resourceGroup: resourceGroup,
-                        subscriptionId: subscriptionId,
-                        subscriptionName: subscriptionName,
+                        resourceId: row.resourceId || '',
+                        resourceName: row.resourceName || 'Unknown',
+                        resourceGroup: row.resourceGroup || 'N/A',
+                        subscriptionId: row.subscriptionId || '',
+                        subscriptionName: row.subscriptionName || 'N/A',
                         costLocal: 0,
                         costUSD: 0
                     });
                 }
+            });
+            
+            // Now calculate costs from activeRowIds (scope + picks) - this filters content but keeps structure
+            activeRowIds.forEach(rowId => {
+                const row = factRows[rowId];
+                if (!row) return;
+                
+                const catName = row.meterCategory || '(Unknown Category)';
+                const subCatName = row.meterSubcategory || '(Unknown Subcategory)';
+                const meterName = row.meterName || '(Unknown Meter)';
+                const resourceKey = row.resourceKey || '';
+                const costLocal = parseFloat(row.costLocal) || 0;
+                const costUSD = parseFloat(row.costUSD) || 0;
+                
+                // Only add costs if structure exists (from scope)
+                if (!categoryMap.has(catName)) return;
+                const category = categoryMap.get(catName);
+                category.costLocal += costLocal;
+                category.costUSD += costUSD;
+                
+                if (!category.subCategories.has(subCatName)) return;
+                const subCategory = category.subCategories.get(subCatName);
+                subCategory.costLocal += costLocal;
+                subCategory.costUSD += costUSD;
+                
+                if (!subCategory.meters.has(meterName)) return;
+                const meter = subCategory.meters.get(meterName);
+                meter.costLocal += costLocal;
+                meter.costUSD += costUSD;
+                meter.recordCount++;
+                
+                if (resourceKey && meter.resources.has(resourceKey)) {
                 const resource = meter.resources.get(resourceKey);
                 resource.costLocal += costLocal;
                 resource.costUSD += costUSD;
+                }
             });
             
             // Sort and render: Categories (desc by costLocal), then SubCategories, then Meters, then Resources
@@ -4793,7 +5451,7 @@ $datasetsByResourceJsonString
                         if (hasResources) {
                             meterCardsHtml += '<div class="meter-card" data-meter="' + meterNameEncoded + 
                                 '" data-subcategory="' + subCatNameEncoded + '" data-category="' + catNameEncoded + '">' +
-                                '<div class="meter-header" data-meter="' + meterNameEncoded + '" data-subcategory="' + subCatNameEncoded + 
+                                '<div class="expandable__header meter-header" data-meter="' + meterNameEncoded + '" data-subcategory="' + subCatNameEncoded + 
                                 '" data-category="' + catNameEncoded + '" onclick="handleMeterSelection(this, event)" ' +
                                 'style="display: flex; align-items: center; justify-content: space-between;">' +
                                 '<span class="expand-arrow">&#9654;</span>' +
@@ -4813,7 +5471,8 @@ $datasetsByResourceJsonString
                                 '" data-subcategory="' + subCatNameEncoded + '" data-category="' + catNameEncoded + '">' +
                                 '<div class="expandable__header meter-header" data-meter="' + meterNameEncoded + 
                                 '" data-subcategory="' + subCatNameEncoded + '" data-category="' + catNameEncoded + 
-                                '" style="display: flex; align-items: center; justify-content: space-between;">' +
+                                '" onclick="handleMeterSelection(this, event)" ' +
+                                'style="display: flex; align-items: center; justify-content: space-between;">' +
                                 '<span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">' + meterNameEncoded + '</span>' +
                                 '<span class="meter-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">' +
                                 currency + ' ' + meterCostLocalFormatted + ' ($' + meterCostUSDFormatted + ')</span>' +
@@ -4821,10 +5480,11 @@ $datasetsByResourceJsonString
                         }
                     });
                     
+                    // P4.1: Subcategory header needs subscriptionId for composite key (use empty string for Meter Category section)
                     subCatHtml += '<div class="subcategory-drilldown" data-subcategory="' + subCatNameEncoded + 
                         '" data-category="' + catNameEncoded + '">' +
                         '<div class="expandable__header subcategory-header" data-subcategory="' + subCatNameEncoded + 
-                        '" data-category="' + catNameEncoded + '" onclick="handleSubcategorySelection(this, event)" ' +
+                        '" data-category="' + catNameEncoded + '" data-subscription-id="" onclick="handleSubcategorySelection(this, event)" ' +
                         'style="display: flex; align-items: center; justify-content: space-between;">' +
                         '<span class="expand-arrow">&#9654;</span>' +
                         '<span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">' + subCatNameEncoded + '</span>' +
@@ -4834,8 +5494,9 @@ $datasetsByResourceJsonString
                         '<div class="subcategory-content" style="display: none !important;">' + meterCardsHtml + '</div></div>';
                 });
                 
+                // P4.1: Category header needs expandable__header class for visual sync to work
                 html += '<div class="category-card collapsed" data-category="' + catNameEncoded + '">' +
-                    '<div class="category-header collapsed" data-category="' + catNameEncoded + 
+                    '<div class="expandable__header category-header collapsed" data-category="' + catNameEncoded + 
                     '" onclick="handleCategorySelection(this, event)">' +
                     '<span class="expand-arrow">&#9654;</span>' +
                     '<span class="category-title">' + catNameEncoded + '</span>' +
@@ -5731,11 +6392,9 @@ $datasetsByResourceJsonString
                 Object.values(engine.state.picks).forEach(s => s && s.clear && s.clear());
             }
             
-            // Update visuals + data
+            // Update visuals + data using central sync function
             updateChartSelectionsVisual();
-            updateResourceSelectionVisual();
-            updateSummaryCards();
-            updateChart();
+            syncUIFromEngine();
             updateClearSelectionsButtonVisibility();
         }
         
@@ -5763,18 +6422,22 @@ $datasetsByResourceJsonString
                 event.preventDefault();
                 event.stopPropagation();
                 const category = getCategoryFromElement(element);
-                const subscription = getSubscriptionFromElement(element);
-                // Normalize subscription: use empty string for null/undefined (Cost by Meter Category section)
-                const subKey = subscription || '';
-                if (category) {
-                    const key = createSelectionKey(category, subKey);
-                    const isSelected = chartSelections.categories.has(category) && 
-                                     chartSelections.categories.get(category).has(subKey);
-                    if (isSelected) {
-                        deselectCategory(category, subscription);
-                    } else {
-                        selectCategory(category, subscription);
-                    }
+                if (category && engine) {
+                    // P4-4: STRICT POLICY (SYMMETRIC) - Clear other pick dimensions (behåll categories)
+                    engine.state.picks.subcategories.clear();
+                    engine.state.picks.meterNames.clear();
+                    // Clear all resource picks (canonical: resourceKeys is primary, others are legacy/back-compat)
+                    engine.state.picks.resourceKeys.clear();
+                    engine.state.picks.resourceIds.clear();      // Legacy
+                    engine.state.picks.resourceNames.clear();    // Legacy
+                    engine.state.picks.resourceGroups.clear();   // Legacy
+                    // Keep: categories (for multi-select within level)
+                    
+                    // Toggle category pick
+                    engine.togglePick('categories', category, 'toggle');
+                    
+                    // Sync UI from engine state (skip meter category re-render to preserve expand/collapse state)
+                    syncUIFromEngine(true);
                 }
                 return false;
             }
@@ -5787,18 +6450,31 @@ $datasetsByResourceJsonString
             if (event && (event.ctrlKey || event.metaKey)) {
                 event.preventDefault();
                 event.stopPropagation();
-                const subcategory = getSubcategoryFromElement(element);
-                const category = getCategoryFromElement(element);
-                const subscription = getSubscriptionFromElement(element);
-                if (subcategory) {
-                    const key = createSelectionKey(category, subscription);
-                    const isSelected = chartSelections.subcategories.has(subcategory) && 
-                                     chartSelections.subcategories.get(subcategory).has(key);
-                    if (isSelected) {
-                        deselectSubcategory(subcategory, category, subscription);
-                    } else {
-                        selectSubcategory(subcategory, category, subscription);
-                    }
+                const subcategory = element.getAttribute('data-subcategory');
+                const category = element.getAttribute('data-category');
+                const subscriptionId = element.getAttribute('data-subscription-id') || '';
+                if (subcategory && category && engine) {
+                    // FIX: Build key based on context
+                    // If subscriptionId is empty (Meter Category section), use global key: category|subcategory
+                    // Otherwise, use composite key: subscriptionId|category|subcategory
+                    const subcatKey = subscriptionId ? 
+                        (subscriptionId + '|' + category + '|' + subcategory) :  // Cost Breakdown: subscription-scoped
+                        (category + '|' + subcategory);  // Meter Category: global
+                    
+                    // P4-4: STRICT POLICY (SYMMETRIC) - Clear other pick dimensions (behåll subcategories)
+                    engine.state.picks.categories.clear();
+                    engine.state.picks.meterNames.clear();
+                    engine.state.picks.resourceKeys.clear();
+                    engine.state.picks.resourceIds.clear();
+                    engine.state.picks.resourceNames.clear();
+                    engine.state.picks.resourceGroups.clear();
+                    // Keep: subcategories (for multi-select within level)
+                    
+                    // Toggle subcategory pick
+                    engine.togglePick('subcategories', subcatKey, 'toggle');
+                    
+                    // Sync UI from engine state (skip meter category re-render to preserve expand/collapse state)
+                    syncUIFromEngine(true);
                 }
                 return false;
             }
@@ -5811,19 +6487,22 @@ $datasetsByResourceJsonString
             if (event && (event.ctrlKey || event.metaKey)) {
                 event.preventDefault();
                 event.stopPropagation();
-                const meter = getMeterFromElement(element);
-                const subcategory = getSubcategoryFromElement(element);
-                const category = getCategoryFromElement(element);
-                const subscription = getSubscriptionFromElement(element);
-                if (meter) {
-                    const key = createSelectionKey(subcategory, category, subscription);
-                    const isSelected = chartSelections.meters.has(meter) && 
-                                     chartSelections.meters.get(meter).has(key);
-                    if (isSelected) {
-                        deselectMeter(meter, subcategory, category, subscription);
-                    } else {
-                        selectMeter(meter, subcategory, category, subscription);
-                    }
+                const meter = element.getAttribute('data-meter');
+                if (meter && engine) {
+                    // P4-4: STRICT POLICY (SYMMETRIC) - Clear other pick dimensions (behåll meterNames)
+                    engine.state.picks.categories.clear();
+                    engine.state.picks.subcategories.clear();
+                    engine.state.picks.resourceKeys.clear();
+                    engine.state.picks.resourceIds.clear();
+                    engine.state.picks.resourceNames.clear();
+                    engine.state.picks.resourceGroups.clear();
+                    // Keep: meterNames (for multi-select within level)
+                    
+                    // Toggle meter pick
+                    engine.togglePick('meterNames', meter, 'toggle');
+                    
+                    // Sync UI from engine state (skip meter category re-render to preserve expand/collapse state)
+                    syncUIFromEngine(true);
                 }
                 return false;
             }

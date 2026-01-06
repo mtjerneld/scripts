@@ -446,3 +446,9 @@ h3[onclick],
     border-left: 3px solid var(--accent-blue) !important;
 }
 
+/* P4-5: Visual feedback for header filters */
+.filter-selected {
+    background-color: rgba(84, 160, 255, 0.2) !important;
+    border-left: 3px solid rgba(84, 160, 255, 0.8) !important;
+}
+
