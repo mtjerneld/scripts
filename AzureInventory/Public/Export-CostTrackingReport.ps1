@@ -1450,7 +1450,7 @@ $categoryHtml
                 
                 $subCatHtml += @"
                         <div class="subcategory-drilldown" data-subcategory="$subCatNameEncoded" data-category="$catName">
-                            <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catName" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
+                            <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catName" data-subcategory-key="$catName|$subCatNameEncoded" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$subCatName</span>
                                 <span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $subCatCostLocal (`$$subCatCostUSD)</span>
@@ -1639,7 +1639,7 @@ $subCatHtml
                     
                     $subCatHtml += @"
                         <div class="subcategory-drilldown" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
-                            <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
+                            <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" data-subcategory-key="$subIdEncoded|$catNameEncoded|$subCatNameEncoded" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$subCatNameEncoded</span>
                                 <span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $subCatCostLocalRounded (`$$subCatCostUSDRounded)</span>
@@ -2173,24 +2173,13 @@ $datasetsByResourceJsonString
                     });
                 }
                 
-                // P4-3: Subcategory picks (composite key = subscriptionId|category|subcategory OR category|subcategory for global)
-                // FIX: Handle both composite (subscription-scoped) and global (category|subcategory) keys
+                // P4-3: Subcategory picks (REVERT: scoped keys = subscriptionId|category|subcategory)
+                // Use scoped index for subcategory picks
                 if (state.picks.subcategories.size > 0) {
                     state.picks.subcategories.forEach(subcatKey => {
-                        // Simple check: if key has exactly 2 parts (category|subcategory), it's a global key
-                        // If it has 3 parts (subscriptionId|category|subcategory), it's a composite key
-                        const parts = subcatKey.split('|');
-                        const isGlobalKey = parts.length === 2;
-                        
-                        if (isGlobalKey) {
-                            // Global key: category|subcategory (for Meter Category section)
-                            const rows = index.bySubcategoryGlobal.get(subcatKey);
-                            if (rows) pickedSets.push(rows);
-                        } else {
-                            // Composite key: subscriptionId|category|subcategory (for Cost Breakdown)
-                            const rows = index.bySubcategory.get(subcatKey);
-                            if (rows) pickedSets.push(rows);
-                        }
+                        // Scoped key: subscriptionId|category|subcategory
+                        const rows = index.bySubcategory.get(subcatKey);
+                        if (rows) pickedSets.push(rows);
                     });
                 }
                 
@@ -2216,6 +2205,10 @@ $datasetsByResourceJsonString
                     console.warn('Unknown pick dimension:', dimension);
                     return;
                 }
+                
+                // REVERT: No canonicalization - use scoped keys as-is
+                // Subcategories use subscriptionId|category|subcategory (scoped)
+                // Categories and meters can also be scoped if needed
                 
                 if (mode === 'replace') {
                     pickSet.clear();
@@ -2376,6 +2369,19 @@ $datasetsByResourceJsonString
                     .sort((a, b) => b.local - a.local);
             }
             
+            // Helper: Get active resource keys from activeRowIds (for Meter Category resource highlighting)
+            function getActiveResourceKeys() {
+                const activeIds = getActiveRowIds();
+                const resourceKeys = new Set();
+                activeIds.forEach(rowId => {
+                    const row = factRows[rowId];
+                    if (row && row.resourceKey) {
+                        resourceKeys.add(row.resourceKey);
+                    }
+                });
+                return resourceKeys;
+            }
+            
             return {
                 state,
                 index,
@@ -2388,6 +2394,7 @@ $datasetsByResourceJsonString
                 clearScope,
                 getScopeRowIds,  // Expose for Meter Category (scope-only, ignores picks)
                 getActiveRowIds,
+                getActiveResourceKeys,  // Expose for Meter Category resource highlighting
                 sumCosts,
                 trendByDay,
                 groupByResource,
@@ -3983,24 +3990,29 @@ $datasetsByResourceJsonString
                 }
             });
             
-            // Update subcategory headers (SCOPED + match composite key OR global key - works for both tables)
-            // Cost Breakdown uses .expandable__header.subcategory-header, Meter Category uses .subcategory-header
-            document.querySelectorAll('.expandable__header.subcategory-header[data-subcategory][data-category][data-subscription-id], .subcategory-header[data-subcategory][data-category][data-subscription-id]').forEach(element => {
-                const subcategory = element.getAttribute('data-subcategory');
-                const category = element.getAttribute('data-category');
-                const subscriptionId = element.getAttribute('data-subscription-id') || '';
+            // Update subcategory headers (REVERT: scoped picks = subscriptionId|category|subcategory)
+            // Cost Breakdown: match scoped keys (subscriptionId|category|subcategory)
+            // Meter Category: DON'T mark headers (scoped picks don't apply to global headers)
+            document.querySelectorAll('.expandable__header.subcategory-header[data-subcategory-key]').forEach(element => {
+                // Only mark Cost Breakdown headers (those with subscriptionId in key)
+                // Meter Category headers should NOT be marked by scoped picks
+                const scopedKey = element.getAttribute('data-subcategory-key');
+                if (!scopedKey) return;
                 
-                // FIX: Check both composite key (subscriptionId|category|subcategory) and global key (category|subcategory)
-                const compositeKey = subscriptionId ? (subscriptionId + '|' + category + '|' + subcategory) : null;
-                const globalKey = category + '|' + subcategory;
+                // Check if this is a Cost Breakdown header (has subscriptionId in key = 3 parts)
+                const parts = scopedKey.split('|');
+                const isCostBreakdown = parts.length === 3; // subscriptionId|category|subcategory
                 
-                // Match if either key is in picks
-                const isSelected = (compositeKey && engine.state.picks.subcategories.has(compositeKey)) ||
-                                 engine.state.picks.subcategories.has(globalKey);
-                
-                if (isSelected) {
-                    element.classList.add('filter-selected');
+                if (isCostBreakdown) {
+                    // Match scoped key against engine picks
+                    const isSelected = engine.state.picks.subcategories.has(scopedKey);
+                    if (isSelected) {
+                        element.classList.add('filter-selected');
+                    } else {
+                        element.classList.remove('filter-selected');
+                    }
                 } else {
+                    // Meter Category header (global key) - don't mark from scoped picks
                     element.classList.remove('filter-selected');
                 }
             });
@@ -5336,6 +5348,9 @@ $datasetsByResourceJsonString
                 }
             });
             
+            // Get active resource keys for highlighting (resources that are affected by current filters)
+            const activeResourceKeys = engine.getActiveResourceKeys();
+            
             // Now calculate costs from activeRowIds (scope + picks) - this filters content but keeps structure
             activeRowIds.forEach(rowId => {
                 const row = factRows[rowId];
@@ -5424,8 +5439,12 @@ $datasetsByResourceJsonString
                                 const resCostLocalFormatted = formatNumber(resource.costLocal);
                                 const resCostUSDFormatted = formatNumber(resource.costUSD);
                                 
+                                // Check if this resource is in activeRowIds (affected by current filters)
+                                const isActive = activeResourceKeys.has(resource.resourceKey);
+                                const activeClass = isActive ? ' filter-selected' : '';
+                                
                                 // Build attributes: always data-resource-key, data-resource-id only if ResourceId exists
-                                let attr = 'class="clickable" data-resource-key="' + resourceKeyEncoded + '"';
+                                let attr = 'class="clickable' + activeClass + '" data-resource-key="' + resourceKeyEncoded + '"';
                                 if (resIdEncoded) {
                                     attr += ' data-resource-id="' + resIdEncoded + '"';
                                 }
@@ -5480,11 +5499,13 @@ $datasetsByResourceJsonString
                         }
                     });
                     
-                    // P4.1: Subcategory header needs subscriptionId for composite key (use empty string for Meter Category section)
+                    // Meter Category: Subcategory header (no subscriptionId, global key for Meter Category section)
+                    // Note: Meter Category headers should NOT be marked by scoped picks
+                    const globalSubcatKey = catNameEncoded + '|' + subCatNameEncoded; // Global key (not scoped)
                     subCatHtml += '<div class="subcategory-drilldown" data-subcategory="' + subCatNameEncoded + 
                         '" data-category="' + catNameEncoded + '">' +
                         '<div class="expandable__header subcategory-header" data-subcategory="' + subCatNameEncoded + 
-                        '" data-category="' + catNameEncoded + '" data-subscription-id="" onclick="handleSubcategorySelection(this, event)" ' +
+                        '" data-category="' + catNameEncoded + '" data-subscription-id="" data-subcategory-key="' + globalSubcatKey + '" onclick="handleSubcategorySelection(this, event)" ' +
                         'style="display: flex; align-items: center; justify-content: space-between;">' +
                         '<span class="expand-arrow">&#9654;</span>' +
                         '<span class="subcategory-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">' + subCatNameEncoded + '</span>' +
@@ -6454,12 +6475,16 @@ $datasetsByResourceJsonString
                 const category = element.getAttribute('data-category');
                 const subscriptionId = element.getAttribute('data-subscription-id') || '';
                 if (subcategory && category && engine) {
-                    // FIX: Build key based on context
-                    // If subscriptionId is empty (Meter Category section), use global key: category|subcategory
-                    // Otherwise, use composite key: subscriptionId|category|subcategory
-                    const subcatKey = subscriptionId ? 
-                        (subscriptionId + '|' + category + '|' + subcategory) :  // Cost Breakdown: subscription-scoped
-                        (category + '|' + subcategory);  // Meter Category: global
+                    // REVERT: Use scoped key (subscriptionId|category|subcategory) for Cost Breakdown
+                    // For Meter Category section (no subscriptionId), skip pick (or use global key if needed)
+                    // For now, only allow scoped picks from Cost Breakdown
+                    if (!subscriptionId) {
+                        // Meter Category section - don't set scoped picks here
+                        // (Meter Category will highlight resources instead)
+                        return false;
+                    }
+                    
+                    const scopedKey = subscriptionId + '|' + category + '|' + subcategory;
                     
                     // P4-4: STRICT POLICY (SYMMETRIC) - Clear other pick dimensions (behåll subcategories)
                     engine.state.picks.categories.clear();
@@ -6470,8 +6495,8 @@ $datasetsByResourceJsonString
                     engine.state.picks.resourceGroups.clear();
                     // Keep: subcategories (for multi-select within level)
                     
-                    // Toggle subcategory pick
-                    engine.togglePick('subcategories', subcatKey, 'toggle');
+                    // Toggle subcategory pick (scoped: subscriptionId|category|subcategory)
+                    engine.togglePick('subcategories', scopedKey, 'toggle');
                     
                     // Sync UI from engine state (skip meter category re-render to preserve expand/collapse state)
                     syncUIFromEngine(true);
