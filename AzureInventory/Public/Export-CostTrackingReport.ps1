@@ -1703,6 +1703,69 @@ $categoryHtml
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <style>
 $(Get-ReportStylesheet)
+        
+        /* Pick-selected (BLUE) - explicit user picks */
+        .pick-selected,
+        .category-header.pick-selected,
+        .subcategory-header.pick-selected,
+        .meter-header.pick-selected,
+        .cost-table tbody tr.pick-selected,
+        .resource-table tbody tr.pick-selected {
+            background-color: rgba(84, 160, 255, 0.25) !important;
+            border-left: 3px solid var(--accent-blue) !important;
+        }
+        
+        /* Cross-selected (YELLOW) - rows affected by current results */
+        .cross-selected,
+        .cost-table tbody tr.cross-selected,
+        .resource-table tbody tr.cross-selected {
+            background-color: rgba(254, 202, 87, 0.2) !important;
+            border-left: 2px solid var(--accent-yellow) !important;
+        }
+        
+        /* Blue replaces yellow - when both are present, only blue shows */
+        .pick-selected.cross-selected,
+        .category-header.pick-selected.cross-selected,
+        .subcategory-header.pick-selected.cross-selected,
+        .meter-header.pick-selected.cross-selected,
+        .cost-table tbody tr.pick-selected.cross-selected,
+        .resource-table tbody tr.pick-selected.cross-selected {
+            background-color: rgba(84, 160, 255, 0.25) !important;
+            border-left: 3px solid var(--accent-blue) !important;
+        }
+        
+        /* Selection legend */
+        .selection-legend {
+            display: flex;
+            gap: 16px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 8px;
+            margin-bottom: 12px;
+        }
+        
+        .selection-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .selection-legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+        
+        .selection-legend-color.pick {
+            background-color: rgba(84, 160, 255, 0.25);
+            border-left: 3px solid var(--accent-blue);
+        }
+        
+        .selection-legend-color.cross {
+            background-color: rgba(254, 202, 87, 0.2);
+            border-left: 2px solid var(--accent-yellow);
+        }
     </style>
 </head>
 <body>
@@ -1792,6 +1855,16 @@ $subscriptionOptionsHtml
         
         <div class="section-box">
             <h2>Cost Breakdown</h2>
+            <div class="selection-legend">
+                <div class="selection-legend-item">
+                    <div class="selection-legend-color pick"></div>
+                    <span>Blue = selection</span>
+                </div>
+                <div class="selection-legend-item">
+                    <div class="selection-legend-color cross"></div>
+                    <span>Yellow = affected by selection</span>
+                </div>
+            </div>
             <div class="expandable expandable--collapsed">
                 <div class="expandable__header" onclick="toggleSection(this)">
                     <div class="expandable__title">
@@ -1812,6 +1885,16 @@ $subscriptionSectionsHtml
                     </div>
                 </div>
                 <div class="expandable__content">
+                    <div class="selection-legend">
+                        <div class="selection-legend-item">
+                            <div class="selection-legend-color pick"></div>
+                            <span>Blue = selection</span>
+                        </div>
+                        <div class="selection-legend-item">
+                            <div class="selection-legend-color cross"></div>
+                            <span>Yellow = affected by selection</span>
+                        </div>
+                    </div>
                     <div id="meterCategoryDynamicRoot"></div>
                 </div>
             </div>
@@ -3984,9 +4067,10 @@ $datasetsByResourceJsonString
             document.querySelectorAll('.expandable__header.category-header[data-category], .category-header[data-category]').forEach(element => {
                 const category = element.getAttribute('data-category');
                 if (engine.state.picks.categories.has(category)) {
-                    element.classList.add('filter-selected');
+                    element.classList.add('pick-selected');
+                    element.classList.remove('filter-selected'); // Legacy cleanup
                 } else {
-                    element.classList.remove('filter-selected');
+                    element.classList.remove('pick-selected', 'filter-selected');
                 }
             });
             
@@ -4007,13 +4091,14 @@ $datasetsByResourceJsonString
                     // Match scoped key against engine picks
                     const isSelected = engine.state.picks.subcategories.has(scopedKey);
                     if (isSelected) {
-                        element.classList.add('filter-selected');
+                        element.classList.add('pick-selected');
+                        element.classList.remove('filter-selected'); // Legacy cleanup
                     } else {
-                        element.classList.remove('filter-selected');
+                        element.classList.remove('pick-selected', 'filter-selected');
                     }
                 } else {
                     // Meter Category header (global key) - don't mark from scoped picks
-                    element.classList.remove('filter-selected');
+                    element.classList.remove('pick-selected', 'filter-selected');
                 }
             });
             
@@ -4022,9 +4107,10 @@ $datasetsByResourceJsonString
             document.querySelectorAll('.expandable__header.meter-header[data-meter], .meter-header[data-meter]').forEach(element => {
                 const meter = element.getAttribute('data-meter');
                 if (engine.state.picks.meterNames.has(meter)) {
-                    element.classList.add('filter-selected');
+                    element.classList.add('pick-selected');
+                    element.classList.remove('filter-selected'); // Legacy cleanup
                 } else {
-                    element.classList.remove('filter-selected');
+                    element.classList.remove('pick-selected', 'filter-selected');
                 }
             });
         }
@@ -4065,20 +4151,120 @@ $datasetsByResourceJsonString
             
             const currentKeys = engine.state.picks.resourceKeys;
             
-            // Remove from previously selected (but no longer selected)
+            // Get active resource keys for cross-highlight (yellow)
+            let activeResourceKeys = new Set();
+            if (typeof engine.getActiveResourceKeys === 'function') {
+                activeResourceKeys = engine.getActiveResourceKeys();
+            } else if (typeof engine.getActiveRowIds === 'function') {
+                // Fallback: try to convert rowIds to resourceKeys
+                const activeRowIds = engine.getActiveRowIds();
+                // This would need engine.factRows or similar to map rowIds to resourceKeys
+                // For now, we'll rely on getActiveResourceKeys
+            }
+            
+            // Step 1: Remove pick-selected only from resources that are no longer picked
+            // Keep cross-selected for now - we'll update it in step 2
             previousSelectedResourceKeys.forEach(key => {
                 if (!currentKeys.has(key)) {
                     const elements = domIdx.byResourceKey.get(key) || [];
-                    elements.forEach(el => el.classList.remove('chart-selected'));
+                    elements.forEach(el => {
+                        el.classList.remove('pick-selected', 'chart-selected');
+                        // Don't remove cross-selected here - we'll set it correctly in step 2
+                    });
                 }
             });
             
-            // Add for newly selected keys
-            currentKeys.forEach(key => {
-                if (!previousSelectedResourceKeys.has(key)) {
-                    const elements = domIdx.byResourceKey.get(key) || [];
-                    elements.forEach(el => el.classList.add('chart-selected'));
+            // Step 2: Apply cross-selected (yellow) to ALL resources in activeResourceKeys that are NOT picked
+            // This works across all tables (Cost Breakdown, Meter Category, etc.)
+            activeResourceKeys.forEach(resourceKey => {
+                if (!currentKeys.has(resourceKey)) {
+                    // Not picked, so should be yellow if in activeResourceKeys
+                    const elements = domIdx.byResourceKey.get(resourceKey) || [];
+                    elements.forEach(el => {
+                        if (el.tagName === 'TR' || el.classList.contains('resource-row')) {
+                            el.classList.add('cross-selected');
+                            el.classList.remove('pick-selected'); // Ensure blue is removed
+                        }
+                    });
                 }
+            });
+            
+            // Also apply to Meter Category rows directly (in case they're not in domIndex yet)
+            const meterCategoryRoot = document.getElementById('meterCategoryDynamicRoot');
+            if (meterCategoryRoot) {
+                meterCategoryRoot.querySelectorAll('tr[data-resource-key]').forEach(row => {
+                    const resourceKey = row.getAttribute('data-resource-key');
+                    if (resourceKey && activeResourceKeys.has(resourceKey) && !currentKeys.has(resourceKey)) {
+                        row.classList.add('cross-selected');
+                        row.classList.remove('pick-selected');
+                    }
+                });
+            }
+            
+            // Also apply to Cost Breakdown and other tables directly
+            document.querySelectorAll('#costBreakdownRoot tr[data-resource-key], .cost-table tbody tr[data-resource-key], .resource-table tbody tr[data-resource-key]').forEach(row => {
+                const resourceKey = row.getAttribute('data-resource-key');
+                if (resourceKey && activeResourceKeys.has(resourceKey) && !currentKeys.has(resourceKey)) {
+                    row.classList.add('cross-selected');
+                    row.classList.remove('pick-selected');
+                }
+            });
+            
+            // Step 3: Remove cross-selected from resources that are NOT in activeResourceKeys anymore
+            // (They shouldn't be yellow if they're not affected by any selection)
+            const allResourceKeys = new Set([...currentKeys, ...activeResourceKeys, ...previousSelectedResourceKeys]);
+            allResourceKeys.forEach(resourceKey => {
+                if (!activeResourceKeys.has(resourceKey) && !currentKeys.has(resourceKey)) {
+                    const elements = domIdx.byResourceKey.get(resourceKey) || [];
+                    elements.forEach(el => {
+                        el.classList.remove('cross-selected');
+                    });
+                }
+            });
+            
+            // Also remove cross-selected directly from DOM for any rows that are no longer in activeResourceKeys
+            // This ensures cleanup even if domIndex is missing some entries
+            document.querySelectorAll('tr[data-resource-key].cross-selected').forEach(row => {
+                const resourceKey = row.getAttribute('data-resource-key');
+                if (resourceKey && !activeResourceKeys.has(resourceKey) && !currentKeys.has(resourceKey)) {
+                    row.classList.remove('cross-selected');
+                }
+            });
+            
+            // Step 4: Apply pick-selected (blue) to all currently picked resources
+            // Blue wins over yellow - remove cross-selected from picked resources
+            currentKeys.forEach(key => {
+                const elements = domIdx.byResourceKey.get(key) || [];
+                elements.forEach(el => {
+                    el.classList.add('pick-selected');
+                    el.classList.remove('cross-selected', 'chart-selected'); // Blue wins over yellow
+                });
+            });
+            
+            // Also apply to Meter Category rows directly
+            if (meterCategoryRoot) {
+                meterCategoryRoot.querySelectorAll('tr[data-resource-key]').forEach(row => {
+                    const resourceKey = row.getAttribute('data-resource-key');
+                    if (resourceKey && currentKeys.has(resourceKey)) {
+                        row.classList.add('pick-selected');
+                        row.classList.remove('cross-selected');
+                    }
+                });
+            }
+            
+            // Also apply to Cost Breakdown and other tables directly
+            document.querySelectorAll('#costBreakdownRoot tr[data-resource-key], .cost-table tbody tr[data-resource-key], .resource-table tbody tr[data-resource-key]').forEach(row => {
+                const resourceKey = row.getAttribute('data-resource-key');
+                if (resourceKey && currentKeys.has(resourceKey)) {
+                    row.classList.add('pick-selected');
+                    row.classList.remove('cross-selected');
+                }
+            });
+            
+            // Step 5: Clean up - remove cross-selected from any element that also has pick-selected
+            // (Safety check - blue should always win)
+            document.querySelectorAll('.pick-selected').forEach(el => {
+                el.classList.remove('cross-selected');
             });
             
             // Update previous set

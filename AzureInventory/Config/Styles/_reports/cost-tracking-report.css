@@ -432,7 +432,75 @@ h3[onclick],
     color: var(--text-secondary);
 }
 
-/* Chart selection highlighting */
+/* Pick-selected (BLUE) - explicit user picks */
+.pick-selected,
+.category-header.pick-selected,
+.subcategory-header.pick-selected,
+.meter-header.pick-selected,
+.data-table tbody tr.pick-selected,
+.resource-table tbody tr.pick-selected {
+    background-color: rgba(84, 160, 255, 0.25) !important;
+    border-left: 3px solid var(--accent-blue) !important;
+}
+
+.subscription-card.pick-selected {
+    background-color: rgba(84, 160, 255, 0.25) !important;
+    border-left: 3px solid var(--accent-blue) !important;
+}
+
+/* Cross-selected (YELLOW) - rows affected by current results */
+.cross-selected,
+.data-table tbody tr.cross-selected,
+.resource-table tbody tr.cross-selected {
+    background-color: rgba(254, 202, 87, 0.2) !important;
+    border-left: 2px solid var(--accent-yellow) !important;
+}
+
+/* Blue replaces yellow - when both are present, only blue shows */
+.pick-selected.cross-selected,
+.category-header.pick-selected.cross-selected,
+.subcategory-header.pick-selected.cross-selected,
+.meter-header.pick-selected.cross-selected,
+.data-table tbody tr.pick-selected.cross-selected,
+.resource-table tbody tr.pick-selected.cross-selected {
+    background-color: rgba(84, 160, 255, 0.25) !important;
+    border-left: 3px solid var(--accent-blue) !important;
+}
+
+/* Selection legend */
+.selection-legend {
+    display: flex;
+    gap: 16px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-top: 8px;
+    margin-bottom: 12px;
+}
+
+.selection-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.selection-legend-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.selection-legend-color.pick {
+    background-color: rgba(84, 160, 255, 0.25);
+    border-left: 3px solid var(--accent-blue);
+}
+
+.selection-legend-color.cross {
+    background-color: rgba(254, 202, 87, 0.2);
+    border-left: 2px solid var(--accent-yellow);
+}
+
+/* Legacy chart-selected support (deprecated - use pick-selected or cross-selected instead) */
 .category-card.chart-selected,
 .subcategory-drilldown.chart-selected,
 .meter-card.chart-selected,
@@ -444,11 +512,5 @@ h3[onclick],
 .subscription-card.chart-selected {
     background-color: rgba(84, 160, 255, 0.15) !important;
     border-left: 3px solid var(--accent-blue) !important;
-}
-
-/* P4-5: Visual feedback for header filters */
-.filter-selected {
-    background-color: rgba(84, 160, 255, 0.2) !important;
-    border-left: 3px solid rgba(84, 160, 255, 0.8) !important;
 }
 
