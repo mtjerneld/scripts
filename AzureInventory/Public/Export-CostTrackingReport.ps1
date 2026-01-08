@@ -565,45 +565,8 @@ function Export-CostTrackingReport {
     # Top 15 for initial chart display (when no category filter)
     $top15Resources = @($resourceTotals.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15 | ForEach-Object { $_.Key })
     
-    # Prepare daily trend data with breakdowns for stacked chart
+    # Phase 5.1.1: Prepare chartLabels only (legacy daily data structures removed - engine-only now)
     $chartLabels = @()
-    $chartDatasetsByCategory = @{}
-    $chartDatasetsBySubscription = @{}
-    $chartDatasetsByMeter = @{}
-    $chartDatasetsByResource = @{}
-    
-    # Also prepare raw data with category breakdown for filtering
-    $rawDailyData = @()
-    
-    # Build a resource-to-meters map from RawData for precise filtering
-    # This works with the standard production data format (RawData list) without needing custom data structures in DailyTrend
-    $globalResMetersMap = @{}
-    if ($rawData.Count -gt 0) {
-        foreach ($row in $rawData) {
-            $resName = $row.ResourceName
-            $meter = $row.Meter
-            
-            if ($resName -and $meter) {
-                if (-not $globalResMetersMap.ContainsKey($resName)) {
-                    $globalResMetersMap[$resName] = [System.Collections.Generic.HashSet[string]]::new()
-                }
-                [void]$globalResMetersMap[$resName].Add($meter)
-            }
-        }
-    }
-    
-    foreach ($category in $allCategories) {
-        $chartDatasetsByCategory[$category] = @()
-    }
-    foreach ($subName in $allSubscriptionNames) {
-        $chartDatasetsBySubscription[$subName] = @()
-    }
-    foreach ($meter in $allMeters) {
-        $chartDatasetsByMeter[$meter] = @()
-    }
-    foreach ($resName in $allResourceNames) {
-        $chartDatasetsByResource[$resName] = @()
-    }
     
     # Sort daily trend by Date, handling null dates gracefully
     # Handle both array and single object cases, and ensure we have valid data
@@ -625,6 +588,7 @@ function Export-CostTrackingReport {
         }
     }
     
+    # Phase 5.1.1: Build chartLabels only (legacy daily data structures removed - engine-only now)
     foreach ($day in $sortedDailyTrend) {
         # Get date string - try DateString first, then generate from Date, then empty string
         $dayDateString = $null
@@ -646,203 +610,7 @@ function Export-CostTrackingReport {
         
         if ($dayDateString) {
             $chartLabels += $dayDateString
-        } else {
-            # Skip days without valid dates
-            continue
         }
-        
-        # Build raw daily data for JavaScript filtering (use the same date string)
-        $dayData = @{
-            date = $dayDateString
-            categories = @{}
-            subscriptions = @{}
-            meters = @{}
-            resources = @{}
-            totalCostLocal = [math]::Round($day.TotalCostLocal, 2)
-            totalCostUSD = [math]::Round($day.TotalCostUSD, 2)
-        }
-        
-        # By Category (with subscription breakdown)
-        $dayMeterOtherCost = $day.TotalCostLocal
-        $dayResourceOtherCost = $day.TotalCostLocal
-        
-        foreach ($category in $allCategories) {
-            $catCostLocal = 0
-            $catCostUSD = 0
-            $catSubBreakdown = @{}
-            if ($day.ByCategory -and $day.ByCategory.ContainsKey($category)) {
-                $catCostLocal = [math]::Round($day.ByCategory[$category].CostLocal, 2)
-                $catCostUSD = if ($day.ByCategory[$category].CostUSD) {
-                    [math]::Round($day.ByCategory[$category].CostUSD, 2)
-                } else {
-                    0
-                }
-                if ($day.ByCategory[$category].BySubscription) {
-                    foreach ($subEntry in $day.ByCategory[$category].BySubscription.GetEnumerator()) {
-                        # Handle both formats: direct number or object with CostLocal/CostUSD
-                        if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
-                            $catSubBreakdown[$subEntry.Key] = @{
-                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
-                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
-                            }
-                        } elseif ($subEntry.Value -is [PSCustomObject] -and $subEntry.Value.CostLocal) {
-                            $catSubBreakdown[$subEntry.Key] = @{
-                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
-                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
-                            }
-                        } else {
-                            # Direct number value (legacy format) - assume same for USD
-                            $numValue = [math]::Round($subEntry.Value, 2)
-                            $catSubBreakdown[$subEntry.Key] = @{
-                                CostLocal = $numValue
-                                CostUSD = $numValue
-                            }
-                        }
-                    }
-                }
-            }
-            $chartDatasetsByCategory[$category] += $catCostLocal
-            $dayData.categories[$category] = @{ total = $catCostLocal; totalUSD = $catCostUSD; bySubscription = $catSubBreakdown }
-        }
-        
-        # By Subscription (with category breakdown)
-        foreach ($subName in $allSubscriptionNames) {
-            $subCost = 0
-            $subCatBreakdown = @{}
-            if ($day.BySubscription -and $day.BySubscription.ContainsKey($subName)) {
-                $subCost = [math]::Round($day.BySubscription[$subName].CostLocal, 2)
-                if ($day.BySubscription[$subName].ByCategory) {
-                    foreach ($catEntry in $day.BySubscription[$subName].ByCategory.GetEnumerator()) {
-                        $subCatBreakdown[$catEntry.Key] = [math]::Round($catEntry.Value.CostLocal, 2)
-                    }
-                }
-            }
-            $chartDatasetsBySubscription[$subName] += $subCost
-            $dayData.subscriptions[$subName] = @{ total = $subCost; byCategory = $subCatBreakdown }
-        }
-        
-        # By Meter (with category and subscription breakdown)
-        foreach ($meter in $allMeters) {
-            $meterCost = 0
-            $meterCatBreakdown = @{}
-            $meterSubBreakdown = @{}
-            if ($day.ByMeter -and $day.ByMeter.ContainsKey($meter)) {
-                $meterCost = [math]::Round($day.ByMeter[$meter].CostLocal, 2)
-                $dayMeterOtherCost -= $day.ByMeter[$meter].CostLocal
-                if ($day.ByMeter[$meter].ByCategory) {
-                    foreach ($catEntry in $day.ByMeter[$meter].ByCategory.GetEnumerator()) {
-                        $meterCatBreakdown[$catEntry.Key] = [math]::Round($catEntry.Value.CostLocal, 2)
-                    }
-                }
-                if ($day.ByMeter[$meter].BySubscription) {
-                    foreach ($subEntry in $day.ByMeter[$meter].BySubscription.GetEnumerator()) {
-                        # Handle both formats: direct number or object with CostLocal/CostUSD
-                        if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
-                            $meterSubBreakdown[$subEntry.Key] = @{
-                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
-                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
-                            }
-                        } elseif ($subEntry.Value -is [PSCustomObject] -and $subEntry.Value.CostLocal) {
-                            $meterSubBreakdown[$subEntry.Key] = @{
-                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
-                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
-                            }
-                        } else {
-                            # Direct number value (legacy format) - assume same for USD
-                            $numValue = [math]::Round($subEntry.Value, 2)
-                            $meterSubBreakdown[$subEntry.Key] = @{
-                                CostLocal = $numValue
-                                CostUSD = $numValue
-                            }
-                        }
-                    }
-                }
-            }
-            $chartDatasetsByMeter[$meter] += $meterCost
-            $dayData.meters[$meter] = @{ total = $meterCost; byCategory = $meterCatBreakdown; bySubscription = $meterSubBreakdown }
-        }
-        
-        # Add "Other" for meters
-        $dayData.meters["Other"] = @{ total = [math]::Round([math]::Max(0, $dayMeterOtherCost), 2); byCategory = @{}; bySubscription = @{} }
-        
-        # By Resource (with category and subscription breakdown)
-        foreach ($resName in $allResourceNames) {
-            $resCostLocal = 0
-            $resCostUSD = 0
-            $resCatBreakdown = @{}
-            $resSubBreakdown = @{}
-            if ($day.ByResource -and $day.ByResource.ContainsKey($resName)) {
-                $resCostLocal = [math]::Round($day.ByResource[$resName].CostLocal, 2)
-                $resCostUSD = if ($day.ByResource[$resName].CostUSD) {
-                    [math]::Round($day.ByResource[$resName].CostUSD, 2)
-                } else {
-                    0
-                }
-                $dayResourceOtherCost -= $day.ByResource[$resName].CostLocal
-                if ($day.ByResource[$resName].ByCategory) {
-                    foreach ($catEntry in $day.ByResource[$resName].ByCategory.GetEnumerator()) {
-                        $catCost = $catEntry.Value
-                        if ($catCost -is [hashtable] -and $catCost.ContainsKey('CostLocal')) {
-                            $resCatBreakdown[$catEntry.Key] = @{
-                                CostLocal = [math]::Round($catCost.CostLocal, 2)
-                                CostUSD = if ($catCost.CostUSD) { [math]::Round($catCost.CostUSD, 2) } else { 0 }
-                            }
-                        } elseif ($catCost -is [PSCustomObject] -and $catCost.CostLocal) {
-                            $resCatBreakdown[$catEntry.Key] = @{
-                                CostLocal = [math]::Round($catCost.CostLocal, 2)
-                                CostUSD = if ($catCost.CostUSD) { [math]::Round($catCost.CostUSD, 2) } else { 0 }
-                            }
-                        } else {
-                            # Direct number value (legacy format) - assume same for USD
-                            $numValue = [math]::Round($catCost, 2)
-                            $resCatBreakdown[$catEntry.Key] = @{
-                                CostLocal = $numValue
-                                CostUSD = $numValue
-                            }
-                        }
-                    }
-                }
-                if ($day.ByResource[$resName].BySubscription) {
-                    foreach ($subEntry in $day.ByResource[$resName].BySubscription.GetEnumerator()) {
-                        # Handle both formats: direct number or object with CostLocal/CostUSD
-                        if ($subEntry.Value -is [hashtable] -and $subEntry.Value.ContainsKey('CostLocal')) {
-                            $resSubBreakdown[$subEntry.Key] = @{
-                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
-                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
-                            }
-                        } elseif ($subEntry.Value -is [PSCustomObject] -and $subEntry.Value.CostLocal) {
-                            $resSubBreakdown[$subEntry.Key] = @{
-                                CostLocal = [math]::Round($subEntry.Value.CostLocal, 2)
-                                CostUSD = if ($subEntry.Value.CostUSD) { [math]::Round($subEntry.Value.CostUSD, 2) } else { 0 }
-                            }
-                        } else {
-                            # Direct number value (legacy format) - assume same for USD
-                            $numValue = [math]::Round($subEntry.Value, 2)
-                            $resSubBreakdown[$subEntry.Key] = @{
-                                CostLocal = $numValue
-                                CostUSD = $numValue
-                            }
-                        }
-                    }
-                }
-            }
-            $chartDatasetsByResource[$resName] += $resCostLocal
-            # Use global map derived from RawData
-            $resMeters = if ($globalResMetersMap.ContainsKey($resName)) { @($globalResMetersMap[$resName]) } else { @() }
-            $dayData.resources[$resName] = @{ total = $resCostLocal; totalUSD = $resCostUSD; byCategory = $resCatBreakdown; bySubscription = $resSubBreakdown; meters = $resMeters }
-        }
-        
-        # Add "Other" for resources
-        $dayResourceOtherCostUSD = if ($dayResourceOtherCost -gt 0) {
-            # Estimate USD based on exchange rate (if available) or use 0
-            # This is a fallback - ideally we'd track USD separately for "Other"
-            [math]::Round($dayResourceOtherCost / 10.5, 2)  # Rough estimate: SEK/10.5 ≈ USD
-        } else {
-            0
-        }
-        $dayData.resources["Other"] = @{ total = [math]::Round([math]::Max(0, $dayResourceOtherCost), 2); totalUSD = $dayResourceOtherCostUSD; byCategory = @{}; bySubscription = @{} }
-        
-        $rawDailyData += $dayData
     }
     
     # Convert raw daily data to JSON for JavaScript
@@ -855,15 +623,7 @@ function Export-CostTrackingReport {
         # No other escaping needed - we'll use <script type="application/json">
     }
     
-    # Ensure we always have a valid JSON array, even if empty
-    if ($rawDailyData -and $rawDailyData.Count -gt 0) {
-        $rawDailyDataJson = $rawDailyData | ConvertTo-Json -Depth 6 -Compress
-        # Escape backslashes first, then single quotes for safe embedding in JavaScript string (using single quotes)
-        # Note: JSON uses double quotes, so we only need to escape backslashes and single quotes
-        $rawDailyDataJson = $rawDailyDataJson -replace '\\', '\\\\' -replace "'", "\'"
-    } else {
-        $rawDailyDataJson = "[]"
-    }
+    # Phase 5.1.1: legacy daily data JSON generation removed - engine-only now
     
     # All known subscriptions for JS (HTML encoded to match checkboxes)
     $allSubscriptionNamesEncoded = $allSubscriptionNames | ForEach-Object { [System.Web.HttpUtility]::HtmlEncode($_) }
@@ -894,90 +654,7 @@ function Export-CostTrackingReport {
         "rgba(39, 174, 96, 0.8)",    # Nephritis
         "rgba(41, 128, 185, 0.8)"    # Belize Hole
     )
-    
-    # Build datasets JSON for Chart.js - by Category
-    $datasetsByCategoryJson = @()
-    $colorIndex = 0
-    foreach ($category in $allCategories) {
-        $color = $colors[$colorIndex % $colors.Count]
-        $dataArray = $chartDatasetsByCategory[$category] -join ","
-        $escapedCategory = $category -replace '"', '\"'
-        $datasetsByCategoryJson += @"
-            {
-                label: "$escapedCategory",
-                data: [$dataArray],
-                backgroundColor: "$color",
-                borderColor: "$color",
-                borderWidth: 1
-            }
-"@
-        $colorIndex++
-    }
-    $datasetsByCategoryJsonString = $datasetsByCategoryJson -join ",`n"
-    
-    # Build datasets JSON for Chart.js - by Subscription
-    $datasetsBySubscriptionJson = @()
-    $colorIndex = 0
-    foreach ($subName in $allSubscriptionNames) {
-        $color = $colors[$colorIndex % $colors.Count]
-        $dataArray = $chartDatasetsBySubscription[$subName] -join ","
-        $escapedSubName = $subName -replace '"', '\"'
-        $datasetsBySubscriptionJson += @"
-            {
-                label: "$escapedSubName",
-                data: [$dataArray],
-                backgroundColor: "$color",
-                borderColor: "$color",
-                borderWidth: 1
-            }
-"@
-        $colorIndex++
-    }
-    $datasetsBySubscriptionJsonString = $datasetsBySubscriptionJson -join ",`n"
-    
-    # Build datasets JSON for Chart.js - by Meter (use top 15 for initial display)
-    $datasetsByMeterJson = @()
-    $colorIndex = 0
-    foreach ($meter in $top15Meters) {
-        if ($chartDatasetsByMeter.ContainsKey($meter)) {
-            $color = $colors[$colorIndex % $colors.Count]
-            $dataArray = $chartDatasetsByMeter[$meter] -join ","
-            $escapedMeter = $meter -replace '"', '\"'
-            $datasetsByMeterJson += @"
-            {
-                label: "$escapedMeter",
-                data: [$dataArray],
-                backgroundColor: "$color",
-                borderColor: "$color",
-                borderWidth: 1
-            }
-"@
-            $colorIndex++
-        }
-    }
-    $datasetsByMeterJsonString = $datasetsByMeterJson -join ",`n"
-    
-    # Build datasets JSON for Chart.js - by Resource (use top 15 for initial display)
-    $datasetsByResourceJson = @()
-    $colorIndex = 0
-    foreach ($resName in $top15Resources) {
-        if ($chartDatasetsByResource.ContainsKey($resName)) {
-            $color = $colors[$colorIndex % $colors.Count]
-            $dataArray = $chartDatasetsByResource[$resName] -join ","
-            $escapedResName = $resName -replace '"', '\"'
-            $datasetsByResourceJson += @"
-            {
-                label: "$escapedResName",
-                data: [$dataArray],
-                backgroundColor: "$color",
-                borderColor: "$color",
-                borderWidth: 1
-            }
-"@
-            $colorIndex++
-        }
-    }
-    $datasetsByResourceJsonString = $datasetsByResourceJson -join ",`n"
+    # Phase 5.1: datasetsBy* JSON generation removed - engine-only now
     
     # Convert chart labels to JSON
     $chartLabelsJson = ($chartLabels | ForEach-Object { "`"$_`"" }) -join ","
@@ -1653,7 +1330,7 @@ $meterCardsHtml
                 
                 $categoryHtml += @"
                         <div class="category-card collapsed" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
-                            <div class="expandable__header category-header collapsed" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleCategorySelection(this, event)">
+                            <div class="expandable__header category-header collapsed" data-category="$catNameEncoded" data-category-key="$subIdEncoded|$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" data-category-name="$catNameEncoded" onclick="handleCategorySelection(this, event)">
                                 <span class="expand-arrow">&#9654;</span>
                                 <span class="category-title">$catNameEncoded</span>
                                 <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
@@ -1819,9 +1496,6 @@ $(Get-ReportStylesheet)
                     <option value="stacked-resource">Stacked by Resource</option>
                     <option value="total" selected>Total Cost</option>
                 </select>
-                <select id="categoryFilter" onchange="filterChartCategory()">
-                    <option value="all">All Categories</option>
-                </select>
                 <button id="clearChartSelections" onclick="clearAllChartSelections()" style="display: none; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-surface); color: var(--text); cursor: pointer; font-size: 0.9rem;">
                     Clear Chart Selections
                 </button>
@@ -1936,21 +1610,9 @@ $factRowsJson
         
         // Chart data
         const chartLabels = [$chartLabelsJson];
-        const datasetsByCategory = [
-$datasetsByCategoryJsonString
-        ];
-        const datasetsBySubscription = [
-$datasetsBySubscriptionJsonString
-        ];
-        const datasetsByMeter = [
-$datasetsByMeterJsonString
-        ];
-        const datasetsByResource = [
-$datasetsByResourceJsonString
-        ];
+        // Phase 5.1: datasetsBy* constants removed - engine-only now
         
-        // Raw daily data for cross-filtering
-        const rawDailyData = JSON.parse('$rawDailyDataJson');
+        // Phase 5.1.1: legacy daily data removed - engine-only now
         const allKnownSubscriptions = new Set(JSON.parse('$allSubscriptionsJson'));
         
         // Currency for formatting
@@ -1978,17 +1640,7 @@ $datasetsByResourceJsonString
         
         let costChart = null;
         let currentView = 'total';
-        let currentCategoryFilter = 'all';
-        let selectedSubscriptions = new Set();
-        
-        // Chart selection state for filtering
-        const chartSelections = {
-            subscriptions: new Set(),
-            categories: new Map(), // category -> Set(subscriptions)
-            subcategories: new Map(), // subcategory -> Set({category, subscription})
-            meters: new Map(), // meter -> Set({subcategory, category, subscription})
-            resources: new Map() // resource -> Set({meter, subcategory, category, subscription})
-        };
+        // Phase 5.1: legacy category/subscription filter state removed - engine-only now
         
         // ============================================================================
         // Cost Tracking Engine - Single Source of Truth for Filtering & Aggregation
@@ -2000,6 +1652,7 @@ $datasetsByResourceJsonString
                 bySubscriptionId: new Map(),
                 bySubscriptionName: new Map(),
                 byCategory: new Map(),
+                byCategoryScoped: new Map(),  // Phase 5.2: Scoped category index (key = subscriptionId|category) for Cost by Subscription
                 bySubcategory: new Map(),  // P4-1: Subcategory index (composite key = subscriptionId|category|subcategory)
                 bySubcategoryGlobal: new Map(),  // FIX: Global subcategory index (key = category|subcategory) for Meter Category section
                 byMeter: new Map(),
@@ -2035,6 +1688,15 @@ $datasetsByResourceJsonString
                         index.byCategory.set(row.meterCategory, new Set());
                     }
                     index.byCategory.get(row.meterCategory).add(rowId);
+                    
+                    // Phase 5.2: Scoped category index (subscriptionId|category) for Cost by Subscription
+                    if (row.subscriptionId) {
+                        const scopedCatKey = row.subscriptionId + '|' + row.meterCategory;
+                        if (!index.byCategoryScoped.has(scopedCatKey)) {
+                            index.byCategoryScoped.set(scopedCatKey, new Set());
+                        }
+                        index.byCategoryScoped.get(scopedCatKey).add(rowId);
+                    }
                 }
                 
                 // P4-1: Subcategory index (subscription+category-scoped: composite key = subscriptionId|category|subcategory)
@@ -2106,6 +1768,7 @@ $datasetsByResourceJsonString
             });
             
             // Selection state: union picks + scope intersection
+            // Phase 5.2: Filter stack (layers) - top layer is active, others show as "yellow" (cross-selected)
             const state = {
                 scope: {
                     subscriptionIds: new Set(),  // Checkbox selections
@@ -2114,14 +1777,15 @@ $datasetsByResourceJsonString
                     dayTo: null
                 },
                 picks: {
-                    resourceIds: new Set(),
-                    resourceKeys: new Set(),  // Canonical resource keys (Phase 3)
-                    resourceNames: new Set(),
-                    resourceGroups: new Set(),
+                    resourceIds: new Set(),      // DEPRECATED (Phase 5 PR3A) - kept for backward compatibility, should be empty
+                    resourceKeys: new Set(),    // Canonical resource keys (Phase 3) - PRIMARY
+                    resourceNames: new Set(),   // DEPRECATED (Phase 5 PR3A) - kept for backward compatibility, should be empty
+                    resourceGroups: new Set(),  // DEPRECATED (Phase 5 PR3A) - kept for backward compatibility, should be empty
                     meterNames: new Set(),
                     categories: new Set(),
-                    subcategories: new Set()  // P4-2: Subcategory picks (composite key = subscriptionId|category|subcategory)
-                }
+                    subcategories: new Set()    // P4-2: Subcategory picks (composite key = subscriptionId|category|subcategory)
+                },
+                layers: []  // Filter stack: [{ source: "subscription"|"meter", picks: { categories:Set, subcategories:Set, meterNames:Set, resourceKeys:Set, ... } }]
             };
             
             // Helper: intersect two Sets (used internally and exposed for chart breakdown)
@@ -2220,7 +1884,8 @@ $datasetsByResourceJsonString
                     });
                 }
                 
-                // Legacy resourceIds (for backward compatibility)
+                // Legacy resourceIds (DEPRECATED - Phase 5: kept for backward compatibility, should be empty in runtime)
+                // PR3A: No code writes to these anymore, only clears them. Will be removed in PR3B if possible.
                 if (state.picks.resourceIds.size > 0) {
                     state.picks.resourceIds.forEach(resId => {
                         const rows = index.byResourceId.get(resId);
@@ -2228,6 +1893,7 @@ $datasetsByResourceJsonString
                     });
                 }
                 
+                // Legacy resourceNames (DEPRECATED - Phase 5: kept for backward compatibility, should be empty in runtime)
                 if (state.picks.resourceNames.size > 0) {
                     state.picks.resourceNames.forEach(resName => {
                         const rows = index.byResourceName.get(resName);
@@ -2235,6 +1901,7 @@ $datasetsByResourceJsonString
                     });
                 }
                 
+                // Legacy resourceGroups (DEPRECATED - Phase 5: kept for backward compatibility, should be empty in runtime)
                 if (state.picks.resourceGroups.size > 0) {
                     state.picks.resourceGroups.forEach(rg => {
                         const rows = index.byResourceGroup.get(rg);
@@ -2269,10 +1936,17 @@ $datasetsByResourceJsonString
                 return unionSets(...pickedSets);
             }
             
-            // Get active rowIds: scope ∩ picks (or just scope if no picks)
+            // Phase 5.2: Get active rowIds: scope ∩ top-layer picks (or just scope if no top-layer)
             function getActiveRowIds() {
                 const scope = getScopeRowIds();
-                const picked = getPickedRowIdsUnion();
+                const topLayer = getTopLayer();
+                
+                if (!topLayer) {
+                    return scope;  // Baseline: no picks, return scope only
+                }
+                
+                // Get picks from top-layer only
+                const picked = getPickedRowIdsUnionFromLayer(topLayer);
                 
                 if (picked.size === 0) {
                     return scope;
@@ -2281,17 +1955,65 @@ $datasetsByResourceJsonString
                 return intersectSets(scope, picked);
             }
             
-            // State management functions
-            function togglePick(dimension, value, mode = 'toggle') {
-                const pickSet = state.picks[dimension];
+            // Helper: Get picked rowIds from a specific layer
+            function getPickedRowIdsUnionFromLayer(layer) {
+                const pickedSets = [];
+                
+                if (layer.picks.resourceKeys.size > 0) {
+                    layer.picks.resourceKeys.forEach(resKey => {
+                        const rows = index.byResourceKey.get(resKey);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                if (layer.picks.meterNames.size > 0) {
+                    layer.picks.meterNames.forEach(meter => {
+                        const rows = index.byMeter.get(meter);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                if (layer.picks.categories.size > 0) {
+                    layer.picks.categories.forEach(cat => {
+                        // Phase 5.2: Support scoped category keys (subscriptionId|category)
+                        const rows = index.byCategoryScoped?.get(cat) || index.byCategory.get(cat);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                if (layer.picks.subcategories.size > 0) {
+                    layer.picks.subcategories.forEach(subcatKey => {
+                        const rows = index.bySubcategory.get(subcatKey);
+                        if (rows) pickedSets.push(rows);
+                    });
+                }
+                
+                return unionSets(...pickedSets);
+            }
+            
+            // Phase 5.2: State management functions - work with top-layer
+            function togglePick(dimension, value, mode = 'toggle', source = null) {
+                // Phase 5.2: If source provided, ensure top-layer and work with it
+                let pickSet;
+                if (source) {
+                    const topLayer = ensureTopLayer(source);
+                    pickSet = topLayer.picks[dimension];
+                    if (!pickSet) {
+                        console.warn('Unknown pick dimension in layer:', dimension);
+                        return;
+                    }
+                } else {
+                    // Fallback: work with state.picks (for backward compatibility during migration)
+                    pickSet = state.picks[dimension];
                 if (!pickSet) {
                     console.warn('Unknown pick dimension:', dimension);
                     return;
+                    }
                 }
                 
                 // REVERT: No canonicalization - use scoped keys as-is
                 // Subcategories use subscriptionId|category|subcategory (scoped)
-                // Categories and meters can also be scoped if needed
+                // Categories use subscriptionId|category (scoped) in Cost by Subscription
                 
                 if (mode === 'replace') {
                     pickSet.clear();
@@ -2299,6 +2021,10 @@ $datasetsByResourceJsonString
                 } else if (mode === 'toggle') {
                     if (pickSet.has(value)) {
                         pickSet.delete(value);
+                        // Phase 5.2: Pop layer if empty after toggle
+                        if (source) {
+                            popTopLayerIfEmpty();
+                        }
                     } else {
                         pickSet.add(value);
                     }
@@ -2306,6 +2032,10 @@ $datasetsByResourceJsonString
                     pickSet.add(value);
                 } else if (mode === 'remove') {
                     pickSet.delete(value);
+                    // Phase 5.2: Pop layer if empty after remove
+                    if (source) {
+                        popTopLayerIfEmpty();
+                    }
                 }
             }
             
@@ -2332,11 +2062,58 @@ $datasetsByResourceJsonString
                 Object.values(state.picks).forEach(set => set.clear());
             }
             
+            // Phase 5.2: Clear picks in top-layer (for clear button)
+            function clearTopLayerPicks(source) {
+                clearTopLayer(source);
+            }
+            
             function clearScope() {
                 state.scope.subscriptionIds.clear();
                 state.scope.subscriptionNames.clear();
                 state.scope.dayFrom = null;
                 state.scope.dayTo = null;
+            }
+            
+            // Phase 5.2: Filter stack (layers) helpers
+            function getTopLayer() {
+                return state.layers.length > 0 ? state.layers[state.layers.length - 1] : null;
+            }
+            
+            function ensureTopLayer(source) {
+                const top = getTopLayer();
+                if (!top || top.source !== source) {
+                    // Create new layer with empty picks
+                    const newLayer = {
+                        source: source,
+                        picks: {
+                            resourceKeys: new Set(),
+                            meterNames: new Set(),
+                            categories: new Set(),
+                            subcategories: new Set()
+                        }
+                    };
+                    state.layers.push(newLayer);
+                    return newLayer;
+                }
+                return top;
+            }
+            
+            function popTopLayerIfEmpty() {
+                const top = getTopLayer();
+                if (top) {
+                    const allEmpty = Object.values(top.picks).every(set => set.size === 0);
+                    if (allEmpty) {
+                        state.layers.pop();
+                    }
+                }
+            }
+            
+            function clearTopLayer(source) {
+                const top = getTopLayer();
+                if (top && top.source === source) {
+                    Object.values(top.picks).forEach(set => set.clear());
+                    popTopLayerIfEmpty();
+                }
             }
             
             // Aggregation functions
@@ -2483,7 +2260,13 @@ $datasetsByResourceJsonString
                 groupByResource,
                 groupByCategory,
                 groupByMeter,
-                intersectSets // Expose for chart breakdown (O(k) performance, iterates smallest set)
+                intersectSets, // Expose for chart breakdown (O(k) performance, iterates smallest set)
+                // Phase 5.2: Filter stack (layers) API
+                getTopLayer,
+                ensureTopLayer,
+                popTopLayerIfEmpty,
+                clearTopLayerPicks,
+                getPickedRowIdsUnionFromLayer  // Expose for yellow highlighting (cross-selected)
             };
         }
         
@@ -2634,11 +2417,7 @@ $datasetsByResourceJsonString
             });
             
             // Initialize selected subscriptions from checkboxes
-            document.querySelectorAll('.subscription-checkbox input').forEach(cb => {
-                if (cb.checked) {
-                    selectedSubscriptions.add(cb.value);
-                }
-            });
+            // Phase 5.1: legacy subscription state removed - subscription state managed by engine scope
             
             // Store original summary values
             const totalCostLocalEl = document.getElementById('summary-total-cost-local');
@@ -2664,30 +2443,16 @@ $datasetsByResourceJsonString
             }
             
             initChart();
-            populateCategoryFilter();
-            // Update chart to show default view (Total Cost)
-            updateChart();
-            
-            // Initial render of "Cost by Meter Category" (dynamic, based on engine state)
-            renderCostByMeterCategory();
+            // Phase 5.1: legacy category filter population removed
             
             // Initialize DOM-index after DOM is ready (Phase 3)
             initDomIndex();
             
-            // Sync UI from engine state (central sync function)
-            if (typeof syncUIFromEngine === 'function') {
-                syncUIFromEngine();
-            } else {
-                // Fallback to individual updates if syncUIFromEngine not available
-            if (typeof updateResourceSelectionVisual === 'function') {
-                updateResourceSelectionVisual();
-            }
-                if (typeof updateHeaderSelectionVisual === 'function') {
-                    updateHeaderSelectionVisual();
-                }
-            updateSummaryCards();
-                updateChart();
-            }
+            // Phase 5.1: Use central refresh pipeline instead of manual updateChart() and renderCostByMeterCategory()
+            refreshUIFromState({ skipMeterCategoryRerender: false });
+            
+            // Phase 5: Initial sync using central refresh pipeline
+            refreshUIFromState({ skipMeterCategoryRerender: false }); // Initial render needs Meter Category
             
             // Initially hide resources beyond top 20 in "Top 20 Resources" section only
             // Don't hide cards in "Top 20 Cost Increase Drivers" section (they use .increased-cost-card class)
@@ -2771,55 +2536,7 @@ $datasetsByResourceJsonString
             });
         }
         
-        function populateCategoryFilter() {
-            const select = document.getElementById('categoryFilter');
-            datasetsByCategory.forEach(ds => {
-                const option = document.createElement('option');
-                option.value = ds.label;
-                option.textContent = ds.label;
-                select.appendChild(option);
-            });
-        }
-        
-        // Helper function to calculate filtered total for a day (reused by total view and Other calculation)
-        function getFilteredDayTotal(day, categoryFilter, selectedSubscriptions) {
-            if (!day) return 0;
-            let dayTotal = 0;
-            if (categoryFilter === 'all') {
-                // Sum all categories for selected subscriptions
-                if (day.categories && typeof day.categories === 'object') {
-                    Object.entries(day.categories).forEach(([cat, catData]) => {
-                        if (catData && typeof catData === 'object') {
-                            if (selectedSubscriptions.size === 0) {
-                                dayTotal += (catData.total || 0);
-                            } else {
-                                selectedSubscriptions.forEach(sub => {
-                                    const subCost = catData.bySubscription && catData.bySubscription[sub];
-                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                        dayTotal += subCost.CostLocal || 0;
-                                    } else if (typeof subCost === 'number') {
-                                        dayTotal += subCost;
-                                    }
-                                });
-                            }
-                        }
-                    });
-                }
-            } else {
-                // Single category
-                const catData = day.categories && day.categories[categoryFilter];
-                if (catData && typeof catData === 'object') {
-                    if (selectedSubscriptions.size === 0) {
-                        dayTotal = catData.total || 0;
-                    } else {
-                        selectedSubscriptions.forEach(sub => {
-                            dayTotal += (catData.bySubscription && catData.bySubscription[sub]) || 0;
-                        });
-                    }
-                }
-            }
-            return dayTotal || 0; // Ensure we always return a number
-        }
+        // Phase 5.1: legacy category filter and day total functions removed - engine-only now
         
         // Helper function to extract cost value from various formats
         function getCostValue(cost) {
@@ -2830,559 +2547,8 @@ $datasetsByResourceJsonString
             return 0;
         }
         
-        // Filter raw daily data based on chart selections
-        function filterRawDailyDataBySelections(rawDailyData) {
-            // Check if there are any selections
-            const hasSelections = chartSelections.subscriptions.size > 0 ||
-                chartSelections.categories.size > 0 ||
-                chartSelections.subcategories.size > 0 ||
-                chartSelections.meters.size > 0 ||
-                chartSelections.resources.size > 0;
-            
-            if (!hasSelections) {
-                return rawDailyData; // Return original data if no selections
-            }
-            
-            // Create filtered copy
-            const filteredData = rawDailyData.map(day => {
-                const filteredDay = {
-                    date: day.date,
-                    categories: {},
-                    subscriptions: {},
-                    meters: {},
-                    resources: {},
-                    totalCostLocal: 0,
-                    totalCostUSD: 0
-                };
-                
-                // Filter by subscriptions
-                const selectedSubs = chartSelections.subscriptions.size > 0 ? 
-                    Array.from(chartSelections.subscriptions) : null;
-                
-                // Filter categories - UNION logic: include if subscription selected OR category selected from "Cost by Meter Category" OR resource selected
-                const hasCategorySelections = chartSelections.categories.size > 0;
-                const hasResourceSelections = chartSelections.resources.size > 0;
-                
-                // Collect categories used by selected resources
-                const resourceCategories = new Set();
-                if (hasResourceSelections) {
-                    chartSelections.resources.forEach((resKeys, resource) => {
-                        const resData = day.resources && day.resources[resource];
-                        if (resData && resData.byCategory) {
-                            Object.keys(resData.byCategory).forEach(cat => resourceCategories.add(cat));
-                        }
-                    });
-                }
-                
-                Object.keys(day.categories || {}).forEach(cat => {
-                    const catData = day.categories[cat];
-                    const catSubs = chartSelections.categories.get(cat);
-                    const catSelectedFromAll = catSubs && catSubs.has(''); // Category selected from "Cost by Meter Category"
-                    const catUsedByResources = hasResourceSelections && resourceCategories.has(cat);
-
-                    const filteredBySub = {};
-                    let catTotalLocal = 0;
-                    let catTotalUSD = 0;
-
-                    if (catData.bySubscription) {
-                        Object.keys(catData.bySubscription).forEach(subKey => {
-                            // UNION: Include this subscription's cost if:
-                            // 1. The subscription itself is selected (selectedSubs includes it), OR
-                            // 2. This category is selected from "Cost by Meter Category" (catSubs has ''), OR
-                            // 3. This specific sub+cat combo is selected (catSubs has subKey), OR
-                            // 4. This category is used by selected resources (catUsedByResources), OR
-                            // 5. No filters are active
-                            const subSelected = selectedSubs && selectedSubs.includes(subKey);
-                            const catSelectedForSub = catSubs && catSubs.has(subKey);
-                            const noFiltersActive = !selectedSubs && !hasCategorySelections && !hasResourceSelections;
-
-                            if (subSelected || catSelectedFromAll || catSelectedForSub || catUsedByResources || noFiltersActive) {
-                                // Handle both object format and direct number format
-                                const subCost = catData.bySubscription[subKey];
-                                if (subCost && typeof subCost === 'object') {
-                                    filteredBySub[subKey] = subCost;
-                                    catTotalLocal += subCost.CostLocal || 0;
-                                    catTotalUSD += subCost.CostUSD || 0;
-                                } else if (typeof subCost === 'number') {
-                                    filteredBySub[subKey] = subCost;
-                                    catTotalLocal += subCost;
-                                    catTotalUSD += subCost; // Assume same if no USD provided
-                                }
-                            }
-                        });
-                    } else if (!selectedSubs && !hasCategorySelections && !hasResourceSelections) {
-                        // No subscription breakdown and no filters - use total
-                        catTotalLocal = catData.total || 0;
-                        catTotalUSD = catData.totalUSD || 0; // Don't fallback to total - use 0 if USD missing
-                    } else if (catUsedByResources && catData.total) {
-                        // Category used by selected resources but no subscription breakdown - use total
-                        catTotalLocal = catData.total || 0;
-                        catTotalUSD = catData.totalUSD || 0;
-                    }
-
-                    if (catTotalLocal > 0 || catTotalUSD > 0) {
-                        filteredDay.categories[cat] = { total: catTotalLocal, totalUSD: catTotalUSD, bySubscription: filteredBySub };
-                    }
-                });
-                
-                // Filter subscriptions - UNION logic
-                Object.keys(day.subscriptions || {}).forEach(sub => {
-                    const subData = day.subscriptions[sub];
-                    const subSelected = selectedSubs && selectedSubs.includes(sub);
-                    const filteredByCat = {};
-                    let subTotal = 0;
-                    
-                    Object.keys(subData.byCategory || {}).forEach(cat => {
-                        const catSubs = chartSelections.categories.get(cat);
-                        const catSelectedFromAll = catSubs && catSubs.has(''); // Selected from "Cost by Meter Category"
-                        const catSelectedForSub = catSubs && catSubs.has(sub);
-                        const noFiltersActive = !selectedSubs && !hasCategorySelections;
-                        
-                        // UNION: Include this category if:
-                        // 1. The subscription itself is selected (include ALL its categories), OR
-                        // 2. This category is selected from "Cost by Meter Category", OR
-                        // 3. This specific sub+cat combo is selected, OR
-                        // 4. No filters are active
-                        if (subSelected || catSelectedFromAll || catSelectedForSub || noFiltersActive) {
-                            filteredByCat[cat] = subData.byCategory[cat];
-                            // Handle both object format and direct number format
-                            const catCost = subData.byCategory[cat];
-                            if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
-                                subTotal += catCost.CostLocal || 0;
-                            } else if (typeof catCost === 'number') {
-                                subTotal += catCost;
-                            }
-                        }
-                    });
-                    
-                    if (subTotal > 0) {
-                        filteredDay.subscriptions[sub] = { total: subTotal, byCategory: filteredByCat };
-                    }
-                });
-                
-                // Filter meters
-                Object.keys(day.meters || {}).forEach(meter => {
-                    const meterData = day.meters[meter];
-                    const meterKeys = chartSelections.meters.get(meter);
-                    if (meterKeys && meterKeys.size > 0) {
-                        // This meter is selected
-                        let meterTotal = 0;
-                        const filteredByCat = {};
-                        const filteredBySub = {};
-                        
-                        meterKeys.forEach(key => {
-                            const parts = key.split('|');
-                            const subcat = parts[0];
-                            const cat = parts[1];
-                            const sub = parts[2];
-                            
-                            if (meterData.byCategory && meterData.byCategory[cat]) {
-                                filteredByCat[cat] = (filteredByCat[cat] || 0) + meterData.byCategory[cat];
-                                meterTotal += meterData.byCategory[cat];
-                            }
-                            if (meterData.bySubscription && meterData.bySubscription[sub]) {
-                                filteredBySub[sub] = (filteredBySub[sub] || 0) + meterData.bySubscription[sub];
-                            }
-                        });
-                        
-                        if (meterTotal > 0) {
-                            filteredDay.meters[meter] = { total: meterTotal, byCategory: filteredByCat, bySubscription: filteredBySub };
-                        }
-                    } else if (chartSelections.meters.size === 0) {
-                        // No meter selections active - apply UNION logic for subscription/category/resource filters
-                        const filteredByCat = {};
-                        const filteredBySub = {};
-                        let meterTotal = 0;
-                        
-                        // Check if meter should be included based on subscription, category, or resource selections
-                        let shouldInclude = false;
-                        // Use hasResourceSelections from outer scope (already declared above)
-                        
-                        // Check resource filter (if resources are selected, only include meters used by those resources)
-                        if (hasResourceSelections) {
-                            // Check if any selected resource uses this meter
-                            // Since we don't have direct resource->meter link, we'll include the meter if:
-                            // - The resource has costs in categories/subscriptions that the meter also has costs in
-                            // - We'll use the resource's cost as the basis (proportional to meter's share)
-                            const resourceCategories = new Set();
-                            const resourceSubscriptions = new Set();
-                            
-                            // Collect all meters used by selected resources
-                            const resourceMeters = new Set();
-                            
-                            chartSelections.resources.forEach((resKeys, resource) => {
-                                const resData = day.resources && day.resources[resource];
-                                if (resData && resData.meters) {
-                                    // meters is an array of meter names
-                                    resData.meters.forEach(meter => resourceMeters.add(meter));
-                                } else if (resData) {
-                                    // Fallback if meters not available (older data): use category/subscription overlap
-                                    // (This part is removed as we now have direct meter link)
-                                }
-                            });
-                            
-                            // Check if this meter is used by any selected resource
-                            if (resourceMeters.has(meter)) {
-                                shouldInclude = true;
-                                meterTotal = meterData.total || 0;
-                                // We include the full meter cost if it's used by the resource
-                                // This is an approximation as a meter might be shared, but usually meters are specific enough
-                                // Ideally we would sum up only the cost contribution from the selected resources
-                                // But since we don't have that granularity easily available here without complex iteration
-                                // and the "Stacked by Meter" view is meant to show the meters associated with the resource
-                                
-                                // Actually, we can try to filter by category/subscription to be more precise
-                                // if the meter is shared across subscriptions/categories
-                                
-                                // Copy breakdowns
-                                if (meterData.byCategory) {
-                                    Object.keys(meterData.byCategory).forEach(cat => {
-                                        filteredByCat[cat] = meterData.byCategory[cat];
-                                    });
-                                }
-                                if (meterData.bySubscription) {
-                                    Object.keys(meterData.bySubscription).forEach(sub => {
-                                        filteredBySub[sub] = meterData.bySubscription[sub];
-                                    });
-                                }
-                            }
-                        }
-                        
-                        // Check subscription filter (UNION - only if no resource filter or resource filter didn't match)
-                        if (!hasResourceSelections && selectedSubs && selectedSubs.size > 0) {
-                            selectedSubs.forEach(sub => {
-                                if (meterData.bySubscription && meterData.bySubscription[sub]) {
-                                    shouldInclude = true;
-                                    const subCost = meterData.bySubscription[sub];
-                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                        filteredBySub[sub] = subCost;
-                                        meterTotal += subCost.CostLocal || 0;
-                                    } else if (typeof subCost === 'number') {
-                                        filteredBySub[sub] = subCost;
-                                        meterTotal += subCost;
-                                    }
-                                }
-                            });
-                        }
-                        
-                        // Check category filter (UNION - include if category is selected from "Cost by Meter Category")
-                        if (!hasResourceSelections && hasCategorySelections) {
-                            Object.keys(meterData.byCategory || {}).forEach(cat => {
-                                const catSubs = chartSelections.categories.get(cat);
-                                if (catSubs && catSubs.has('')) {
-                                    // Category selected from "Cost by Meter Category" - include this meter
-                                    shouldInclude = true;
-                                    const catCost = meterData.byCategory[cat];
-                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
-                                        filteredByCat[cat] = catCost;
-                                        meterTotal += catCost.CostLocal || 0;
-                                    } else if (typeof catCost === 'number') {
-                                        filteredByCat[cat] = catCost;
-                                        meterTotal += catCost;
-                                    }
-                                }
-                            });
-                        }
-                        
-                        // If no filters active, include all
-                        if (!hasResourceSelections && !selectedSubs && !hasCategorySelections) {
-                            shouldInclude = true;
-                            meterTotal = meterData.total || 0;
-                        }
-                        
-                        if (shouldInclude && meterTotal > 0) {
-                            filteredDay.meters[meter] = {
-                                total: meterTotal,
-                                byCategory: Object.keys(filteredByCat).length > 0 ? filteredByCat : (meterData.byCategory || {}),
-                                bySubscription: Object.keys(filteredBySub).length > 0 ? filteredBySub : (meterData.bySubscription || {})
-                            };
-                        }
-                    }
-                });
-                
-                // Filter resources
-                Object.keys(day.resources || {}).forEach(resource => {
-                    const resData = day.resources[resource];
-                    const resKeys = chartSelections.resources.get(resource);
-                    if (resKeys && resKeys.size > 0) {
-                        // This resource is selected
-                        let resTotalLocal = 0;
-                        let resTotalUSD = 0;
-                        const filteredByCat = {};
-                        const filteredBySub = {};
-                        let hasEmptyKey = false; // Resource selected from Top 20 table (no context)
-                        
-                        resKeys.forEach(key => {
-                            if (key === '') {
-                                // Empty key means resource selected from Top 20 table - include ALL data for this resource
-                                hasEmptyKey = true;
-                                resTotalLocal = resData.total || 0;
-                                // Calculate USD from byCategory or bySubscription
-                                if (resData.byCategory) {
-                                    Object.keys(resData.byCategory).forEach(cat => {
-                                        const catCost = resData.byCategory[cat];
-                                        filteredByCat[cat] = catCost;
-                                        if (catCost && typeof catCost === 'object' && catCost.CostUSD !== undefined) {
-                                            resTotalUSD += catCost.CostUSD || 0;
-                                        }
-                                    });
-                                }
-                                if (resData.bySubscription) {
-                                    Object.keys(resData.bySubscription).forEach(sub => {
-                                        const subCost = resData.bySubscription[sub];
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            filteredBySub[sub] = subCost;
-                                            resTotalUSD += subCost.CostUSD || 0;
-                                        } else if (typeof subCost === 'number') {
-                                            filteredBySub[sub] = subCost;
-                                            resTotalUSD += subCost; // Assume same if no USD provided
-                                        }
-                                    });
-                                }
-                            } else {
-                                // Specific context key - filter by that context
-                                const parts = key.split('|');
-                                const meter = parts[0];
-                                const subcat = parts[1];
-                                const cat = parts[2];
-                                const sub = parts[3];
-                                
-                                let matchedCost = false;
-                                
-                                // NEW: Try to filter by meter if available (requires updated collector)
-                                const byMeter = resData.ByMeter || resData.byMeter;
-                                if (byMeter && byMeter[meter]) {
-                                    const meterCost = byMeter[meter];
-                                    if (meterCost) {
-                                        const costLocal = getCostValue(meterCost);
-                                        resTotalLocal += costLocal;
-                                        if (meterCost.CostUSD !== undefined) {
-                                            resTotalUSD += meterCost.CostUSD || 0;
-                                        } else {
-                                            resTotalUSD += costLocal; // Fallback
-                                        }
-                                        matchedCost = true;
-                                    }
-                                }
-                                
-                                if (resData.byCategory && resData.byCategory[cat]) {
-                                    const catCost = resData.byCategory[cat];
-                                    filteredByCat[cat] = catCost;
-                                    if (!matchedCost) {
-                                        if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
-                                            resTotalLocal += catCost.CostLocal || 0;
-                                            resTotalUSD += catCost.CostUSD || 0;
-                                        } else if (typeof catCost === 'number') {
-                                            resTotalLocal += catCost;
-                                            resTotalUSD += catCost; // Assume same if no USD provided
-                                        }
-                                    }
-                                }
-                                if (resData.bySubscription && resData.bySubscription[sub]) {
-                                    const subCost = resData.bySubscription[sub];
-                                    filteredBySub[sub] = subCost;
-                                    // Don't add to total if we already added from category or meter
-                                    if (!matchedCost && !(resData.byCategory && resData.byCategory[cat])) {
-                                        // Only add if not added by category (to avoid double counting)
-                                        // This fixes the potential double counting bug in existing code too
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            resTotalLocal += subCost.CostLocal || 0;
-                                            resTotalUSD += subCost.CostUSD || 0;
-                                        } else if (typeof subCost === 'number') {
-                                            resTotalLocal += subCost;
-                                            resTotalUSD += subCost; // Assume same if no USD provided
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                        
-                        if (hasEmptyKey || resTotalLocal > 0) {
-                            filteredDay.resources[resource] = { 
-                                total: hasEmptyKey ? resData.total : resTotalLocal,
-                                totalUSD: resTotalUSD,
-                                byCategory: Object.keys(filteredByCat).length > 0 ? filteredByCat : (resData.byCategory || {}), 
-                                bySubscription: Object.keys(filteredBySub).length > 0 ? filteredBySub : (resData.bySubscription || {})
-                            };
-                        }
-                    } else if (chartSelections.resources.size === 0) {
-                        // No resource selections active - apply UNION logic for subscription/category/meter filters
-                        const filteredByCat = {};
-                        const filteredBySub = {};
-                        let resTotal = 0;
-                        let shouldInclude = false;
-                        
-                        // Check subscription filter
-                        if (selectedSubs && selectedSubs.size > 0) {
-                            selectedSubs.forEach(sub => {
-                                if (resData.bySubscription && resData.bySubscription[sub]) {
-                                    shouldInclude = true;
-                                    const subCost = resData.bySubscription[sub];
-                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                        filteredBySub[sub] = subCost;
-                                        resTotal += subCost.CostLocal || 0;
-                                    } else if (typeof subCost === 'number') {
-                                        filteredBySub[sub] = subCost;
-                                        resTotal += subCost;
-                                    }
-                                }
-                            });
-                        }
-                        
-                        // Check category filter (UNION - include if category is selected from "Cost by Meter Category")
-                        if (hasCategorySelections) {
-                            Object.keys(resData.byCategory || {}).forEach(cat => {
-                                const catSubs = chartSelections.categories.get(cat);
-                                if (catSubs && catSubs.has('')) {
-                                    // Category selected from "Cost by Meter Category" - include this resource
-                                    shouldInclude = true;
-                                    const catCost = resData.byCategory[cat];
-                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
-                                        filteredByCat[cat] = catCost;
-                                        resTotal += catCost.CostLocal || 0;
-                                    } else if (typeof catCost === 'number') {
-                                        filteredByCat[cat] = catCost;
-                                        resTotal += catCost;
-                                    }
-                                }
-                            });
-                        }
-                        
-                        // If no filters active, include all
-                        if (!selectedSubs && !hasCategorySelections && chartSelections.meters.size === 0) {
-                            shouldInclude = true;
-                            resTotal = resData.total || 0;
-                        }
-                        
-                        if (shouldInclude && resTotal > 0) {
-                            filteredDay.resources[resource] = {
-                                total: resTotal,
-                                byCategory: Object.keys(filteredByCat).length > 0 ? filteredByCat : (resData.byCategory || {}),
-                                bySubscription: Object.keys(filteredBySub).length > 0 ? filteredBySub : (resData.bySubscription || {})
-                            };
-                        }
-                    } else {
-                        // Resource selections exist but this resource is NOT selected - check if it should be included via UNION logic
-                        // (e.g., if subscription or category is selected, this resource might still be included)
-                        const filteredByCat = {};
-                        const filteredBySub = {};
-                        let resTotal = 0;
-                        let shouldInclude = false;
-                        
-                        // Check subscription filter (UNION)
-                        if (selectedSubs && selectedSubs.size > 0) {
-                            selectedSubs.forEach(sub => {
-                                if (resData.bySubscription && resData.bySubscription[sub]) {
-                                    shouldInclude = true;
-                                    const subCost = resData.bySubscription[sub];
-                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                        filteredBySub[sub] = subCost;
-                                        resTotal += subCost.CostLocal || 0;
-                                    } else if (typeof subCost === 'number') {
-                                        filteredBySub[sub] = subCost;
-                                        resTotal += subCost;
-                                    }
-                                }
-                            });
-                        }
-                        
-                        // Check category filter (UNION)
-                        if (hasCategorySelections) {
-                            Object.keys(resData.byCategory || {}).forEach(cat => {
-                                const catSubs = chartSelections.categories.get(cat);
-                                if (catSubs && catSubs.has('')) {
-                                    shouldInclude = true;
-                                    const catCost = resData.byCategory[cat];
-                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
-                                        filteredByCat[cat] = catCost;
-                                        resTotal += catCost.CostLocal || 0;
-                                    } else if (typeof catCost === 'number') {
-                                        filteredByCat[cat] = catCost;
-                                        resTotal += catCost;
-                                    }
-                                }
-                            });
-                        }
-                        
-                        if (shouldInclude && resTotal > 0) {
-                            filteredDay.resources[resource] = {
-                                total: resTotal,
-                                byCategory: Object.keys(filteredByCat).length > 0 ? filteredByCat : (resData.byCategory || {}),
-                                bySubscription: Object.keys(filteredBySub).length > 0 ? filteredBySub : (resData.bySubscription || {})
-                            };
-                        }
-                    }
-                    // else: resource selections exist but this resource is NOT selected - exclude it
-                });
-                
-                // Recalculate totals - track both Local and USD separately
-                // If resources are selected, calculate totals directly from resources (more accurate)
-                // Otherwise, calculate from categories
-                let dayTotalLocal = 0;
-                let dayTotalUSD = 0;
-                
-                // Use hasResourceSelections from outer scope (already declared above)
-                if (hasResourceSelections) {
-                    // Calculate totals directly from selected resources
-                    Object.values(filteredDay.resources || {}).forEach(res => {
-                        if (res && typeof res === 'object') {
-                            dayTotalLocal += res.total || 0;
-                            // Use totalUSD if available, otherwise calculate from byCategory/bySubscription
-                            if (res.totalUSD !== undefined && res.totalUSD !== null) {
-                                dayTotalUSD += res.totalUSD;
-                            } else {
-                                // Fallback: calculate USD from byCategory or bySubscription
-                                let resUSD = 0;
-                                if (res.byCategory) {
-                                    Object.values(res.byCategory).forEach(catCost => {
-                                        if (catCost && typeof catCost === 'object' && catCost.CostUSD !== undefined) {
-                                            resUSD += catCost.CostUSD || 0;
-                                        }
-                                    });
-                                }
-                                if (res.bySubscription) {
-                                    Object.values(res.bySubscription).forEach(subCost => {
-                                        if (subCost && typeof subCost === 'object' && subCost.CostUSD !== undefined) {
-                                            resUSD += subCost.CostUSD || 0;
-                                        }
-                                    });
-                                }
-                                dayTotalUSD += resUSD;
-                            }
-                        } else if (typeof res === 'number') {
-                            dayTotalLocal += res;
-                            dayTotalUSD += res; // Assume same if no USD provided
-                        }
-                    });
-                } else {
-                    // Calculate totals from categories (original logic)
-                    Object.values(filteredDay.categories).forEach(cat => {
-                        dayTotalLocal += cat.total || 0;
-                        // Ensure we use totalUSD if it exists, otherwise 0 (never fallback to total)
-                        const catUSD = (cat.totalUSD !== undefined && cat.totalUSD !== null) ? cat.totalUSD : 0;
-                        dayTotalUSD += catUSD;
-                    });
-                }
-                filteredDay.totalCostLocal = dayTotalLocal;
-                filteredDay.totalCostUSD = dayTotalUSD;
-                
-                return filteredDay;
-            });
-            
-            return filteredData;
-        }
-        
-        // Update chart with selections
-        function updateChartWithSelections() {
-            // Use central sync function for consistency
-            if (typeof syncUIFromEngine === 'function') {
-                syncUIFromEngine();
-            } else {
-                // Fallback to individual updates
-            updateChart();
-            updateSummaryCards();
-            }
-        }
+        // Phase 5.1: Removed duplicate updateChart() function - keeping only the second one
+        // Phase 5: Legacy chart filtering functions removed - engine-only now
         
         function updateChart() {
             if (!costChart) {
@@ -3977,171 +3143,199 @@ $datasetsByResourceJsonString
         }
         
         // Visual update for resource selections (Phase 3: DOM-index/cache, optimized O(#val) instead of O(#DOM-nodes))
-        // P4-5: Central sync function for UI updates
-        // P4.1: Updated to include renderCostByMeterCategory() for pick-sensitive updates
-        // FIX: Re-render Cost by Meter Category but preserve expand/collapse state
-        function syncUIFromEngine(skipMeterCategoryRender) {
-            // Re-render Cost by Meter Category (preserves expand/collapse state via CSS classes)
-            // Only skip if explicitly requested (e.g., when only visual feedback changes)
-            if (!skipMeterCategoryRender && typeof renderCostByMeterCategory === 'function') {
-                // Save expand/collapse state before re-render
-                const expandedCategories = new Set();
-                const expandedSubcategories = new Set();
-                const expandedMeters = new Set();
-                
-                document.querySelectorAll('#meterCategoryDynamicRoot .category-card.expanded').forEach(card => {
-                    const catName = card.getAttribute('data-category');
-                    if (catName) expandedCategories.add(catName);
-                });
-                
-                document.querySelectorAll('#meterCategoryDynamicRoot .subcategory-drilldown.expanded').forEach(drilldown => {
-                    const subcatName = drilldown.getAttribute('data-subcategory');
-                    const catName = drilldown.getAttribute('data-category');
-                    if (subcatName && catName) {
-                        expandedSubcategories.add(catName + '|' + subcatName);
-                    }
-                });
-                
-                document.querySelectorAll('#meterCategoryDynamicRoot .meter-card.expanded').forEach(card => {
-                    const meterName = card.getAttribute('data-meter');
-                    const subcatName = card.getAttribute('data-subcategory');
-                    const catName = card.getAttribute('data-category');
-                    if (meterName && subcatName && catName) {
-                        expandedMeters.add(catName + '|' + subcatName + '|' + meterName);
-                    }
-                });
-                
-                // Re-render
+        // Phase 5: syncUIFromEngine_OLD removed - all callsites now use refreshUIFromState() directly
+        
+        // Phase 5: Central refresh pipeline - single source of truth for UI updates
+        // RAF debouncing for chart updates to handle ctrl-click storms
+        let chartUpdateRafId = null;
+        function refreshUIFromState(options = {}) {
+            // Phase 5.2: Calculate visual context (top-layer state)
+            const top = engine?.getTopLayer?.() || null;
+            const topActive = engine?.getActiveRowIds?.() || new Set();
+            const topSource = top?.source ?? null;
+            
+            // 1. Summary cards (immediate)
+            updateSummaryCards();
+            
+            // 2. Meter Category rerender (FÖRE visuals - annars "blåser bort" markeringsklasser)
+            if (!options.skipMeterCategoryRerender && typeof renderCostByMeterCategory === 'function') {
                 renderCostByMeterCategory();
-                
-                // Restore expand/collapse state after re-render
-                setTimeout(() => {
-                    expandedCategories.forEach(catName => {
-                        // Use attribute selector with escaped value
-                        const cards = document.querySelectorAll('#meterCategoryDynamicRoot .category-card[data-category]');
-                        cards.forEach(card => {
-                            if (card.getAttribute('data-category') === catName) {
-                                card.classList.add('expanded');
-                            }
-                        });
-                    });
-                    
-                    expandedSubcategories.forEach(key => {
-                        const [catName, subcatName] = key.split('|');
-                        const drilldowns = document.querySelectorAll('#meterCategoryDynamicRoot .subcategory-drilldown[data-category][data-subcategory]');
-                        drilldowns.forEach(drilldown => {
-                            if (drilldown.getAttribute('data-category') === catName && 
-                                drilldown.getAttribute('data-subcategory') === subcatName) {
-                                drilldown.classList.add('expanded');
-                            }
-                        });
-                    });
-                    
-                    expandedMeters.forEach(key => {
-                        const [catName, subcatName, meterName] = key.split('|');
-                        const cards = document.querySelectorAll('#meterCategoryDynamicRoot .meter-card[data-category][data-subcategory][data-meter]');
-                        cards.forEach(card => {
-                            if (card.getAttribute('data-category') === catName && 
-                                card.getAttribute('data-subcategory') === subcatName &&
-                                card.getAttribute('data-meter') === meterName) {
-                                card.classList.add('expanded');
-                            }
-                        });
-                    });
-                }, 0);
+                // Phase 5.1 F: Re-index DOM after MeterCategory rerender (before visual updates)
+                initDomIndex();
             }
             
-            updateSummaryCards();
-            updateChart();
-            updateResourceSelectionVisual();
-            updateHeaderSelectionVisual();
+            // 3. Visual updates (efter rerender) - pass visual context
+            updateResourceSelectionVisual(top, topActive, topSource);
+            updateHeaderSelectionVisual(top, topActive, topSource);
+            
+            // 4. Chart update (debounced via RAF, sist)
+            if (chartUpdateRafId !== null) {
+                cancelAnimationFrame(chartUpdateRafId);
+            }
+            chartUpdateRafId = requestAnimationFrame(() => {
+                updateChart();
+                chartUpdateRafId = null;
+            });
         }
         
-        // P4-5: Update visual feedback for header filters (sync function)
-        // P4.1: Updated to work with both Cost Breakdown and Cost by Meter Category tables
-        function updateHeaderSelectionVisual() {
+        // Phase 5: Alias functions removed - all callsites now use refreshUIFromState() directly
+        
+        // Phase 5.2: Update header visual sync to use top-layer logic
+        function updateHeaderSelectionVisual(top, topActive, topSource) {
             if (!engine) return;
             
-            // Update category headers (SCOPED to header elements only - works for both tables)
-            // Cost Breakdown uses .expandable__header.category-header, Meter Category uses .category-header
-            document.querySelectorAll('.expandable__header.category-header[data-category], .category-header[data-category]').forEach(element => {
-                const category = element.getAttribute('data-category');
-                if (engine.state.picks.categories.has(category)) {
-                    element.classList.add('pick-selected');
-                    element.classList.remove('filter-selected'); // Legacy cleanup
-                } else {
-                    element.classList.remove('pick-selected', 'filter-selected');
-                }
-            });
+            // Phase 5.2: Clear all header markers first - scoped to prevent leakage
+            const meterCategoryRoot = document.getElementById('meterCategoryDynamicRoot');
+            const costBreakdownRoot = document.getElementById('costBreakdownRoot');
             
-            // Update subcategory headers (REVERT: scoped picks = subscriptionId|category|subcategory)
-            // Cost Breakdown: match scoped keys (subscriptionId|category|subcategory)
-            // Meter Category: DON'T mark headers (scoped picks don't apply to global headers)
-            document.querySelectorAll('.expandable__header.subcategory-header[data-subcategory-key]').forEach(element => {
-                // Only mark Cost Breakdown headers (those with subscriptionId in key)
-                // Meter Category headers should NOT be marked by scoped picks
-                const scopedKey = element.getAttribute('data-subcategory-key');
-                if (!scopedKey) return;
-                
-                // Check if this is a Cost Breakdown header (has subscriptionId in key = 3 parts)
-                const parts = scopedKey.split('|');
-                const isCostBreakdown = parts.length === 3; // subscriptionId|category|subcategory
-                
-                if (isCostBreakdown) {
-                    // Match scoped key against engine picks
-                    const isSelected = engine.state.picks.subcategories.has(scopedKey);
-                    if (isSelected) {
-                        element.classList.add('pick-selected');
-                        element.classList.remove('filter-selected'); // Legacy cleanup
-                    } else {
-                        element.classList.remove('pick-selected', 'filter-selected');
+            if (meterCategoryRoot) {
+                meterCategoryRoot.querySelectorAll('.expandable__header, .category-header, .subcategory-header, .meter-header').forEach(el => {
+                    el.classList.remove('pick-selected', 'cross-selected', 'filter-selected');
+                });
+            }
+            
+            if (costBreakdownRoot) {
+                costBreakdownRoot.querySelectorAll('.expandable__header, .category-header, .subcategory-header, .meter-header').forEach(el => {
+                    el.classList.remove('pick-selected', 'cross-selected', 'filter-selected');
+                });
+            }
+            
+            // Phase 5.2: Get picks from top-layer
+            const topLayerPicks = top?.picks || {
+                categories: new Set(),
+                subcategories: new Set(),
+                meterNames: new Set(),
+                resourceKeys: new Set()
+            };
+            
+            // Update category headers - Phase 5.2: Hard-scope to correct roots, use data-category-key
+            // Cost Breakdown category headers (scoped to costBreakdownRoot)
+            if (costBreakdownRoot) {
+                // Phase 5.2: Use data-category-key for exact matching (no text matching)
+                if (topSource === 'subscription') {
+                    // Top-layer is from subscription table: show blue for subscription picks
+                    topLayerPicks.categories.forEach(categoryKey => {
+                        const elements = costBreakdownRoot.querySelectorAll('[data-category-key="' + categoryKey + '"]');
+                        elements.forEach(element => {
+                            element.classList.add('pick-selected');
+                        });
+                    });
+                } else if (topSource === 'meter') {
+                    // Top-layer is from meter table: show yellow for affected categories
+                    if (topActive && topActive.size > 0 && engine.index.byCategoryScoped) {
+                        engine.index.byCategoryScoped.forEach((catRowIds, categoryKey) => {
+                            const intersection = engine.intersectSets(topActive, catRowIds);
+                            if (intersection.size > 0) {
+                                const elements = costBreakdownRoot.querySelectorAll('[data-category-key="' + categoryKey + '"]');
+                                elements.forEach(element => {
+                                    element.classList.add('cross-selected');
+                                });
+                            }
+                        });
                     }
-                } else {
-                    // Meter Category header (global key) - don't mark from scoped picks
-                    element.classList.remove('pick-selected', 'filter-selected');
                 }
-            });
+                // If topSource === null: no markers (baseline)
+            }
             
-            // Update meter headers (SCOPED to header elements only - works for both tables)
-            // Cost Breakdown uses .expandable__header.meter-header, Meter Category uses .meter-header
-            document.querySelectorAll('.expandable__header.meter-header[data-meter], .meter-header[data-meter]').forEach(element => {
-                const meter = element.getAttribute('data-meter');
-                if (engine.state.picks.meterNames.has(meter)) {
-                    element.classList.add('pick-selected');
-                    element.classList.remove('filter-selected'); // Legacy cleanup
-                } else {
-                    element.classList.remove('pick-selected', 'filter-selected');
+            // Meter Category category headers (scoped to meterCategoryRoot) - no visual markers from picks
+            if (meterCategoryRoot) {
+                meterCategoryRoot.querySelectorAll('.expandable__header.category-header[data-category], .category-header[data-category]').forEach(element => {
+                    // Meter Category headers should not be marked by picks
+                    element.classList.remove('pick-selected', 'cross-selected', 'filter-selected');
+                });
+            }
+            
+            // Update subcategory headers - Phase 5.2: Hard-scope to correct roots, use data-subcategory-key
+            // Cost Breakdown subcategory headers (scoped to costBreakdownRoot)
+            if (costBreakdownRoot) {
+                // Phase 5.2: Use data-subcategory-key for exact matching (no text matching)
+                if (topSource === 'subscription') {
+                    // Top-layer is from subscription table: show blue for subscription picks
+                    topLayerPicks.subcategories.forEach(scopedKey => {
+                        // Only match scoped keys (3 parts: subscriptionId|category|subcategory)
+                        const parts = scopedKey.split('|');
+                        if (parts.length === 3) {
+                            const elements = costBreakdownRoot.querySelectorAll('[data-subcategory-key="' + scopedKey + '"]');
+                            elements.forEach(element => {
+                                element.classList.add('pick-selected');
+                            });
+                        }
+                    });
+                } else if (topSource === 'meter') {
+                    // Top-layer is from meter table: show yellow for affected subcategories
+                    if (topActive && topActive.size > 0 && engine.index.bySubcategory) {
+                        engine.index.bySubcategory.forEach((subcatRowIds, scopedKey) => {
+                            // Only match scoped keys (3 parts: subscriptionId|category|subcategory)
+                            const parts = scopedKey.split('|');
+                            if (parts.length === 3) {
+                                const intersection = engine.intersectSets(topActive, subcatRowIds);
+                                if (intersection.size > 0) {
+                                    const elements = costBreakdownRoot.querySelectorAll('[data-subcategory-key="' + scopedKey + '"]');
+                                    elements.forEach(element => {
+                                        element.classList.add('cross-selected');
+                                    });
+                                }
+                            }
+                        });
+                    }
                 }
+            }
+            
+            // Meter Category subcategory headers (scoped to meterCategoryRoot) - no visual markers from picks
+            if (meterCategoryRoot) {
+                meterCategoryRoot.querySelectorAll('.expandable__header.subcategory-header[data-subcategory-key]').forEach(element => {
+                    // Meter Category headers should not be marked by scoped picks
+                    element.classList.remove('pick-selected', 'cross-selected', 'filter-selected');
+                });
+            }
+            
+            // Update meter headers - Phase 5.2: Hard-scope to correct roots
+            // (meterCategoryRoot and costBreakdownRoot already declared at function start)
+            
+            // Meter Category meter headers (scoped to meterCategoryRoot)
+            if (meterCategoryRoot) {
+                meterCategoryRoot.querySelectorAll('.expandable__header.meter-header[data-meter], .meter-header[data-meter]').forEach(element => {
+                    const meter = element.getAttribute('data-meter');
+                    
+                    if (topSource === 'meter') {
+                        // Top-layer is from meter table: show blue for meter picks
+                        if (topLayerPicks.meterNames.has(meter)) {
+                            element.classList.add('pick-selected');
+                        }
+                    }
+                    // If topSource === 'subscription' or null: no markers in Meter Category
+                });
+            }
+            
+            // Cost Breakdown meter headers (scoped to costBreakdownRoot)
+            if (costBreakdownRoot) {
+                costBreakdownRoot.querySelectorAll('.expandable__header.meter-header[data-meter], .meter-header[data-meter]').forEach(element => {
+                    const meter = element.getAttribute('data-meter');
+                    
+                    if (topSource === 'subscription') {
+                        // Top-layer is from subscription table: show yellow for affected meters
+                        if (topActive && topActive.size > 0 && engine.index.byMeter) {
+                            const meterRowIds = engine.index.byMeter.get(meter);
+                            if (meterRowIds) {
+                                const intersection = engine.intersectSets(topActive, meterRowIds);
+                                if (intersection.size > 0) {
+                                    element.classList.add('cross-selected');
+                                }
+                            }
+                        }
+                    }
+                    // If topSource === 'meter' or null: no markers in Cost Breakdown
+                });
+            }
+            
+            // Safety check: blue always wins over yellow
+            document.querySelectorAll('.pick-selected').forEach(el => {
+                el.classList.remove('cross-selected');
             });
         }
         
-        // P4.1: Common refresh function that updates all UI from engine state
-        function refreshFromEngine() {
-            // Re-render Cost by Meter Category (now pick-sensitive)
-            if (typeof renderCostByMeterCategory === 'function') {
-                renderCostByMeterCategory();
-            }
-            
-            // Update chart
-            if (typeof updateChart === 'function') {
-                updateChart();
-            }
-            
-            // Update summary cards
-            if (typeof updateSummaryCards === 'function') {
-                updateSummaryCards();
-            }
-            
-            // Update selection visuals (headers and resources)
-            if (typeof updateHeaderSelectionVisual === 'function') {
-                updateHeaderSelectionVisual();
-            }
-            if (typeof updateResourceSelectionVisual === 'function') {
-                updateResourceSelectionVisual();
-            }
-        }
-        
-        function updateResourceSelectionVisual() {
+        // Phase 5.2: Update resource visual sync to use top-layer logic
+        function updateResourceSelectionVisual(top, topActive, topSource) {
             // Use window.domIndex if available (global), otherwise fallback to local domIndex
             const domIdx = window.domIndex || domIndex;
             if (!domIdx || !domIdx.byResourceKey) {
@@ -4149,126 +3343,110 @@ $datasetsByResourceJsonString
                 return;
             }
             
-            const currentKeys = engine.state.picks.resourceKeys;
+            // Phase 5.2: Get picks from top-layer (if exists), otherwise empty
+            const topLayerPicks = top?.picks?.resourceKeys || new Set();
             
-            // Get active resource keys for cross-highlight (yellow)
-            let activeResourceKeys = new Set();
-            if (typeof engine.getActiveResourceKeys === 'function') {
-                activeResourceKeys = engine.getActiveResourceKeys();
-            } else if (typeof engine.getActiveRowIds === 'function') {
-                // Fallback: try to convert rowIds to resourceKeys
-                const activeRowIds = engine.getActiveRowIds();
-                // This would need engine.factRows or similar to map rowIds to resourceKeys
-                // For now, we'll rely on getActiveResourceKeys
+            // Phase 5.2: Get active resource keys from topActive (for yellow highlighting)
+            // Convert topActive (rowIds) to resourceKeys
+            const activeResourceKeys = new Set();
+            if (topActive && topActive.size > 0 && typeof factRows !== 'undefined' && factRows) {
+                topActive.forEach(rowId => {
+                    const row = factRows[rowId];
+                    if (row && row.resourceKey) {
+                        activeResourceKeys.add(row.resourceKey);
+                    }
+                });
             }
             
-            // Step 1: Remove pick-selected only from resources that are no longer picked
-            // Keep cross-selected for now - we'll update it in step 2
-            previousSelectedResourceKeys.forEach(key => {
-                if (!currentKeys.has(key)) {
-                    const elements = domIdx.byResourceKey.get(key) || [];
-                    elements.forEach(el => {
-                        el.classList.remove('pick-selected', 'chart-selected');
-                        // Don't remove cross-selected here - we'll set it correctly in step 2
-                    });
-                }
+            // Phase 5.2: Clear all visual markers first
+            document.querySelectorAll('.pick-selected, .cross-selected').forEach(el => {
+                el.classList.remove('pick-selected', 'cross-selected', 'chart-selected', 'filter-selected');
             });
             
-            // Step 2: Apply cross-selected (yellow) to ALL resources in activeResourceKeys that are NOT picked
-            // This works across all tables (Cost Breakdown, Meter Category, etc.)
-            activeResourceKeys.forEach(resourceKey => {
-                if (!currentKeys.has(resourceKey)) {
-                    // Not picked, so should be yellow if in activeResourceKeys
-                    const elements = domIdx.byResourceKey.get(resourceKey) || [];
-                    elements.forEach(el => {
-                        if (el.tagName === 'TR' || el.classList.contains('resource-row')) {
-                            el.classList.add('cross-selected');
-                            el.classList.remove('pick-selected'); // Ensure blue is removed
-                        }
-                    });
-                }
-            });
-            
-            // Also apply to Meter Category rows directly (in case they're not in domIndex yet)
+            // Phase 5.2: Apply visual markers based on top-layer source
+            // Meter Category table (meterCategoryDynamicRoot)
             const meterCategoryRoot = document.getElementById('meterCategoryDynamicRoot');
+            const costBreakdownRoot = document.getElementById('costBreakdownRoot');
+            
             if (meterCategoryRoot) {
-                meterCategoryRoot.querySelectorAll('tr[data-resource-key]').forEach(row => {
-                    const resourceKey = row.getAttribute('data-resource-key');
-                    if (resourceKey && activeResourceKeys.has(resourceKey) && !currentKeys.has(resourceKey)) {
-                        row.classList.add('cross-selected');
-                        row.classList.remove('pick-selected');
-                    }
-                });
-            }
-            
-            // Also apply to Cost Breakdown and other tables directly
-            document.querySelectorAll('#costBreakdownRoot tr[data-resource-key], .cost-table tbody tr[data-resource-key], .resource-table tbody tr[data-resource-key]').forEach(row => {
-                const resourceKey = row.getAttribute('data-resource-key');
-                if (resourceKey && activeResourceKeys.has(resourceKey) && !currentKeys.has(resourceKey)) {
-                    row.classList.add('cross-selected');
-                    row.classList.remove('pick-selected');
-                }
-            });
-            
-            // Step 3: Remove cross-selected from resources that are NOT in activeResourceKeys anymore
-            // (They shouldn't be yellow if they're not affected by any selection)
-            const allResourceKeys = new Set([...currentKeys, ...activeResourceKeys, ...previousSelectedResourceKeys]);
-            allResourceKeys.forEach(resourceKey => {
-                if (!activeResourceKeys.has(resourceKey) && !currentKeys.has(resourceKey)) {
+                if (topSource === 'meter') {
+                    // Top-layer is from meter table: show blue for meter picks, no yellow
+                    topLayerPicks.forEach(resourceKey => {
+                        const elements = domIdx.byResourceKey.get(resourceKey) || [];
+                        elements.forEach(el => {
+                            if (meterCategoryRoot.contains(el)) {
+                                el.classList.add('pick-selected');
+                            }
+                        });
+                    });
+                } else if (topSource === 'subscription') {
+                    // Top-layer is from subscription table: show yellow for affected resources
+            activeResourceKeys.forEach(resourceKey => {
                     const elements = domIdx.byResourceKey.get(resourceKey) || [];
                     elements.forEach(el => {
-                        el.classList.remove('cross-selected');
+                            if (meterCategoryRoot.contains(el) && !topLayerPicks.has(resourceKey)) {
+                            el.classList.add('cross-selected');
+                            }
+                        });
                     });
                 }
-            });
+                // If topSource === null: no markers (baseline)
+            }
             
-            // Also remove cross-selected directly from DOM for any rows that are no longer in activeResourceKeys
-            // This ensures cleanup even if domIndex is missing some entries
-            document.querySelectorAll('tr[data-resource-key].cross-selected').forEach(row => {
-                const resourceKey = row.getAttribute('data-resource-key');
-                if (resourceKey && !activeResourceKeys.has(resourceKey) && !currentKeys.has(resourceKey)) {
-                    row.classList.remove('cross-selected');
+            // Cost Breakdown table (subscription table)
+            // (costBreakdownRoot already declared above)
+            if (costBreakdownRoot) {
+                if (topSource === 'subscription') {
+                    // Top-layer is from subscription table: blue handled in updateHeaderSelectionVisual
+                    // Yellow for resources affected by subscription picks (if any)
+                    // (Resources in subscription table are handled via headers, not rows)
+                } else if (topSource === 'meter') {
+                    // Top-layer is from meter table: show yellow for affected resources
+                    activeResourceKeys.forEach(resourceKey => {
+                    const elements = domIdx.byResourceKey.get(resourceKey) || [];
+                    elements.forEach(el => {
+                            if (costBreakdownRoot.contains(el) && !topLayerPicks.has(resourceKey)) {
+                                el.classList.add('cross-selected');
+                            }
+                        });
+                    });
                 }
-            });
+                // If topSource === null: no markers (baseline)
+            }
             
-            // Step 4: Apply pick-selected (blue) to all currently picked resources
-            // Blue wins over yellow - remove cross-selected from picked resources
-            currentKeys.forEach(key => {
-                const elements = domIdx.byResourceKey.get(key) || [];
-                elements.forEach(el => {
-                    el.classList.add('pick-selected');
-                    el.classList.remove('cross-selected', 'chart-selected'); // Blue wins over yellow
-                });
-            });
-            
-            // Also apply to Meter Category rows directly
-            if (meterCategoryRoot) {
-                meterCategoryRoot.querySelectorAll('tr[data-resource-key]').forEach(row => {
+            // Other tables (generic resource tables) - Phase 5.2: Scoped to costBreakdownRoot only
+            if (costBreakdownRoot) {
+                costBreakdownRoot.querySelectorAll('.cost-table tbody tr[data-resource-key], .resource-table tbody tr[data-resource-key]').forEach(row => {
                     const resourceKey = row.getAttribute('data-resource-key');
-                    if (resourceKey && currentKeys.has(resourceKey)) {
+                    if (!resourceKey) return;
+                    
+                    if (topSource === 'meter' && topLayerPicks.has(resourceKey)) {
                         row.classList.add('pick-selected');
-                        row.classList.remove('cross-selected');
+                    } else if (topSource === 'subscription' && activeResourceKeys.has(resourceKey) && !topLayerPicks.has(resourceKey)) {
+                        row.classList.add('cross-selected');
+                    } else if (topSource === 'meter' && activeResourceKeys.has(resourceKey) && !topLayerPicks.has(resourceKey)) {
+                        // Meter picks affecting other tables
+                        row.classList.add('cross-selected');
                     }
                 });
             }
             
-            // Also apply to Cost Breakdown and other tables directly
-            document.querySelectorAll('#costBreakdownRoot tr[data-resource-key], .cost-table tbody tr[data-resource-key], .resource-table tbody tr[data-resource-key]').forEach(row => {
-                const resourceKey = row.getAttribute('data-resource-key');
-                if (resourceKey && currentKeys.has(resourceKey)) {
-                    row.classList.add('pick-selected');
-                    row.classList.remove('cross-selected');
-                }
-            });
+            // Phase 5.2: Defensive cleanup - remove cross-selected outside meter-root when topSource === 'subscription'
+            if (topSource === 'subscription' && meterCategoryRoot) {
+                document.querySelectorAll('.cross-selected').forEach(el => {
+                    if (!meterCategoryRoot.contains(el)) {
+                        el.classList.remove('cross-selected');
+                    }
+                });
+            }
             
-            // Step 5: Clean up - remove cross-selected from any element that also has pick-selected
-            // (Safety check - blue should always win)
+            // Safety check: blue always wins over yellow
             document.querySelectorAll('.pick-selected').forEach(el => {
                 el.classList.remove('cross-selected');
             });
             
             // Update previous set
-            previousSelectedResourceKeys = new Set(currentKeys);
+            previousSelectedResourceKeys = new Set(topLayerPicks);
             
             // Update clear button visibility (engine picks changed)
             updateClearSelectionsButtonVisibility();
@@ -4317,9 +3495,7 @@ $datasetsByResourceJsonString
             }
             
             // Clear other picks to avoid split-brain (strict policy)
-            engine.state.picks.resourceIds.clear();
-            engine.state.picks.resourceNames.clear();
-            engine.state.picks.resourceGroups.clear();
+            // Phase 5: Legacy picksets (resourceIds, resourceNames, resourceGroups) are deprecated - no longer cleared
             engine.state.picks.meterNames.clear();
             engine.state.picks.categories.clear();
             engine.state.picks.subcategories.clear();
@@ -4332,8 +3508,8 @@ $datasetsByResourceJsonString
             // Re-index DOM (in case rows were added/removed)
             initDomIndex();
             
-            // Sync UI from engine state (skip meter category re-render if click is in that section)
-            syncUIFromEngine(isInMeterCategory);
+            // Phase 5: Use central refresh pipeline (skip meter category re-render if click is in that section)
+            refreshUIFromState({ skipMeterCategoryRerender: isInMeterCategory });
             
             // Debug logging (Phase 3)
             if (window.DEBUG_COST_REPORT) {
@@ -4356,929 +3532,19 @@ $datasetsByResourceJsonString
                 }
             }
             
-            // Update UI
-            updateSummaryCards();
-            updateChart();
+            // Phase 5: UI updates already handled by syncUIFromEngine() -> refreshUIFromState() above
+            // No need for duplicate calls
         });
         
-        // Legacy updateChart code removed - keeping for reference but not used
-        function updateChart_OLD() {
-            // Combine category dropdown with chartSelections if dropdown is set to a specific category
-            // The dropdown acts as an additional filter that intersects with table selections
-            if (currentCategoryFilter !== 'all') {
-                // If dropdown category is set, ensure it's considered in chartSelections
-                // If chartSelections.categories already has selections, the dropdown category should intersect
-                // If no category selections exist, add the dropdown category
-                if (chartSelections.categories.size === 0) {
-                    // No category selections from table - add dropdown category with all subscriptions (empty string means "all")
-                    chartSelections.categories.set(currentCategoryFilter, new Set(['']));
-                } else if (!chartSelections.categories.has(currentCategoryFilter)) {
-                    // Category selections exist but dropdown category is not in them
-                    // Intersect: only include the dropdown category
-                    const dropdownCategorySet = new Set(['']); // Empty string means "all subscriptions for this category"
-                    chartSelections.categories.set(currentCategoryFilter, dropdownCategorySet);
-                    // Remove other categories that don't match dropdown
-                    const categoriesToRemove = [];
-                    chartSelections.categories.forEach((subs, cat) => {
-                        if (cat !== currentCategoryFilter) {
-                            categoriesToRemove.push(cat);
-                        }
-                    });
-                    categoriesToRemove.forEach(cat => chartSelections.categories.delete(cat));
-                }
-                // If dropdown category is already in chartSelections, keep it as-is (intersection)
-            }
-            
-            // Check if there are any chart selections
-            const hasChartSelections = chartSelections.subscriptions.size > 0 ||
-                chartSelections.categories.size > 0 ||
-                chartSelections.subcategories.size > 0 ||
-                chartSelections.meters.size > 0 ||
-                chartSelections.resources.size > 0;
-            
-            // Apply chart selections filter if any selections exist
-            let dataToUse = filterRawDailyDataBySelections(rawDailyData);
-            
-            // Also apply subscription checkbox filter if active (separate from chart selections)
-            if (selectedSubscriptions.size > 0) {
-                // Check if all subscriptions are selected
-                const allSelected = selectedSubscriptions.size > 0 && 
-                    selectedSubscriptions.size === allKnownSubscriptions.size &&
-                    Array.from(selectedSubscriptions).every(sub => allKnownSubscriptions.has(sub));
-                
-                // If all subscriptions selected AND no chart selections, use rawDailyData directly
-                // This ensures we get the same result as when no filters are applied
-                if (allSelected && !hasChartSelections) {
-                    dataToUse = rawDailyData;
-                } else {
-                    dataToUse = filterRawDailyDataBySelections(rawDailyData);
-                    
-                    if (!allSelected) {
-                        // Some subscriptions selected - filter by selected subscriptions
-                        dataToUse = dataToUse.map(day => {
-                            const filteredDay = {
-                                date: day.date,
-                                categories: {},
-                                subscriptions: {},
-                                meters: {},
-                                resources: {},
-                                totalCostLocal: 0,
-                                totalCostUSD: 0
-                            };
-                            
-                            // Filter categories by selected subscriptions
-                            Object.keys(day.categories || {}).forEach(cat => {
-                                const catData = day.categories[cat];
-                                const filteredBySub = {};
-                                let catTotalLocal = 0;
-                                let catTotalUSD = 0;
-                                selectedSubscriptions.forEach(sub => {
-                                    if (catData.bySubscription && catData.bySubscription[sub]) {
-                                        const subCost = catData.bySubscription[sub];
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            filteredBySub[sub] = subCost;
-                                            catTotalLocal += subCost.CostLocal || 0;
-                                            catTotalUSD += subCost.CostUSD || 0;
-                                        } else if (typeof subCost === 'number') {
-                                            filteredBySub[sub] = subCost;
-                                            catTotalLocal += subCost;
-                                            catTotalUSD += subCost; // Assume same if no USD provided
-                                        }
-                                    }
-                                });
-                                if (catTotalLocal > 0 || catTotalUSD > 0) {
-                                    filteredDay.categories[cat] = { total: catTotalLocal, totalUSD: catTotalUSD, bySubscription: filteredBySub };
-                                }
-                            });
-                            
-                            // Filter subscriptions - only include selected ones
-                            selectedSubscriptions.forEach(sub => {
-                                if (day.subscriptions && day.subscriptions[sub]) {
-                                    filteredDay.subscriptions[sub] = day.subscriptions[sub];
-                                }
-                            });
-                            
-                            // Filter meters by selected subscriptions
-                            Object.keys(day.meters || {}).forEach(meter => {
-                                const meterData = day.meters[meter];
-                                const filteredBySub = {};
-                                let meterTotalLocal = 0;
-                                let meterTotalUSD = 0;
-                                selectedSubscriptions.forEach(sub => {
-                                    if (meterData.bySubscription && meterData.bySubscription[sub]) {
-                                        const subCost = meterData.bySubscription[sub];
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            filteredBySub[sub] = subCost;
-                                            meterTotalLocal += subCost.CostLocal || 0;
-                                            meterTotalUSD += subCost.CostUSD || 0;
-                                        } else if (typeof subCost === 'number') {
-                                            filteredBySub[sub] = subCost;
-                                            meterTotalLocal += subCost;
-                                            meterTotalUSD += subCost; // Assume same if no USD provided
-                                        }
-                                    }
-                                });
-                                if (meterTotalLocal > 0 || meterTotalUSD > 0) {
-                                    filteredDay.meters[meter] = {
-                                        total: meterTotalLocal,
-                                        totalUSD: meterTotalUSD,
-                                        byCategory: meterData.byCategory || {},
-                                        bySubscription: filteredBySub
-                                    };
-                                }
-                            });
-                            
-                            // Filter resources by selected subscriptions
-                            Object.keys(day.resources || {}).forEach(resource => {
-                                const resData = day.resources[resource];
-                                const filteredBySub = {};
-                                let resTotalLocal = 0;
-                                let resTotalUSD = 0;
-                                selectedSubscriptions.forEach(sub => {
-                                    if (resData.bySubscription && resData.bySubscription[sub]) {
-                                        const subCost = resData.bySubscription[sub];
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            filteredBySub[sub] = subCost;
-                                            resTotalLocal += subCost.CostLocal || 0;
-                                            resTotalUSD += subCost.CostUSD || 0;
-                                        } else if (typeof subCost === 'number') {
-                                            filteredBySub[sub] = subCost;
-                                            resTotalLocal += subCost;
-                                            resTotalUSD += subCost; // Assume same if no USD provided
-                                        }
-                                    }
-                                });
-                                if (resTotalLocal > 0 || resTotalUSD > 0) {
-                                    filteredDay.resources[resource] = {
-                                        total: resTotalLocal,
-                                        totalUSD: resTotalUSD,
-                                        byCategory: resData.byCategory || {},
-                                        bySubscription: filteredBySub
-                                    };
-                                }
-                            });
-                            
-                            // Recalculate totals - track both Local and USD separately
-                            let dayTotalLocal = 0;
-                            let dayTotalUSD = 0;
-                            Object.values(filteredDay.categories).forEach(cat => {
-                                dayTotalLocal += cat.total || 0;
-                                // Ensure we use totalUSD if it exists, otherwise 0 (never fallback to total)
-                                // If totalUSD is missing, it means the category wasn't properly filtered - use 0
-                                const catUSD = (cat.totalUSD !== undefined && cat.totalUSD !== null) ? cat.totalUSD : 0;
-                                dayTotalUSD += catUSD;
-                                
-                            });
-                            filteredDay.totalCostLocal = dayTotalLocal;
-                            filteredDay.totalCostUSD = dayTotalUSD;
-                            
-                            
-                            return filteredDay;
-                        });
-                    }
-                    // else: allSelected = true, so use original data (no filtering needed)
-                }
-            }
-            
-            const view = currentView;
-            const categoryFilter = currentCategoryFilter;
-            const stacked = view !== 'total';
-            
-            costChart.options.scales.x.stacked = stacked;
-            costChart.options.scales.y.stacked = stacked;
-            // Ensure all labels are shown (no auto-skip)
-            costChart.options.scales.x.ticks.autoSkip = false;
-            costChart.options.scales.x.ticks.maxTicksLimit = null;
-            
-            let datasets;
-            
-            if (view === 'total') {
-                // Show only total (filtered by category, subscription, and resources)
-                const hasResourceSelections = chartSelections.resources.size > 0;
-                const selectedResources = hasResourceSelections ? new Set(chartSelections.resources.keys()) : null;
-                
-                const totalData = dataToUse.map(day => {
-                    let dayTotal = 0;
-                    
-                    // If resources are selected, sum costs from selected resources only
-                    if (hasResourceSelections) {
-                        selectedResources.forEach(resource => {
-                            const resData = day.resources && day.resources[resource];
-                            if (resData) {
-                                if (categoryFilter === 'all') {
-                                    // Sum all categories for this resource
-                                    dayTotal += resData.total || 0;
-                                } else {
-                                    // Sum only the filtered category for this resource
-                                    const catCost = resData.byCategory && resData.byCategory[categoryFilter];
-                                    dayTotal += getCostValue(catCost);
-                                }
-                            }
-                        });
-                    } else {
-                        // No resource selections - use category/subscription logic with proper intersection
-                        const hasSubscriptionSelections = chartSelections.subscriptions.size > 0;
-                        const hasCategorySelections = chartSelections.categories.size > 0;
-                        
-                        if (categoryFilter === 'all') {
-                            // Sum categories with proper intersection of subscription and category filters
-                            Object.entries(day.categories || {}).forEach(([cat, catData]) => {
-                                // Check if category should be included
-                                const catSubs = chartSelections.categories.get(cat);
-                                const categoryIncluded = !hasCategorySelections || (catSubs && catSubs.size > 0);
-                                if (!categoryIncluded) return; // Skip this category
-                                
-                                // Determine which subscriptions to include for this category
-                                let subsToInclude = [];
-                                
-                                if (hasSubscriptionSelections && hasCategorySelections) {
-                                    // INTERSECTION: Both filters active - include only subscriptions in both
-                                    if (catSubs.has('')) {
-                                        // Category selected from "Cost by Meter Category" - intersect with subscription selections
-                                        subsToInclude = Array.from(chartSelections.subscriptions).filter(sub =>
-                                            catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                        );
-                                    } else {
-                                        // Category has specific subscription selections - intersect with chartSelections.subscriptions
-                                        subsToInclude = Array.from(catSubs).filter(sub =>
-                                            chartSelections.subscriptions.has(sub) &&
-                                            catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                        );
-                                    }
-                                } else if (hasSubscriptionSelections) {
-                                    // Only subscription filter - include selected subscriptions for this category
-                                    subsToInclude = Array.from(chartSelections.subscriptions).filter(sub =>
-                                        catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                    );
-                                } else if (hasCategorySelections) {
-                                    // Only category filter
-                                    if (catSubs.has('')) {
-                                        // Category selected from "Cost by Meter Category" - include all subscriptions
-                                        subsToInclude = Object.keys(catData.bySubscription || {});
-                                    } else {
-                                        // Category has specific subscription selections
-                                        subsToInclude = Array.from(catSubs).filter(sub =>
-                                            catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                        );
-                                    }
-                                } else {
-                                    // No chart selections - apply subscription checkbox filter if active
-                                    if (selectedSubscriptions.size === 0) {
-                                        // No filters - include all subscriptions
-                                        subsToInclude = Object.keys(catData.bySubscription || {});
-                                    } else {
-                                        // Subscription checkbox filter active
-                                        subsToInclude = Array.from(selectedSubscriptions).filter(sub =>
-                                            catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                        );
-                                    }
-                                }
-                                
-                                // Sum costs for included subscriptions
-                                subsToInclude.forEach(sub => {
-                                    const subCost = catData.bySubscription[sub];
-                                    dayTotal += getCostValue(subCost);
-                                });
-                            });
-                        } else {
-                            // Single category from dropdown
-                            const catData = day.categories && day.categories[categoryFilter];
-                            if (catData) {
-                                const catSubs = chartSelections.categories.get(categoryFilter);
-                                let subsToInclude = [];
-                                
-                                if (hasSubscriptionSelections && hasCategorySelections) {
-                                    // INTERSECTION: Both filters active
-                                    if (catSubs && catSubs.has('')) {
-                                        // Category selected from "Cost by Meter Category" - intersect with subscription selections
-                                        subsToInclude = Array.from(chartSelections.subscriptions).filter(sub =>
-                                            catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                        );
-                                    } else if (catSubs && catSubs.size > 0) {
-                                        // Category has specific subscription selections - intersect
-                                        subsToInclude = Array.from(catSubs).filter(sub =>
-                                            chartSelections.subscriptions.has(sub) &&
-                                            catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                        );
-                                    }
-                                } else if (hasSubscriptionSelections) {
-                                    // Only subscription filter
-                                    subsToInclude = Array.from(chartSelections.subscriptions).filter(sub =>
-                                        catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                    );
-                                } else if (hasCategorySelections && catSubs && catSubs.size > 0) {
-                                    // Only category filter
-                                    if (catSubs.has('')) {
-                                        subsToInclude = Object.keys(catData.bySubscription || {});
-                                    } else {
-                                        subsToInclude = Array.from(catSubs).filter(sub =>
-                                            catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                        );
-                                    }
-                                } else {
-                                    // No chart selections - apply subscription checkbox filter if active
-                                    if (selectedSubscriptions.size === 0) {
-                                        subsToInclude = Object.keys(catData.bySubscription || {});
-                                    } else {
-                                        subsToInclude = Array.from(selectedSubscriptions).filter(sub =>
-                                            catData.bySubscription && catData.bySubscription[sub] !== undefined
-                                        );
-                                    }
-                                }
-                                
-                                // Sum costs for included subscriptions
-                                subsToInclude.forEach(sub => {
-                                    const subCost = catData.bySubscription[sub];
-                                    dayTotal += getCostValue(subCost);
-                                });
-                            }
-                        }
-                    }
-                    return dayTotal;
-                });
-                datasets = [{
-                    label: categoryFilter === 'all' ? 'Total Cost' : categoryFilter,
-                    data: totalData,
-                    backgroundColor: 'rgba(84, 160, 255, 0.8)',
-                    borderColor: 'rgba(84, 160, 255, 1)',
-                    borderWidth: 1
-                }];
-            } else if (view === 'stacked-category') {
-                datasets = buildFilteredDatasets('categories', categoryFilter, false, dataToUse);
-            } else if (view === 'stacked-subscription') {
-                datasets = buildFilteredDatasets('subscriptions', categoryFilter, false, dataToUse);
-            } else if (view === 'stacked-meter') {
-                datasets = buildFilteredDatasets('meters', categoryFilter, true, dataToUse);
-            } else if (view === 'stacked-resource') {
-                datasets = buildFilteredDatasets('resources', categoryFilter, true, dataToUse);
-            } else {
-                datasets = buildFilteredDatasets('categories', categoryFilter, false, dataToUse);
-            }
-            
-            costChart.data.labels = chartLabels;
-            costChart.data.datasets = datasets;
-            costChart.update();
-        }
+        // Phase 5: Legacy chart functions removed - engine-only now
         
-        function buildFilteredDatasets(dimension, categoryFilter, includeOther, dataSource) {
-            // Use provided dataSource or fall back to rawDailyData
-            const data = dataSource || rawDailyData;
-            
-            // Check if resource selections are active
-            const hasResourceSelections = chartSelections.resources.size > 0;
-            const selectedResources = hasResourceSelections ? new Set(chartSelections.resources.keys()) : null;
-            
-            // Get all unique keys for this dimension (excluding "Other" which we handle separately)
-            // If resources are selected and dimension is resources or meters, only get keys from filtered data
-            const allKeys = new Set();
-            data.forEach(day => {
-                Object.keys(day[dimension] || {}).forEach(key => {
-                    if (key !== 'Other') {
-                        // If resources are selected and dimension is resources, only include if resource is selected
-                        if (dimension === 'resources' && hasResourceSelections) {
-                            if (selectedResources.has(key)) {
-                                allKeys.add(key);
-                            }
-                        } else if (dimension === 'meters' && hasResourceSelections) {
-                            // For meters, only include if meter exists in filtered data (which means it's used by selected resources)
-                            // Since data is already filtered by filterRawDailyDataBySelections, if meter exists here, it's used by selected resources
-                            const meterData = day.meters && day.meters[key];
-                            if (meterData) {
-                                // Meter exists in filtered data - it's used by selected resources
-                                allKeys.add(key);
-                            }
-                            // If meter doesn't exist in filtered data, don't add it to allKeys
-                        } else {
-                            allKeys.add(key);
-                        }
-                    }
-                });
-            });
-            
-            // Calculate totals for each key based on current filters (for top 15 selection)
-            // Since data is already filtered by filterRawDailyDataBySelections(), we should use the filtered totals
-            const keyTotals = [];
-            allKeys.forEach(key => {
-                // Skip if category filter active and this is categories dimension (key IS the category)
-                if (dimension === 'categories' && categoryFilter !== 'all' && key !== categoryFilter) {
-                    return;
-                }
-                
-                // Skip if resources are selected and this is resources dimension - only show selected resources
-                if (dimension === 'resources' && hasResourceSelections) {
-                    if (!selectedResources.has(key)) {
-                        return; // Skip this resource if it's not selected
-                    }
-                }
-                
-                // Note: Meters are already filtered in allKeys collection above when resources are selected
-                // So if we reach here and dimension is meters with resource selections, the meter is already validated
-                
-                let totalCost = 0;
-                data.forEach((day, dayIndex) => {
-                    const dimData = day[dimension] && day[dimension][key];
-                    if (!dimData) return;
-                    
-                    let value = 0;
-                    
-                    // Since data is already filtered, use the total from filtered data when available
-                    // For category filter, use byCategory value if specified
-                    if (dimension === 'categories' && categoryFilter !== 'all') {
-                        // Single category filter - use category value
-                        const catValue = dimData.byCategory && dimData.byCategory[categoryFilter];
-                        value = getCostValue(catValue);
-                    } else if (dimData.total !== undefined && dimData.total !== null) {
-                        // Use total from filtered data (data is already filtered by filterRawDailyDataBySelections)
-                        value = getCostValue(dimData.total);
-                    } else if (dimData.bySubscription) {
-                        // Fallback: calculate from bySubscription breakdown if total not available
-                        Object.values(dimData.bySubscription).forEach(subCost => {
-                            value += getCostValue(subCost);
-                        });
-                        // Handle resources selected case for categories
-                        if (hasResourceSelections) {
-                            selectedResources.forEach(resource => {
-                                const resData = day.resources && day.resources[resource];
-                                if (resData && resData.byCategory && resData.byCategory[key]) {
-                                    value += getCostValue(resData.byCategory[key]);
-                                }
-                            });
-                        }
-                    } else if (dimension === 'subscriptions') {
-                        // For subscriptions, use category filter if specified
-                        if (categoryFilter !== 'all') {
-                            const catValue = dimData.byCategory && dimData.byCategory[categoryFilter];
-                            value = getCostValue(catValue);
-                        } else {
-                            // Use total from filtered data
-                            value = getCostValue(dimData.total);
-                        }
-                    } else {
-                        // For meters and resources
-                        if (categoryFilter !== 'all') {
-                            // Category filter active - get value for this category
-                            const catValue = dimData.byCategory && dimData.byCategory[categoryFilter];
-                            value = getCostValue(catValue);
-                        } else {
-                            // Use total from filtered data
-                            value = getCostValue(dimData.total);
-                        }
-                    }
-                    
-                    totalCost += value;
-                });
-                
-                if (totalCost > 0) {
-                    keyTotals.push({ key: key, totalCost: totalCost });
-                }
-            });
-            
-            // Sort by total cost and get top 15 for meter/resource views
-            keyTotals.sort((a, b) => b.totalCost - a.totalCost);
-            const topKeys = includeOther ? keyTotals.slice(0, 15).map(item => item.key) : keyTotals.map(item => item.key);
-            
-            const datasets = [];
-            let colorIndex = 0;
-            
-            topKeys.forEach(key => {
-                const keyData = data.map((day, dayIndex) => {
-                    const dimData = day[dimension] && day[dimension][key];
-                    if (!dimData) return 0;
-                    
-                    let value = 0;
-                    
-                    // Apply filters based on dimension type
-                    if (dimension === 'categories') {
-                        // When dimension is categories, key IS the category name
-                        // If resources are selected, sum costs from selected resources for this category
-                        if (hasResourceSelections) {
-                            selectedResources.forEach(resource => {
-                                const resData = day.resources && day.resources[resource];
-                                if (resData && resData.byCategory && resData.byCategory[key]) {
-                                    const catCost = resData.byCategory[key];
-                                    if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
-                                        value += catCost.CostLocal || 0;
-                                    } else if (typeof catCost === 'number') {
-                                        value += catCost;
-                                    }
-                                }
-                            });
-                        } else {
-                            // No resource selections - use existing category logic
-                            const catSubs = chartSelections.categories.get(key);
-                            const hasCategorySelections = chartSelections.categories.size > 0;
-                            
-                            if (catSubs && catSubs.size > 0) {
-                                // Category is selected - check if empty string (Cost by Meter Category) or specific subscription
-                                if (catSubs.has('')) {
-                                    // Empty string means "Cost by Meter Category" - include all subscriptions
-                                    // Use total from filtered data, or calculate from bySubscription if total is missing
-                                    if (dimData && dimData.total !== undefined && dimData.total !== null) {
-                                        value = dimData.total || 0;
-                                    } else if (dimData && dimData.bySubscription) {
-                                        // Calculate total from bySubscription breakdown
-                                        Object.values(dimData.bySubscription).forEach(subCost => {
-                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                                value += subCost.CostLocal || 0;
-                                            } else if (typeof subCost === 'number') {
-                                                value += subCost;
-                                            }
-                                        });
-                                    }
-                                } else {
-                                    // Specific subscriptions selected - sum only those
-                                    catSubs.forEach(sub => {
-                                        const subCost = dimData && dimData.bySubscription && dimData.bySubscription[sub];
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            value += subCost.CostLocal || 0;
-                                        } else if (typeof subCost === 'number') {
-                                            value += subCost;
-                                        }
-                                    });
-                                }
-                            } else if (!hasCategorySelections) {
-                                // No category selections - apply subscription filter only
-                                if (selectedSubscriptions.size === 0) {
-                                    // No filters - use total
-                                    if (dimData && dimData.total !== undefined && dimData.total !== null) {
-                                        value = dimData.total || 0;
-                                    } else if (dimData && dimData.bySubscription) {
-                                        // Calculate total from bySubscription breakdown
-                                        Object.values(dimData.bySubscription).forEach(subCost => {
-                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                                value += subCost.CostLocal || 0;
-                                            } else if (typeof subCost === 'number') {
-                                                value += subCost;
-                                            }
-                                        });
-                                    }
-                                } else {
-                                    // Subscription filter active - sum selected subscriptions
-                                    selectedSubscriptions.forEach(sub => {
-                                        const subCost = dimData && dimData.bySubscription && dimData.bySubscription[sub];
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            value += subCost.CostLocal || 0;
-                                        } else if (typeof subCost === 'number') {
-                                            value += subCost;
-                                        }
-                                    });
-                                }
-                            } else {
-                                // Category selections exist but this category is NOT explicitly selected
-                                // However, if it exists in filtered data, it means it should be included
-                                // (e.g., it was included via subscription selection or other UNION logic)
-                                // So we should still calculate its value based on available data
-                                if (dimData) {
-                                    if (selectedSubscriptions.size === 0) {
-                                        // No subscription filter - use total
-                                        if (dimData.total !== undefined && dimData.total !== null) {
-                                            value = dimData.total || 0;
-                                        } else if (dimData.bySubscription) {
-                                            // Calculate total from bySubscription breakdown
-                                            Object.values(dimData.bySubscription).forEach(subCost => {
-                                                if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                                    value += subCost.CostLocal || 0;
-                                                } else if (typeof subCost === 'number') {
-                                                    value += subCost;
-                                                }
-                                            });
-                                        }
-                                    } else {
-                                        // Subscription filter active - sum selected subscriptions
-                                        selectedSubscriptions.forEach(sub => {
-                                            const subCost = dimData.bySubscription && dimData.bySubscription[sub];
-                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                                value += subCost.CostLocal || 0;
-                                            } else if (typeof subCost === 'number') {
-                                                value += subCost;
-                                            }
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    } else if (dimension === 'subscriptions') {
-                        // When dimension is subscriptions, if resources are selected, sum costs from selected resources for this subscription
-                        if (hasResourceSelections) {
-                            selectedResources.forEach(resource => {
-                                const resData = day.resources && day.resources[resource];
-                                if (resData && resData.bySubscription && resData.bySubscription[key]) {
-                                    const subCost = resData.bySubscription[key];
-                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                        value += subCost.CostLocal || 0;
-                                    } else if (typeof subCost === 'number') {
-                                        value += subCost;
-                                    }
-                                }
-                            });
-                        } else {
-                            // No resource selections - use existing subscription logic
-                            const hasCategorySelections = chartSelections.categories.size > 0;
-                            
-                            if (hasCategorySelections) {
-                                // Category selections are active - only include categories that are selected
-                                let selectedCatTotal = 0;
-                                chartSelections.categories.forEach((subs, cat) => {
-                                    // Check if this subscription is selected for this category, or if category is selected from "Cost by Meter Category" (empty string)
-                                    if (subs.has(key) || subs.has('')) {
-                                        selectedCatTotal += (dimData.byCategory && dimData.byCategory[cat]) || 0;
-                                    }
-                                });
-                                value = selectedCatTotal;
-                            } else if (categoryFilter === 'all') {
-                                // No category selections, no category filter - use total
-                                value = dimData.total || 0;
-                            } else {
-                                // Category filter active - get value for this category
-                                value = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
-                            }
-                        }
-                    } else if (dimension === 'meters') {
-                        // When dimension is meters, if resources are selected, sum costs from selected resources for this meter
-                        if (hasResourceSelections) {
-                            // Sum meter costs from selected resources
-                            // Since resources don't have direct byMeter breakdown, we use the meter's total from filtered data
-                            // which should already be filtered by resources in filterRawDailyDataBySelections
-                            if (dimData && dimData.total) {
-                                value = dimData.total || 0;
-                            } else {
-                                // Fallback: if meter not in filtered data, it means no selected resources use it
-                                value = 0;
-                            }
-                        } else {
-                            // No resource selections - use UNION logic for chartSelections
-                            const hasSubscriptionSelections = chartSelections.subscriptions.size > 0;
-                            const hasCategorySelections = chartSelections.categories.size > 0;
-                            const hasMeterSelections = chartSelections.meters.size > 0;
-                            
-                            // Check if this meter is directly selected
-                            const meterKeys = chartSelections.meters.get(key);
-                            const isMeterSelected = meterKeys && meterKeys.size > 0;
-                            
-                            if (isMeterSelected) {
-                                // Meter is directly selected - sum costs for selected contexts
-                                meterKeys.forEach(meterKey => {
-                                    const parts = meterKey.split('|');
-                                    const subcat = parts[0];
-                                    const cat = parts[1];
-                                    const sub = parts[2];
-                                    
-                                    // Check category match
-                                    if (dimData.byCategory && dimData.byCategory[cat]) {
-                                        const catCost = dimData.byCategory[cat];
-                                        if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
-                                            value += catCost.CostLocal || 0;
-                                        } else if (typeof catCost === 'number') {
-                                            value += catCost;
-                                        }
-                                    }
-                                    // Check subscription match
-                                    if (dimData.bySubscription && dimData.bySubscription[sub]) {
-                                        const subCost = dimData.bySubscription[sub];
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            // Only add if not already added via category
-                                            if (!dimData.byCategory || !dimData.byCategory[cat]) {
-                                                value += subCost.CostLocal || 0;
-                                            }
-                                        } else if (typeof subCost === 'number') {
-                                            if (!dimData.byCategory || !dimData.byCategory[cat]) {
-                                                value += subCost;
-                                            }
-                                        }
-                                    }
-                                });
-                            } else if (hasCategorySelections) {
-                                // Category selections are active - sum costs for selected categories
-                                chartSelections.categories.forEach((subs, cat) => {
-                                    // Check if this category is selected for this meter, or if category is selected from "Cost by Meter Category" (empty string)
-                                    if (subs.has('') || subs.size > 0) {
-                                        const catCost = dimData.byCategory && dimData.byCategory[cat];
-                                        if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
-                                            value += catCost.CostLocal || 0;
-                                        } else if (typeof catCost === 'number') {
-                                            value += catCost;
-                                        }
-                                    }
-                                });
-                            } else if (hasSubscriptionSelections) {
-                                // Subscription selections are active - sum costs for selected subscriptions
-                                chartSelections.subscriptions.forEach(sub => {
-                                    const subCost = dimData.bySubscription && dimData.bySubscription[sub];
-                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                        value += subCost.CostLocal || 0;
-                                    } else if (typeof subCost === 'number') {
-                                        value += subCost;
-                                    }
-                                });
-                            } else if (categoryFilter === 'all') {
-                                // No chart selections - use dropdown/checkbox filters
-                                // No category filter - use total and apply subscription filter
-                                if (selectedSubscriptions.size === 0) {
-                                    value = dimData.total || 0;
-                                } else {
-                                    selectedSubscriptions.forEach(sub => {
-                                        const subCost = dimData.bySubscription && dimData.bySubscription[sub];
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            value += subCost.CostLocal || 0;
-                                        } else if (typeof subCost === 'number') {
-                                            value += subCost;
-                                        }
-                                    });
-                                }
-                            } else {
-                                // Category filter active - get value for this category
-                                const catValue = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
-                                if (catValue > 0) {
-                                    if (selectedSubscriptions.size === 0) {
-                                        value = catValue;
-                                    } else {
-                                        // Estimate: use category value proportionally based on subscription share of total
-                                        const totalValue = dimData.total || 0;
-                                        if (totalValue > 0) {
-                                            let subscriptionShare = 0;
-                                            selectedSubscriptions.forEach(sub => {
-                                                const subCost = dimData.bySubscription && dimData.bySubscription[sub];
-                                                if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                                    subscriptionShare += subCost.CostLocal || 0;
-                                                } else if (typeof subCost === 'number') {
-                                                    subscriptionShare += subCost;
-                                                }
-                                            });
-                                            value = catValue * (subscriptionShare / totalValue);
-                                        } else {
-                                            value = 0;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // For resources dimension, use existing logic (already handled by filterRawDailyDataBySelections)
-                        if (categoryFilter === 'all') {
-                            // No category filter - use total and apply subscription filter
-                            if (selectedSubscriptions.size === 0) {
-                                value = dimData.total || 0;
-                            } else {
-                                selectedSubscriptions.forEach(sub => {
-                                    const subCost = dimData.bySubscription && dimData.bySubscription[sub];
-                                    if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                        value += subCost.CostLocal || 0;
-                                    } else if (typeof subCost === 'number') {
-                                        value += subCost;
-                                    }
-                                });
-                            }
-                        } else {
-                            // Category filter active - get value for this category
-                            const catValue = (dimData.byCategory && dimData.byCategory[categoryFilter]) || 0;
-                            if (catValue > 0) {
-                                if (selectedSubscriptions.size === 0) {
-                                    value = catValue;
-                                } else {
-                                    // Estimate: use category value proportionally based on subscription share of total
-                                    const totalValue = dimData.total || 0;
-                                    if (totalValue > 0) {
-                                        let subscriptionShare = 0;
-                                        selectedSubscriptions.forEach(sub => {
-                                            const subCost = dimData.bySubscription && dimData.bySubscription[sub];
-                                            if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                                subscriptionShare += subCost.CostLocal || 0;
-                                            } else if (typeof subCost === 'number') {
-                                                subscriptionShare += subCost;
-                                            }
-                                        });
-                                        value = catValue * (subscriptionShare / totalValue);
-                                    } else {
-                                        value = 0;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    return value;
-                });
-                
-                // Only include if there's non-zero data
-                if (keyData.some(v => v > 0)) {
-                    // Calculate total cost for sorting
-                    const totalCost = keyData.reduce((sum, val) => sum + val, 0);
-                    datasets.push({
-                        label: key,
-                        data: keyData,
-                        totalCost: totalCost, // Store for sorting
-                        backgroundColor: chartColors[colorIndex % chartColors.length],
-                        borderColor: chartColors[colorIndex % chartColors.length],
-                        borderWidth: 1
-                    });
-                    colorIndex++;
-                }
-            });
-            
-            // Sort datasets by total cost descending (largest at bottom for stacked chart)
-            datasets.sort((a, b) => b.totalCost - a.totalCost);
-            
-            // Add "Other" for meters and resources (at the top, before sorted items)
-            if (includeOther) {
-                const otherDataCalc = data.map((day, dayIndex) => {
-                    // Use the filtered day total (already calculated based on filters)
-                    const dayTotal = getFilteredDayTotal(day, categoryFilter, selectedSubscriptions);
-                    
-                    // Calculate the sum of ALL resources/meters for this day that match the filter
-                    // (not just the top 15, to correctly calculate "Other")
-                    let allFilteredResourcesTotal = 0;
-                    if (dimension === 'resources' || dimension === 'meters') {
-                        Object.keys(day[dimension] || {}).forEach(key => {
-                            if (key === 'Other') return;
-                            
-                            // Skip if resources are selected and this is resources dimension - only count selected resources
-                            if (dimension === 'resources' && hasResourceSelections && !selectedResources.has(key)) {
-                                return;
-                            }
-                            
-                            const dimData = day[dimension][key];
-                            if (!dimData) return;
-                            
-                            let value = 0;
-                            if (categoryFilter === 'all') {
-                                if (selectedSubscriptions.size === 0) {
-                                    value = dimData.total || 0;
-                                } else {
-                                    selectedSubscriptions.forEach(sub => {
-                                        const subCost = dimData.bySubscription && dimData.bySubscription[sub];
-                                        if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                            value += subCost.CostLocal || 0;
-                                        } else if (typeof subCost === 'number') {
-                                            value += subCost;
-                                        }
-                                    });
-                                }
-                            } else {
-                                const catCost = dimData.byCategory && dimData.byCategory[categoryFilter];
-                                let catValue = 0;
-                                if (catCost && typeof catCost === 'object' && catCost.CostLocal !== undefined) {
-                                    catValue = catCost.CostLocal || 0;
-                                } else if (typeof catCost === 'number') {
-                                    catValue = catCost;
-                                }
-                                
-                                if (catValue > 0) {
-                                    if (selectedSubscriptions.size === 0) {
-                                        value = catValue;
-                                    } else {
-                                        const totalValue = dimData.total || 0;
-                                        if (totalValue > 0) {
-                                            let subscriptionShare = 0;
-                                            selectedSubscriptions.forEach(sub => {
-                                                const subCost = dimData.bySubscription && dimData.bySubscription[sub];
-                                                if (subCost && typeof subCost === 'object' && subCost.CostLocal !== undefined) {
-                                                    subscriptionShare += subCost.CostLocal || 0;
-                                                } else if (typeof subCost === 'number') {
-                                                    subscriptionShare += subCost;
-                                                }
-                                            });
-                                            value = catValue * (subscriptionShare / totalValue);
-                                        }
-                                    }
-                                }
-                            }
-                            allFilteredResourcesTotal += value;
-                        });
-                    }
-                    
-                    // Subtract the top 15 datasets (which are already filtered)
-                    const knownTotal = datasets.reduce((sum, ds) => sum + (ds.data[dayIndex] || 0), 0);
-                    
-                    // "Other" = all filtered resources - top 15 filtered resources
-                    return Math.max(0, allFilteredResourcesTotal - knownTotal);
-                });
-                
-                const otherTotal = otherDataCalc.reduce((sum, val) => sum + val, 0);
-                if (otherTotal > 0.01) {
-                    // Insert "Other" at the beginning (top of stack)
-                    datasets.unshift({
-                        label: 'Other',
-                        data: otherDataCalc,
-                        totalCost: otherTotal,
-                        backgroundColor: 'rgba(128, 128, 128, 0.6)',
-                        borderColor: 'rgba(128, 128, 128, 0.8)',
-                        borderWidth: 1
-                    });
-                }
-            }
-            
-            return datasets;
-        }
-        
+        // Phase 5: Chart view change handler - use central refresh pipeline
         function updateChartView() {
             currentView = document.getElementById('chartView').value;
-            updateChart();
+            refreshUIFromState({ skipMeterCategoryRerender: true }); // Chart view change doesn't affect Meter Category data
         }
         
-        function filterChartCategory() {
-            currentCategoryFilter = document.getElementById('categoryFilter').value;
-            updateChart();
-        }
+        // Phase 5.1: legacy category filter handler removed - category filter UI removed
         
         // Hard hide subscription cards not in scope (GUID-based)
         // This hides entire subscription-card containers in "Cost by Subscription" section
@@ -5353,19 +3619,14 @@ $datasetsByResourceJsonString
             // Optional (compat/debug)
             engine.setScopeSubscriptionNames(selectedSubNames);
             
-            // Legacy (tills den tas bort)
-            selectedSubscriptions = new Set(selectedSubNames);
+            // Phase 5.1: legacy subscription state removed - use engine.state.scope.subscriptionIds
             
             // Apply subscription scope: hard hide cards + filter rows (GUID-based)
             applySubscriptionScopeToCards();  // Hide subscription-cards not in scope
             applySubscriptionScopeToTables(); // Hide table rows not in scope
             
-            // Dynamic re-aggregation for "Cost by Meter Category" (reflects current scope)
-            renderCostByMeterCategory();
-            
-            // Re-index DOM after dynamic render
+            // Re-index DOM (needed before visual updates)
             initDomIndex();
-            updateResourceSelectionVisual();
             
             // Debug logging (Phase 3)
             if (window.DEBUG_COST_REPORT) {
@@ -5380,9 +3641,9 @@ $datasetsByResourceJsonString
                 }
             }
             
-            // UI refresh
-            updateSummaryCards();
-            updateChart();
+            // Phase 5: Use central refresh pipeline (scope change affects Meter Category data, so skip=false)
+            refreshUIFromState({ skipMeterCategoryRerender: false });
+            
             if (typeof applySearchAndSubscriptionFilters === 'function') {
                 applySearchAndSubscriptionFilters();
             }
@@ -5627,10 +3888,10 @@ $datasetsByResourceJsonString
                                 
                                 // Check if this resource is in activeRowIds (affected by current filters)
                                 const isActive = activeResourceKeys.has(resource.resourceKey);
-                                const activeClass = isActive ? ' filter-selected' : '';
+                                // Phase 5.2: Visual markers applied in updateResourceSelectionVisual, not in render
                                 
                                 // Build attributes: always data-resource-key, data-resource-id only if ResourceId exists
-                                let attr = 'class="clickable' + activeClass + '" data-resource-key="' + resourceKeyEncoded + '"';
+                                let attr = 'class="clickable" data-resource-key="' + resourceKeyEncoded + '"';
                                 if (resIdEncoded) {
                                     attr += ' data-resource-id="' + resIdEncoded + '"';
                                 }
@@ -5841,10 +4102,11 @@ $datasetsByResourceJsonString
             });
             
             // Filter resource rows within meter sections by subscription and search
+            // Phase 5.1: Use engine scope instead of legacy subscription state (scopeIds already declared above)
             document.querySelectorAll('.resource-table tbody tr').forEach(row => {
                 const subscription = row.getAttribute('data-subscription');
-                const matchesSubscription = selectedSubscriptions.size === 0 || 
-                    (subscription && selectedSubscriptions.has(subscription));
+                const matchesSubscription = scopeIds.size === 0 || 
+                    (subscription && scopeIds.has(subscription));
                 const rowText = row.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || rowText.includes(searchText);
                 
@@ -5855,7 +4117,7 @@ $datasetsByResourceJsonString
             document.querySelectorAll('.meter-card').forEach(card => {
                 const visibleRows = card.querySelectorAll('.resource-table tbody tr:not(.filtered-out)');
                 const totalRows = card.querySelectorAll('.resource-table tbody tr');
-                if (totalRows.length > 0 && selectedSubscriptions.size > 0) {
+                if (totalRows.length > 0 && scopeIds.size > 0) {
                     card.classList.toggle('filtered-out', visibleRows.length === 0);
                 } else {
                     card.classList.remove('filtered-out');
@@ -5866,7 +4128,7 @@ $datasetsByResourceJsonString
             document.querySelectorAll('.subcategory-drilldown').forEach(subcat => {
                 const visibleMeters = subcat.querySelectorAll('.meter-card:not(.filtered-out)');
                 const totalMeters = subcat.querySelectorAll('.meter-card');
-                if (totalMeters.length > 0 && selectedSubscriptions.size > 0) {
+                if (totalMeters.length > 0 && scopeIds.size > 0) {
                     subcat.classList.toggle('filtered-out', visibleMeters.length === 0);
                 } else {
                     subcat.classList.remove('filtered-out');
@@ -5877,7 +4139,7 @@ $datasetsByResourceJsonString
             document.querySelectorAll('.category-card:not(.subscription-card):not(.resource-card)').forEach(cat => {
                 const visibleSubcats = cat.querySelectorAll('.subcategory-drilldown:not(.filtered-out)');
                 const totalSubcats = cat.querySelectorAll('.subcategory-drilldown');
-                if (totalSubcats.length > 0 && selectedSubscriptions.size > 0) {
+                if (totalSubcats.length > 0 && scopeIds.size > 0) {
                     cat.classList.toggle('filtered-out', visibleSubcats.length === 0);
                 } else {
                     cat.classList.remove('filtered-out');
@@ -5891,6 +4153,12 @@ $datasetsByResourceJsonString
                 const searchInput = document.getElementById('resourceSearch');
                 if (!searchInput) {
                     console.warn('resourceSearch element not found, skipping recalculateTopResources');
+                    return;
+                }
+                
+                // Phase 5.1.1: Use engine data for engine-only consistency
+                if (!engine) {
+                    console.warn('Engine not available, skipping recalculateTopResources');
                     return;
                 }
                 
@@ -5909,12 +4177,6 @@ $datasetsByResourceJsonString
                     return;
                 }
                 
-                // Check if rawDailyData is available
-                if (typeof rawDailyData === 'undefined' || !rawDailyData || !Array.isArray(rawDailyData)) {
-                    console.warn('rawDailyData not available, skipping recalculateTopResources');
-                    return;
-                }
-                
                 // Check if resource cards exist (only in Top 20 Resources section, not Cost Increase Drivers)
                 const resourceCards = resourcesContainer.querySelectorAll('.resource-card:not(.increased-cost-card)');
                 if (resourceCards.length === 0) {
@@ -5922,33 +4184,18 @@ $datasetsByResourceJsonString
                     return;
                 }
                 
-                // Calculate filtered costs for each resource from rawDailyData
-                const resourceCosts = new Map();
+                // Get scope-filtered rowIds (respects subscription filter from engine.state.scope)
+                const scopeRowIds = engine.getScopeRowIds();
                 
-                rawDailyData.forEach(day => {
-                    if (day && day.resources) {
-                        Object.entries(day.resources).forEach(([resName, resData]) => {
-                            if (resName === 'Other') return; // Skip "Other"
-                            
-                            if (!resourceCosts.has(resName)) {
-                                resourceCosts.set(resName, 0);
-                            }
-                            
-                            // Calculate cost based on subscription filter
-                            if (selectedSubscriptions.size === 0) {
-                                // No subscription filter - use total
-                                resourceCosts.set(resName, resourceCosts.get(resName) + (resData.total || 0));
-                            } else {
-                                // Sum costs for selected subscriptions only
-                                if (resData.bySubscription) {
-                                    let dayCost = 0;
-                                    selectedSubscriptions.forEach(sub => {
-                                        dayCost += (resData.bySubscription[sub] || 0);
-                                    });
-                                    resourceCosts.set(resName, resourceCosts.get(resName) + dayCost);
-                                }
-                            }
-                        });
+                // Group by resource using engine (aggregates totals, not daily series)
+                const resourceGroups = engine.groupByResource(scopeRowIds);
+                
+                // Build resourceKey -> total cost map (using resourceName as key to match DOM cards)
+                const resourceCosts = new Map();
+                resourceGroups.forEach(resData => {
+                    // Use resourceName as key (matches what's in DOM cards)
+                    if (resData.resourceName) {
+                        resourceCosts.set(resData.resourceName, resData.local || 0);
                     }
                 });
                 
@@ -5973,14 +4220,17 @@ $datasetsByResourceJsonString
                 
                 const searchText = searchInput.value.toLowerCase();
                 
+                // Get subscription scope from engine (for filtering cards by subscription)
+                const scopeSubscriptionIds = engine.state.scope.subscriptionIds || new Set();
+                
                 // Remove all resource cards from DOM (temporarily)
                 const cardsToReorder = cardsWithCosts.map(item => item.card);
                 cardsToReorder.forEach(card => card.remove());
                 
                 // Filter by subscription first to get resources matching the subscription filter
                 const subscriptionFiltered = cardsWithCosts.filter(item => {
-                    return selectedSubscriptions.size === 0 || 
-                        (item.subscription && selectedSubscriptions.has(item.subscription));
+                    return scopeSubscriptionIds.size === 0 || 
+                        (item.subscription && scopeSubscriptionIds.has(item.subscription));
                 });
                 
                 // Get top 20 most costly resources that match subscription filter
@@ -6010,8 +4260,8 @@ $datasetsByResourceJsonString
                 
                 // Add resources that don't match subscription filter (keep hidden)
                 cardsWithCosts.forEach(item => {
-                    const matchesSubscription = selectedSubscriptions.size === 0 || 
-                        (item.subscription && selectedSubscriptions.has(item.subscription));
+                    const matchesSubscription = scopeSubscriptionIds.size === 0 || 
+                        (item.subscription && scopeSubscriptionIds.has(item.subscription));
                     if (!matchesSubscription) {
                         const card = item.card;
                         card.classList.add('filtered-out');
@@ -6049,6 +4299,7 @@ $datasetsByResourceJsonString
             filterBySubscription();
         }
         
+        // Phase 5.1: Make toggleSection globally available for onclick handlers
         function toggleSection(element) {
             // Find the closest expandable parent
             const expandable = element.closest('.expandable');
@@ -6065,6 +4316,8 @@ $datasetsByResourceJsonString
                 }
             }
         }
+        // Ensure toggleSection is globally available
+        window.toggleSection = toggleSection;
         
         function toggleSubscriptionFilter(element) {
             // Toggle the subscription filter content visibility
@@ -6083,525 +4336,44 @@ $datasetsByResourceJsonString
             }
         }
         
-        // Internal selection functions (no update calls)
-        function _selectSubscriptionInternal(subscription) {
-            if (!subscription) return;
-            chartSelections.subscriptions.add(subscription);
-        }
+        // Phase 5: Legacy select/deselect functions removed - engine-only state now
         
-        function _selectCategoryInternal(category, subscription) {
-            if (!category) return;
-            // Normalize subscription: use empty string for null/undefined (Cost by Meter Category section)
-            const subKey = subscription || '';
-            if (!chartSelections.categories.has(category)) {
-                chartSelections.categories.set(category, new Set());
-            }
-            chartSelections.categories.get(category).add(subKey);
-        }
-        
-        function _selectSubcategoryInternal(subcategory, category, subscription) {
-            if (!subcategory) return;
-            const key = createSelectionKey(category, subscription || '');
-            if (!chartSelections.subcategories.has(subcategory)) {
-                chartSelections.subcategories.set(subcategory, new Set());
-            }
-            chartSelections.subcategories.get(subcategory).add(key);
-        }
-        
-        function _selectMeterInternal(meter, subcategory, category, subscription) {
-            if (!meter) return;
-            const key = createSelectionKey(subcategory, category, subscription);
-            if (!chartSelections.meters.has(meter)) {
-                chartSelections.meters.set(meter, new Set());
-            }
-            chartSelections.meters.get(meter).add(key);
-        }
-        
-        function _selectResourceInternal(resource, meter, subcategory, category, subscription) {
-            if (!resource) return;
-            const key = createSelectionKey(meter, subcategory, category, subscription);
-            if (!chartSelections.resources.has(resource)) {
-                chartSelections.resources.set(resource, new Set());
-            }
-            chartSelections.resources.get(resource).add(key);
-        }
-        
-        // Helper functions to select with children (using specific selectors)
-        function _selectCategoryWithChildren(category, subscription) {
-            _selectCategoryInternal(category, subscription);
-            
-            // Find the category card - handle both with and without subscription context
-            let categoryCard = null;
-            if (subscription) {
-                const selector = '.category-card[data-category="' + category + '"][data-subscription="' + subscription + '"]';
-                categoryCard = document.querySelector(selector);
-            } else {
-                // Cost by Meter Category section - no subscription attribute
-                const selector = '.category-card[data-category="' + category + '"]:not([data-subscription])';
-                categoryCard = document.querySelector(selector);
-            }
-            
-            if (categoryCard) {
-                const categoryContent = categoryCard.querySelector('.category-content');
-                if (categoryContent) {
-                    categoryContent.querySelectorAll(':scope > .subcategory-drilldown[data-subcategory]').forEach(subcatEl => {
-                        const subcategory = subcatEl.getAttribute('data-subcategory');
-                        if (subcategory) {
-                            _selectSubcategoryWithChildren(subcategory, category, subscription);
-                        }
-                    });
-                }
-            }
-        }
-        
-        function _selectSubcategoryWithChildren(subcategory, category, subscription) {
-            _selectSubcategoryInternal(subcategory, category, subscription);
-            
-            // Find meters within this subcategory (direct children only) - handle both cases
-            let subcatEl = null;
-            if (subscription) {
-                const selector = '.subcategory-drilldown[data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]';
-                subcatEl = document.querySelector(selector);
-            } else {
-                // Cost by Meter Category section - no subscription attribute
-                const selector = '.subcategory-drilldown[data-subcategory="' + subcategory + '"][data-category="' + category + '"]:not([data-subscription])';
-                subcatEl = document.querySelector(selector);
-            }
-            
-            if (subcatEl) {
-                const subcatContent = subcatEl.querySelector('.subcategory-content');
-                if (subcatContent) {
-                    subcatContent.querySelectorAll(':scope > .meter-card[data-meter]').forEach(meterEl => {
-                        const meter = meterEl.getAttribute('data-meter');
-                        if (meter) {
-                            _selectMeterWithChildren(meter, subcategory, category, subscription);
-                        }
-                    });
-                }
-            }
-        }
-        
-        function _selectMeterWithChildren(meter, subcategory, category, subscription) {
-            _selectMeterInternal(meter, subcategory, category, subscription);
-            
-            // Find resources within this meter (direct children only) - handle both cases
-            let meterEl = null;
-            if (subscription) {
-                const selector = '.meter-card[data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]';
-                meterEl = document.querySelector(selector);
-            } else {
-                // Cost by Meter Category section - no subscription attribute
-                const selector = '.meter-card[data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"]:not([data-subscription])';
-                meterEl = document.querySelector(selector);
-            }
-            
-            if (meterEl) {
-                const meterContent = meterEl.querySelector('.meter-content');
-                if (meterContent) {
-                    meterContent.querySelectorAll('tbody tr[data-resource]').forEach(resEl => {
-                        const resource = resEl.getAttribute('data-resource');
-                        if (resource) {
-                            _selectResourceInternal(resource, meter, subcategory, category, subscription);
-                        }
-                    });
-                }
-            }
-        }
-        
-        // Hierarchical selection functions (public API - calls update once)
-        function selectSubscription(subscription) {
-            if (!subscription) return;
-            _selectSubscriptionInternal(subscription);
-            
-            // NOTE: We do NOT cascade to categories/meters here to avoid UNION bug
-            // When a subscription is selected, only chartSelections.subscriptions is set
-            // This prevents the UNION logic from including ALL categories/meters from ALL subscriptions
-            // Visual highlighting will show the subscription card as selected
-            
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        function deselectSubscription(subscription) {
-            if (!subscription) return;
-            chartSelections.subscriptions.delete(subscription);
-            
-            // Remove all categories, subcategories, meters, and resources for this subscription
-            const categoriesToRemove = [];
-            chartSelections.categories.forEach((subs, cat) => {
-                if (subs.has(subscription)) {
-                    subs.delete(subscription);
-                    if (subs.size === 0) {
-                        categoriesToRemove.push(cat);
-                    }
-                }
-            });
-            categoriesToRemove.forEach(cat => chartSelections.categories.delete(cat));
-            
-            const subcatsToRemove = [];
-            chartSelections.subcategories.forEach((keys, subcat) => {
-                const newKeys = new Set();
-                keys.forEach(key => {
-                    if (!key.includes(subscription)) {
-                        newKeys.add(key);
-                    }
-                });
-                if (newKeys.size === 0) {
-                    subcatsToRemove.push(subcat);
-                } else {
-                    chartSelections.subcategories.set(subcat, newKeys);
-                }
-            });
-            subcatsToRemove.forEach(subcat => chartSelections.subcategories.delete(subcat));
-            
-            const metersToRemove = [];
-            chartSelections.meters.forEach((keys, meter) => {
-                const newKeys = new Set();
-                keys.forEach(key => {
-                    if (!key.includes(subscription)) {
-                        newKeys.add(key);
-                    }
-                });
-                if (newKeys.size === 0) {
-                    metersToRemove.push(meter);
-                } else {
-                    chartSelections.meters.set(meter, newKeys);
-                }
-            });
-            metersToRemove.forEach(meter => chartSelections.meters.delete(meter));
-            
-            const resourcesToRemove = [];
-            chartSelections.resources.forEach((keys, resource) => {
-                const newKeys = new Set();
-                keys.forEach(key => {
-                    if (!key.includes(subscription)) {
-                        newKeys.add(key);
-                    }
-                });
-                if (newKeys.size === 0) {
-                    resourcesToRemove.push(resource);
-                } else {
-                    chartSelections.resources.set(resource, newKeys);
-                }
-            });
-            resourcesToRemove.forEach(resource => chartSelections.resources.delete(resource));
-            
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        function selectCategory(category, subscription) {
-            if (!category) return;
-            _selectCategoryWithChildren(category, subscription);
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        function deselectCategory(category, subscription) {
-            if (!category) return;
-            // Normalize subscription: use empty string for null/undefined (Cost by Meter Category section)
-            const subKey = subscription || '';
-            const subs = chartSelections.categories.get(category);
-            if (subs) {
-                subs.delete(subKey);
-                if (subs.size === 0) {
-                    chartSelections.categories.delete(category);
-                }
-            }
-            
-            // Remove all subcategories, meters, and resources for this category/subscription
-            const subcatsToRemove = [];
-            chartSelections.subcategories.forEach((keys, subcat) => {
-                const newKeys = new Set();
-                keys.forEach(key => {
-                    const keyParts = key.split('|');
-                    if (!(keyParts.includes(category) && keyParts.includes(subscription))) {
-                        newKeys.add(key);
-                    }
-                });
-                if (newKeys.size === 0) {
-                    subcatsToRemove.push(subcat);
-                } else {
-                    chartSelections.subcategories.set(subcat, newKeys);
-                }
-            });
-            subcatsToRemove.forEach(subcat => chartSelections.subcategories.delete(subcat));
-            
-            const metersToRemove = [];
-            chartSelections.meters.forEach((keys, meter) => {
-                const newKeys = new Set();
-                keys.forEach(key => {
-                    const keyParts = key.split('|');
-                    if (!(keyParts.includes(category) && keyParts.includes(subscription))) {
-                        newKeys.add(key);
-                    }
-                });
-                if (newKeys.size === 0) {
-                    metersToRemove.push(meter);
-                } else {
-                    chartSelections.meters.set(meter, newKeys);
-                }
-            });
-            metersToRemove.forEach(meter => chartSelections.meters.delete(meter));
-            
-            const resourcesToRemove = [];
-            chartSelections.resources.forEach((keys, resource) => {
-                const newKeys = new Set();
-                keys.forEach(key => {
-                    const keyParts = key.split('|');
-                    if (!(keyParts.includes(category) && keyParts.includes(subscription))) {
-                        newKeys.add(key);
-                    }
-                });
-                if (newKeys.size === 0) {
-                    resourcesToRemove.push(resource);
-                } else {
-                    chartSelections.resources.set(resource, newKeys);
-                }
-            });
-            resourcesToRemove.forEach(resource => chartSelections.resources.delete(resource));
-            
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        function selectSubcategory(subcategory, category, subscription) {
-            if (!subcategory) return;
-            _selectSubcategoryWithChildren(subcategory, category, subscription);
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        function deselectSubcategory(subcategory, category, subscription) {
-            if (!subcategory) return;
-            const key = createSelectionKey(category, subscription || '');
-            const keys = chartSelections.subcategories.get(subcategory);
-            if (keys) {
-                keys.delete(key);
-                if (keys.size === 0) {
-                    chartSelections.subcategories.delete(subcategory);
-                }
-            }
-            
-            // Remove all meters and resources for this subcategory
-            const metersToRemove = [];
-            chartSelections.meters.forEach((keys, meter) => {
-                const newKeys = new Set();
-                keys.forEach(k => {
-                    const keyParts = k.split('|');
-                    if (!(keyParts.includes(subcategory) && keyParts.includes(category) && (!subscription || keyParts.includes(subscription)))) {
-                        newKeys.add(k);
-                    }
-                });
-                if (newKeys.size === 0) {
-                    metersToRemove.push(meter);
-                } else {
-                    chartSelections.meters.set(meter, newKeys);
-                }
-            });
-            metersToRemove.forEach(meter => chartSelections.meters.delete(meter));
-            
-            const resourcesToRemove = [];
-            chartSelections.resources.forEach((keys, resource) => {
-                const newKeys = new Set();
-                keys.forEach(k => {
-                    const keyParts = k.split('|');
-                    if (!(keyParts.includes(subcategory) && keyParts.includes(category) && (!subscription || keyParts.includes(subscription)))) {
-                        newKeys.add(k);
-                    }
-                });
-                if (newKeys.size === 0) {
-                    resourcesToRemove.push(resource);
-                } else {
-                    chartSelections.resources.set(resource, newKeys);
-                }
-            });
-            resourcesToRemove.forEach(resource => chartSelections.resources.delete(resource));
-            
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        function selectMeter(meter, subcategory, category, subscription) {
-            if (!meter) return;
-            _selectMeterWithChildren(meter, subcategory, category, subscription);
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        function deselectMeter(meter, subcategory, category, subscription) {
-            if (!meter) return;
-            const key = createSelectionKey(subcategory, category, subscription);
-            const keys = chartSelections.meters.get(meter);
-            if (keys) {
-                keys.delete(key);
-                if (keys.size === 0) {
-                    chartSelections.meters.delete(meter);
-                }
-            }
-            
-            // Remove all resources for this meter
-            const resourcesToRemove = [];
-            chartSelections.resources.forEach((keys, resource) => {
-                const newKeys = new Set();
-                keys.forEach(k => {
-                    const keyParts = k.split('|');
-                    if (!(keyParts.includes(meter) && keyParts.includes(subcategory) && keyParts.includes(category) && (!subscription || keyParts.includes(subscription)))) {
-                        newKeys.add(k);
-                    }
-                });
-                if (newKeys.size === 0) {
-                    resourcesToRemove.push(resource);
-                } else {
-                    chartSelections.resources.set(resource, newKeys);
-                }
-            });
-            resourcesToRemove.forEach(resource => chartSelections.resources.delete(resource));
-            
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        function selectResource(resource, meter, subcategory, category, subscription) {
-            if (!resource) return;
-            _selectResourceInternal(resource, meter, subcategory, category, subscription);
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        function deselectResource(resource, meter, subcategory, category, subscription) {
-            if (!resource) return;
-            const key = createSelectionKey(meter, subcategory, category, subscription);
-            const keys = chartSelections.resources.get(resource);
-            if (keys) {
-                keys.delete(key);
-                if (keys.size === 0) {
-                    chartSelections.resources.delete(resource);
-                }
-            }
-            
-            updateChartSelectionsVisual();
-            updateChartWithSelections();
-        }
-        
-        // Visual feedback functions
-        function updateChartSelectionsVisual() {
-            // Remove all chart-selected classes
-            document.querySelectorAll('.chart-selected').forEach(el => {
-                el.classList.remove('chart-selected');
-            });
-            
-            // Add chart-selected class to selected elements
-            chartSelections.subscriptions.forEach(sub => {
-                document.querySelectorAll('[data-subscription="' + sub + '"].subscription-card').forEach(el => {
-                    el.classList.add('chart-selected');
-                });
-            });
-            
-            chartSelections.categories.forEach((subs, cat) => {
-                subs.forEach(sub => {
-                    if (sub) {
-                        // Cost by Subscription section - has subscription attribute
-                        document.querySelectorAll('[data-category="' + cat + '"][data-subscription="' + sub + '"].category-card').forEach(el => {
-                            el.classList.add('chart-selected');
-                        });
-                    } else {
-                        // Cost by Meter Category section - no subscription attribute
-                        document.querySelectorAll('[data-category="' + cat + '"]:not([data-subscription]).category-card').forEach(el => {
-                            el.classList.add('chart-selected');
-                        });
-                    }
-                });
-            });
-            
-            chartSelections.subcategories.forEach((keys, subcat) => {
-                keys.forEach(key => {
-                    const parts = key.split('|');
-                    const category = parts[0];
-                    const subscription = parts[1];
-                    const selector = subscription ? '[data-subcategory="' + subcat + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]' : '[data-subcategory="' + subcat + '"][data-category="' + category + '"]';
-                    document.querySelectorAll(selector).forEach(el => {
-                        el.classList.add('chart-selected');
-                    });
-                });
-            });
-            
-            chartSelections.meters.forEach((keys, meter) => {
-                keys.forEach(key => {
-                    const parts = key.split('|');
-                    const subcategory = parts[0];
-                    const category = parts[1];
-                    const subscription = parts[2];
-                    const selector = subscription ? '[data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]' : '[data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"]';
-                    document.querySelectorAll(selector).forEach(el => {
-                        el.classList.add('chart-selected');
-                    });
-                });
-            });
-            
-            chartSelections.resources.forEach((keys, resource) => {
-                keys.forEach(key => {
-                    if (key === '') {
-                        // Empty key means resource selected from Top 20 table - highlight resource card
-                        document.querySelectorAll('[data-resource="' + resource + '"].resource-card').forEach(el => {
-                            el.classList.add('chart-selected');
-                        });
-                    } else {
-                        // Specific context key - highlight resource row in drilldown
-                        const parts = key.split('|');
-                        const meter = parts[0];
-                        const subcategory = parts[1];
-                        const category = parts[2];
-                        const subscription = parts[3];
-                        const selector = subscription ? '[data-resource="' + resource + '"][data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"][data-subscription="' + subscription + '"]' : '[data-resource="' + resource + '"][data-meter="' + meter + '"][data-subcategory="' + subcategory + '"][data-category="' + category + '"]';
-                        document.querySelectorAll(selector).forEach(el => {
-                            el.classList.add('chart-selected');
-                        });
-                    }
-                });
-            });
-            
-            // Update clear button visibility (checks both chartSelections and engine picks)
-            updateClearSelectionsButtonVisibility();
-        }
-        
-        // Update clear selections button visibility (checks both chartSelections and engine picks)
+        // Phase 5.2: Update clear selections button visibility (top-layer aware)
         function updateClearSelectionsButtonVisibility() {
             const clearBtn = document.getElementById('clearChartSelections');
             if (!clearBtn) return;
             
-            const hasChartSelections =
-                chartSelections.subscriptions.size > 0 ||
-                chartSelections.categories.size > 0 ||
-                chartSelections.subcategories.size > 0 ||
-                chartSelections.meters.size > 0 ||
-                chartSelections.resources.size > 0;
+            // Phase 5.2: Check if top-layer has any picks
+            const top = engine?.getTopLayer?.();
+            const hasTopLayerPicks = top && Object.values(top.picks).some(s => s && s.size > 0);
             
-            const hasEnginePicks = engine && engine.state && engine.state.picks &&
+            // Fallback: check legacy picks if no layers
+            const hasLegacyPicks = !top && engine && engine.state && engine.state.picks &&
                 Object.values(engine.state.picks).some(s => s && s.size > 0);
             
-            clearBtn.style.display = (hasChartSelections || hasEnginePicks) ? 'block' : 'none';
+            clearBtn.style.display = (hasTopLayerPicks || hasLegacyPicks) ? 'block' : 'none';
         }
         
-        // Clear all selections (both chartSelections and engine picks)
+        // Phase 5.2: Clear all selections (top-layer aware)
         function clearAllChartSelections() {
-            // Clear chartSelections (Ctrl+Click-based selections)
-            chartSelections.subscriptions.clear();
-            chartSelections.categories.clear();
-            chartSelections.subcategories.clear();
-            chartSelections.meters.clear();
-            chartSelections.resources.clear();
+            if (!engine) return;
             
-            // Clear engine picks (row clicks / canonical resourceKeys)
-            if (engine && typeof engine.clearPicks === 'function') {
+            // Phase 5.2: Clear top-layer if it exists
+            const top = engine.getTopLayer?.();
+            if (top) {
+                engine.clearTopLayerPicks(top.source);
+                engine.popTopLayerIfEmpty?.();
+            } else {
+                // Fallback: clear legacy picks if no layers exist
+                if (typeof engine.clearPicks === 'function') {
                 engine.clearPicks();
-            } else if (engine && engine.state && engine.state.picks) {
+                } else if (engine.state && engine.state.picks) {
                 Object.values(engine.state.picks).forEach(s => s && s.clear && s.clear());
+                }
             }
             
-            // Update visuals + data using central sync function
-            updateChartSelectionsVisual();
-            syncUIFromEngine();
+            // Update visuals + data using central refresh pipeline
+            refreshUIFromState();
             updateClearSelectionsButtonVisibility();
         }
         
@@ -6611,12 +4383,16 @@ $datasetsByResourceJsonString
                 event.preventDefault();
                 event.stopPropagation();
                 const subscription = getSubscriptionFromElement(element);
-                if (subscription) {
-                    if (chartSelections.subscriptions.has(subscription)) {
-                        deselectSubscription(subscription);
+                if (subscription && engine) {
+                    // Toggle subscription in scope (subscriptions are scope, not picks)
+                    const isInScope = engine.state.scope.subscriptionIds.has(subscription);
+                    if (isInScope) {
+                        engine.state.scope.subscriptionIds.delete(subscription);
                     } else {
-                        selectSubscription(subscription);
+                        engine.state.scope.subscriptionIds.add(subscription);
                     }
+                    // Phase 5: Use central refresh pipeline
+                    refreshUIFromState({ skipMeterCategoryRerender: true });
                 }
                 return false;
             }
@@ -6628,23 +4404,29 @@ $datasetsByResourceJsonString
             if (event && (event.ctrlKey || event.metaKey)) {
                 event.preventDefault();
                 event.stopPropagation();
-                const category = getCategoryFromElement(element);
-                if (category && engine) {
-                    // P4-4: STRICT POLICY (SYMMETRIC) - Clear other pick dimensions (behåll categories)
-                    engine.state.picks.subcategories.clear();
-                    engine.state.picks.meterNames.clear();
-                    // Clear all resource picks (canonical: resourceKeys is primary, others are legacy/back-compat)
-                    engine.state.picks.resourceKeys.clear();
-                    engine.state.picks.resourceIds.clear();      // Legacy
-                    engine.state.picks.resourceNames.clear();    // Legacy
-                    engine.state.picks.resourceGroups.clear();   // Legacy
+                // Phase 5.2: Use data-category-key if available (scoped), otherwise fallback to data-category
+                const categoryKey = element.getAttribute('data-category-key') || getCategoryFromElement(element);
+                if (categoryKey && engine) {
+                    // Phase 5.2: Identify source (subscription or meter table)
+                    const subscriptionId = element.getAttribute('data-subscription-id') || 
+                                         element.closest('[data-subscription-id]')?.getAttribute('data-subscription-id') || '';
+                    const source = subscriptionId ? 'subscription' : 'meter';
+                    
+                    // Phase 5.2: If no data-category-key, build scoped key (fallback for Meter Category)
+                    const finalCategoryKey = categoryKey.includes('|') ? categoryKey : (subscriptionId ? (subscriptionId + '|' + categoryKey) : categoryKey);
+                    
+                    // Phase 5.2: Ensure top-layer and clear other picks in that layer
+                    const topLayer = engine.ensureTopLayer(source);
+                    topLayer.picks.subcategories.clear();
+                    topLayer.picks.meterNames.clear();
+                    topLayer.picks.resourceKeys.clear();
                     // Keep: categories (for multi-select within level)
                     
-                    // Toggle category pick
-                    engine.togglePick('categories', category, 'toggle');
+                    // Toggle category pick in top-layer
+                    engine.togglePick('categories', finalCategoryKey, 'toggle', source);
                     
-                    // Sync UI from engine state (skip meter category re-render to preserve expand/collapse state)
-                    syncUIFromEngine(true);
+                    // Phase 5: Use central refresh pipeline (skip meter category re-render to preserve expand/collapse state)
+                    refreshUIFromState({ skipMeterCategoryRerender: true });
                 }
                 return false;
             }
@@ -6671,21 +4453,20 @@ $datasetsByResourceJsonString
                     }
                     
                     const scopedKey = subscriptionId + '|' + category + '|' + subcategory;
+                    const source = 'subscription';
                     
-                    // P4-4: STRICT POLICY (SYMMETRIC) - Clear other pick dimensions (behåll subcategories)
-                    engine.state.picks.categories.clear();
-                    engine.state.picks.meterNames.clear();
-                    engine.state.picks.resourceKeys.clear();
-                    engine.state.picks.resourceIds.clear();
-                    engine.state.picks.resourceNames.clear();
-                    engine.state.picks.resourceGroups.clear();
+                    // Phase 5.2: Ensure top-layer and clear other picks in that layer
+                    const topLayer = engine.ensureTopLayer(source);
+                    topLayer.picks.categories.clear();
+                    topLayer.picks.meterNames.clear();
+                    topLayer.picks.resourceKeys.clear();
                     // Keep: subcategories (for multi-select within level)
                     
-                    // Toggle subcategory pick (scoped: subscriptionId|category|subcategory)
-                    engine.togglePick('subcategories', scopedKey, 'toggle');
+                    // Toggle subcategory pick in top-layer (scoped: subscriptionId|category|subcategory)
+                    engine.togglePick('subcategories', scopedKey, 'toggle', source);
                     
-                    // Sync UI from engine state (skip meter category re-render to preserve expand/collapse state)
-                    syncUIFromEngine(true);
+                    // Phase 5: Use central refresh pipeline (skip meter category re-render to preserve expand/collapse state)
+                    refreshUIFromState({ skipMeterCategoryRerender: true });
                 }
                 return false;
             }
@@ -6700,20 +4481,23 @@ $datasetsByResourceJsonString
                 event.stopPropagation();
                 const meter = element.getAttribute('data-meter');
                 if (meter && engine) {
-                    // P4-4: STRICT POLICY (SYMMETRIC) - Clear other pick dimensions (behåll meterNames)
-                    engine.state.picks.categories.clear();
-                    engine.state.picks.subcategories.clear();
-                    engine.state.picks.resourceKeys.clear();
-                    engine.state.picks.resourceIds.clear();
-                    engine.state.picks.resourceNames.clear();
-                    engine.state.picks.resourceGroups.clear();
+                    // Phase 5.2: Identify source (subscription or meter table)
+                    const subscriptionId = element.getAttribute('data-subscription-id') || 
+                                         element.closest('[data-subscription-id]')?.getAttribute('data-subscription-id') || '';
+                    const source = subscriptionId ? 'subscription' : 'meter';
+                    
+                    // Phase 5.2: Ensure top-layer and clear other picks in that layer
+                    const topLayer = engine.ensureTopLayer(source);
+                    topLayer.picks.categories.clear();
+                    topLayer.picks.subcategories.clear();
+                    topLayer.picks.resourceKeys.clear();
                     // Keep: meterNames (for multi-select within level)
                     
-                    // Toggle meter pick
-                    engine.togglePick('meterNames', meter, 'toggle');
+                    // Toggle meter pick in top-layer
+                    engine.togglePick('meterNames', meter, 'toggle', source);
                     
-                    // Sync UI from engine state (skip meter category re-render to preserve expand/collapse state)
-                    syncUIFromEngine(true);
+                    // Phase 5: Use central refresh pipeline (skip meter category re-render to preserve expand/collapse state)
+                    refreshUIFromState({ skipMeterCategoryRerender: true });
                 }
                 return false;
             }
@@ -6727,19 +4511,22 @@ $datasetsByResourceJsonString
                 event.preventDefault();
                 event.stopPropagation();
                 const resource = getResourceFromElement(element);
-                const meter = getMeterFromElement(element);
-                const subcategory = getSubcategoryFromElement(element);
-                const category = getCategoryFromElement(element);
-                const subscription = getSubscriptionFromElement(element);
-                if (resource) {
-                    const key = createSelectionKey(meter, subcategory, category, subscription);
-                    const isSelected = chartSelections.resources.has(resource) && 
-                                     chartSelections.resources.get(resource).has(key);
-                    if (isSelected) {
-                        deselectResource(resource, meter, subcategory, category, subscription);
-                    } else {
-                        selectResource(resource, meter, subcategory, category, subscription);
-                    }
+                if (resource && engine) {
+                    // Phase 5.2: Resource picks are always from meter table
+                    const source = 'meter';
+                    
+                    // Phase 5.2: Ensure top-layer and clear other picks in that layer
+                    const topLayer = engine.ensureTopLayer(source);
+                    topLayer.picks.categories.clear();
+                    topLayer.picks.subcategories.clear();
+                    topLayer.picks.meterNames.clear();
+                    // Keep: resourceKeys (for multi-select within level)
+                    
+                    // Toggle resource pick in top-layer (canonical: resourceKeys)
+                    engine.togglePick('resourceKeys', resource, 'toggle', source);
+                    
+                    // Phase 5: Use central refresh pipeline (skip meter category re-render to preserve expand/collapse state)
+                    refreshUIFromState({ skipMeterCategoryRerender: true });
                 }
                 return false;
             }
@@ -6757,33 +4544,23 @@ $datasetsByResourceJsonString
                 if (!card) return false;
                 
                 const resource = card.getAttribute('data-resource');
-                if (!resource || resource === 'N/A') return false;
+                if (!resource || resource === 'N/A' || !engine) return false;
                 
-                // Use empty key since no meter/subcat/cat context for Top 20 resources
-                const key = '';
-                const isSelected = chartSelections.resources.has(resource) && 
-                                 chartSelections.resources.get(resource).has(key);
+                // Phase 5.2: Resource card picks are from meter table (Top 20 resources)
+                const source = 'meter';
                 
-                if (isSelected) {
-                    // Deselect
-                    const keys = chartSelections.resources.get(resource);
-                    if (keys) {
-                        keys.delete(key);
-                        if (keys.size === 0) {
-                            chartSelections.resources.delete(resource);
-                        }
-                    }
-                } else {
-                    // Select
-                    if (!chartSelections.resources.has(resource)) {
-                        chartSelections.resources.set(resource, new Set());
-                    }
-                    chartSelections.resources.get(resource).add(key);
-                }
+                // Phase 5.2: Ensure top-layer and clear other picks in that layer
+                const topLayer = engine.ensureTopLayer(source);
+                topLayer.picks.categories.clear();
+                topLayer.picks.subcategories.clear();
+                topLayer.picks.meterNames.clear();
+                // Keep: resourceKeys (for multi-select within level)
                 
-                // Update visual selection and chart
-                updateChartSelectionsVisual();
-                updateChartWithSelections();
+                // Toggle resource pick in top-layer (canonical: resourceKeys)
+                engine.togglePick('resourceKeys', resource, 'toggle', source);
+                
+                // Phase 5: Use central refresh pipeline (skip meter category re-render to preserve expand/collapse state)
+                refreshUIFromState({ skipMeterCategoryRerender: true });
                 
                 return true; // Stop propagation
             }
@@ -6916,12 +4693,10 @@ $datasetsByResourceJsonString
             });
             
             // Filter category cards (Cost by Meter Category section) - exclude subscription-card and resource-card
+            // Phase 5.1: scopeIds already declared above, reuse it
             document.querySelectorAll('.category-card:not(.subscription-card):not(.resource-card)').forEach(card => {
                 const cardText = card.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || cardText.includes(searchText);
-                
-                // GUID-based filtering: use engine scope (subscriptionIds) instead of names
-                const scopeIds = engine.state.scope.subscriptionIds || new Set();
                 
                 // Check if this category card has any resources from selected subscriptions
                 let matchesSubscription = scopeIds.size === 0;
@@ -6963,12 +4738,10 @@ $datasetsByResourceJsonString
             });
             
             // Filter subcategory drilldowns (nested in category cards)
+            // Phase 5.1: scopeIds already declared above, reuse it
             document.querySelectorAll('.subcategory-drilldown').forEach(subcat => {
                 const subcatText = subcat.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || subcatText.includes(searchText);
-                
-                // GUID-based filtering: use engine scope (subscriptionIds) instead of names
-                const scopeIds = engine.state.scope.subscriptionIds || new Set();
                 
                 // Check subscription match - subcategories in "Cost by Meter Category" don't have data-subscription
                 // but subcategories in "Cost by Subscription" do
@@ -7016,10 +4789,12 @@ $datasetsByResourceJsonString
             });
             
             // Filter resource rows in meter sections - respect both subscription and search filters
+            // Phase 5.1: Use engine scope instead of legacy subscription state
+            const scopeIdsForRows = engine && engine.state && engine.state.scope.subscriptionIds || new Set();
             document.querySelectorAll('.resource-table tbody tr').forEach(row => {
                 const subscription = row.getAttribute('data-subscription');
-                const matchesSubscription = selectedSubscriptions.size === 0 || 
-                    (subscription && selectedSubscriptions.has(subscription));
+                const matchesSubscription = scopeIdsForRows.size === 0 || 
+                    (subscription && scopeIdsForRows.has(subscription));
                 const rowText = row.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || rowText.includes(searchText);
                 
@@ -7058,10 +4833,12 @@ $datasetsByResourceJsonString
             });
             
             // Filter "Top 20 Cost Increase Drivers" cards by subscription
+            // Phase 5.1: Use engine scope instead of legacy subscription state
+            const scopeIdsForCards = engine && engine.state && engine.state.scope.subscriptionIds || new Set();
             document.querySelectorAll('.resource-card.increased-cost-card').forEach(card => {
                 const subscription = card.getAttribute('data-subscription');
-                const matchesSubscription = selectedSubscriptions.size === 0 || 
-                    (subscription && selectedSubscriptions.has(subscription));
+                const matchesSubscription = scopeIdsForCards.size === 0 || 
+                    (subscription && scopeIdsForCards.has(subscription));
                 const cardText = card.textContent.toLowerCase();
                 const matchesSearch = searchText === '' || cardText.includes(searchText);
                 
