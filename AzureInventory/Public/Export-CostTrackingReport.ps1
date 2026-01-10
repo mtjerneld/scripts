@@ -182,14 +182,15 @@ function Export-CostTrackingReport {
     
     if ($rawData.Count -gt 0) {
         # Group by ResourceId and calculate totals
+        # Performance: Use ArrayList instead of array += to avoid O(n²) behavior
         $resourceGroups = $rawData | Where-Object { $_.ResourceId -and -not [string]::IsNullOrWhiteSpace($_.ResourceId) } | Group-Object ResourceId
-        $allResources = @()
+        $allResources = [System.Collections.ArrayList]::new()
         foreach ($resGroup in $resourceGroups) {
             $resItems = $resGroup.Group
             $resCostUSD = ($resItems | Measure-Object -Property CostUSD -Sum).Sum
             $resCostLocal = ($resItems | Measure-Object -Property CostLocal -Sum).Sum
             
-            $allResources += [PSCustomObject]@{
+            [void]$allResources.Add([PSCustomObject]@{
                 ResourceId = $resGroup.Name
                 ResourceName = $resItems[0].ResourceName
                 ResourceGroup = $resItems[0].ResourceGroup
@@ -200,7 +201,7 @@ function Export-CostTrackingReport {
                 CostLocal = $resCostLocal
                 CostUSD = $resCostUSD
                 ItemCount = $resItems.Count
-            }
+            })
         }
         # Get all resources (not just top 20) so JavaScript can recalculate top 20 based on filters
         # Sort by CostUSD descending for initial display order
@@ -254,18 +255,19 @@ function Export-CostTrackingReport {
         }
         
         # Calculate costs per resource for each half (with outlier removal)
+        # Performance: Use List instead of array += to avoid O(n²) behavior in nested loops
         foreach ($resName in $allResourceNamesInTrend) {
             $firstHalfCost = 0
             $secondHalfCost = 0
             
-            # Collect costs for first half
-            $firstHalfResourceCosts = @()
+            # Collect costs for first half - use List for O(n) performance
+            $firstHalfResourceCosts = [System.Collections.Generic.List[double]]::new()
             foreach ($day in $firstHalfDays) {
                 if ($day.ByResource -and $day.ByResource.ContainsKey($resName)) {
                     $resData = $day.ByResource[$resName]
                     $cost = if ($resData.CostLocal) { $resData.CostLocal } else { 0 }
                     if ($cost -gt 0) {
-                        $firstHalfResourceCosts += $cost
+                        $firstHalfResourceCosts.Add($cost)
                     }
                 }
             }
@@ -279,14 +281,14 @@ function Export-CostTrackingReport {
                 $firstHalfCost = ($firstHalfResourceCosts | Measure-Object -Sum).Sum
             }
             
-            # Collect costs for second half
-            $secondHalfResourceCosts = @()
+            # Collect costs for second half - use List for O(n) performance
+            $secondHalfResourceCosts = [System.Collections.Generic.List[double]]::new()
             foreach ($day in $secondHalfDays) {
                 if ($day.ByResource -and $day.ByResource.ContainsKey($resName)) {
                     $resData = $day.ByResource[$resName]
                     $cost = if ($resData.CostLocal) { $resData.CostLocal } else { 0 }
                     if ($cost -gt 0) {
-                        $secondHalfResourceCosts += $cost
+                        $secondHalfResourceCosts.Add($cost)
                     }
                 }
             }
@@ -566,7 +568,8 @@ function Export-CostTrackingReport {
     $top15Resources = @($resourceTotals.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15 | ForEach-Object { $_.Key })
     
     # Phase 5.1.1: Prepare chartLabels only (legacy daily data structures removed - engine-only now)
-    $chartLabels = @()
+    # Performance: Use ArrayList instead of array += to avoid O(n²) behavior
+    $chartLabels = [System.Collections.ArrayList]::new()
     
     # Sort daily trend by Date, handling null dates gracefully
     # Handle both array and single object cases, and ensure we have valid data
@@ -609,9 +612,16 @@ function Export-CostTrackingReport {
         }
         
         if ($dayDateString) {
-            $chartLabels += $dayDateString
+            [void]$chartLabels.Add($dayDateString)
         }
     }
+    
+    # Convert to array for JavaScript embedding
+    $chartLabels = @($chartLabels)
+    
+    # Performance: Stopwatch measurements for performance profiling
+    $swAll = [Diagnostics.Stopwatch]::StartNew()
+    $sw = [Diagnostics.Stopwatch]::StartNew()
     
     # Convert raw daily data to JSON for JavaScript
     # Serialize factRows for JavaScript embedding (robust: no escaping needed)
@@ -622,6 +632,7 @@ function Export-CostTrackingReport {
         $factRowsJson = $factRowsJson -replace '</script', '<\/script'
         # No other escaping needed - we'll use <script type="application/json">
     }
+    Write-Host ("[CostTracking] JSON factRows: {0}" -f $sw.Elapsed)
     
     # Phase 5.1.1: legacy daily data JSON generation removed - engine-only now
     
@@ -660,21 +671,24 @@ function Export-CostTrackingReport {
     $chartLabelsJson = ($chartLabels | ForEach-Object { "`"$_`"" }) -join ","
     
     # Build subscription options for filter (sorted by name)
-    $subscriptionOptionsHtml = ""
+    # Performance: Use StringBuilder for HTML concatenation to avoid O(n²) behavior
+    $sw.Restart()
+    $subscriptionOptionsHtml = [System.Text.StringBuilder]::new()
     $subscriptionsForFilter = $subscriptionsArray | Sort-Object { if ($_.Name) { $_.Name } else { "Unknown" } }
     foreach ($sub in $subscriptionsForFilter) {
         $subName = if ($sub.Name) { [System.Web.HttpUtility]::HtmlEncode($sub.Name) } else { "Unknown" }
         $subId = if ($sub.SubscriptionId) { $sub.SubscriptionId } else { "" }
-        $subscriptionOptionsHtml += @"
+        [void]$subscriptionOptionsHtml.Append(@"
                         <label class="subscription-checkbox">
                             <input type="checkbox" value="$subName" data-subid="$subId" onchange="filterBySubscription()">
                             <span>$subName</span>
                         </label>
-"@
+"@)
     }
     
     # Generate subscription rows HTML
-    $subscriptionRowsHtml = ""
+    # Performance: Use StringBuilder for HTML concatenation to avoid O(n²) behavior
+    $subscriptionRowsHtml = [System.Text.StringBuilder]::new()
     foreach ($sub in $subscriptionsArray) {
         $subName = if ($sub.Name) { [System.Web.HttpUtility]::HtmlEncode($sub.Name) } else { "Unknown" }
         $subCostLocal = Format-NumberWithSeparator -Number $sub.CostLocal
@@ -683,18 +697,42 @@ function Export-CostTrackingReport {
         $subId = if ($sub.SubscriptionId) { $sub.SubscriptionId } else { "" }
         $subIdEncoded = if ($subId) { [System.Web.HttpUtility]::HtmlEncode($subId) } else { "" }
         $subNameEncodedForAttr = [System.Web.HttpUtility]::HtmlEncode($subName)
-        $subscriptionRowsHtml += @"
+        [void]$subscriptionRowsHtml.Append(@"
                         <tr data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncodedForAttr" data-subscription="$subIdEncoded">
                             <td>$subName</td>
                             <td class="cost-value">$currency $subCostLocal</td>
                             <td class="cost-value">`$$subCostUSD</td>
                             <td>$subCount</td>
                         </tr>
-"@
+"@)
+    }
+    
+    # Performance: Pre-group rawData by ResourceId and ResourceName for O(1) lookup
+    # This avoids O(n*m) Where-Object operations in loops (n=rawData.Count, m=resources.Count)
+    # Build once, reuse in both TopResources and TopIncreasedResources sections
+    $rawDataByResourceId = @{}
+    $rawDataByResourceName = @{}
+    if ($rawData.Count -gt 0) {
+        foreach ($row in $rawData) {
+            if ($row.ResourceId -and -not [string]::IsNullOrWhiteSpace($row.ResourceId)) {
+                if (-not $rawDataByResourceId.ContainsKey($row.ResourceId)) {
+                    $rawDataByResourceId[$row.ResourceId] = [System.Collections.Generic.List[object]]::new()
+                }
+                $rawDataByResourceId[$row.ResourceId].Add($row)
+            }
+            if ($row.ResourceName -and -not [string]::IsNullOrWhiteSpace($row.ResourceName)) {
+                if (-not $rawDataByResourceName.ContainsKey($row.ResourceName)) {
+                    $rawDataByResourceName[$row.ResourceName] = [System.Collections.Generic.List[object]]::new()
+                }
+                $rawDataByResourceName[$row.ResourceName].Add($row)
+            }
+        }
     }
     
     # Generate top resources drilldown HTML (Resource > Meter Category > Meter)
-    $topResourcesSectionsHtml = ""
+    # Performance: Use StringBuilder for HTML concatenation to avoid O(n²) behavior
+    $sw.Restart()
+    $topResourcesSectionsHtml = [System.Text.StringBuilder]::new()
     $topResourceMeterIdCounter = 0
     
     foreach ($res in $topResources) {
@@ -707,14 +745,24 @@ function Export-CostTrackingReport {
         $resCostLocal = Format-NumberWithSeparator -Number $res.CostLocal
         $resCostUSD = Format-NumberWithSeparator -Number $res.CostUSD
         
-        # Get all cost data for this resource from raw data
-        $resourceData = $rawData | Where-Object { $_.ResourceId -eq $resId }
+        # Get all cost data for this resource from pre-grouped hashtable (O(1) lookup)
+        $resourceData = if ($resId -and $rawDataByResourceId.ContainsKey($resId)) {
+            $rawDataByResourceId[$resId]
+        } else {
+            @()
+        }
         
         # Group by Meter Category
         $categoryGroups = $resourceData | Group-Object MeterCategory
-        $categoryHtml = ""
+        $categoryHtml = [System.Text.StringBuilder]::new()
         
-        foreach ($catGroup in ($categoryGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+        # Performance: Precompute sums to avoid O(n²) in Sort-Object
+        $categoryGroupsWithSums = $categoryGroups | ForEach-Object {
+            $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+            [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+        } | Sort-Object SumUsd -Descending
+        
+        foreach ($catGroup in $categoryGroupsWithSums) {
             $catName = $catGroup.Name
             if ([string]::IsNullOrWhiteSpace($catName)) {
                 $catName = "Unknown"
@@ -728,9 +776,15 @@ function Export-CostTrackingReport {
             
             # Group by Meter within category
             $meterGroups = $catItems | Group-Object Meter
-            $meterCardsHtml = ""
+            $meterCardsHtml = [System.Text.StringBuilder]::new()
             
-            foreach ($meterGroup in ($meterGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+            # Performance: Precompute sums to avoid O(n²) in Sort-Object
+            $meterGroupsWithSums = $meterGroups | ForEach-Object {
+                $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+                [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+            } | Sort-Object SumUsd -Descending
+            
+            foreach ($meterGroup in $meterGroupsWithSums) {
                 $meterName = $meterGroup.Name
                 if ([string]::IsNullOrWhiteSpace($meterName)) {
                     $meterName = "Unknown"
@@ -746,7 +800,7 @@ function Export-CostTrackingReport {
                 
                 $topResourceMeterIdCounter++
                 
-                $meterCardsHtml += @"
+                [void]$meterCardsHtml.Append(@"
                             <div class="meter-card no-expand">
                                 <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
@@ -754,10 +808,11 @@ function Export-CostTrackingReport {
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                             </div>
-"@
+"@)
             }
             
-            $categoryHtml += @"
+            $meterCardsHtmlString = $meterCardsHtml.ToString()
+            [void]$categoryHtml.Append(@"
                         <div class="category-card collapsed">
                             <div class="expandable__header category-header collapsed" onclick="toggleCategory(this, event)">
                                 <span class="expand-arrow">&#9654;</span>
@@ -765,17 +820,18 @@ function Export-CostTrackingReport {
                                 <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
                             </div>
                             <div class="category-content" style="display: none !important;">
-$meterCardsHtml
+$meterCardsHtmlString
                             </div>
                         </div>
-"@
+"@)
         }
         
         $resNameEncoded = [System.Web.HttpUtility]::HtmlEncode($resNameRaw)
         $resSubId = if ($res.SubscriptionId) { $res.SubscriptionId } else { "" }
         $resSubIdEncoded = if ($resSubId) { [System.Web.HttpUtility]::HtmlEncode($resSubId) } else { "" }
         $resSubNameEncodedForAttr = [System.Web.HttpUtility]::HtmlEncode($resSub)
-        $topResourcesSectionsHtml += @"
+        $categoryHtmlString = $categoryHtml.ToString()
+        [void]$topResourcesSectionsHtml.Append(@"
                     <div class="category-card resource-card" data-subscription-id="$resSubIdEncoded" data-subscription-name="$resSubNameEncodedForAttr" data-subscription="$resSubIdEncoded" data-resource="$resNameEncoded">
                         <div class="category-header" onclick="handleResourceCardSelection(this, event) || toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
@@ -790,14 +846,18 @@ $meterCardsHtml
                                     <div><strong>Type:</strong> $resType</div>
                                 </div>
                             </div>
-$categoryHtml
+$categoryHtmlString
                         </div>
                     </div>
-"@
+"@)
     }
+    Write-Host ("[CostTracking] Build TopResources HTML: {0}" -f $sw.Elapsed)
     
     # Generate Top 20 Cost Increase Drivers HTML (similar structure to top resources)
-    $topIncreasedResourcesSectionsHtml = ""
+    # Performance: Use StringBuilder for HTML concatenation to avoid O(n²) behavior
+    # Performance: Reuse pre-grouped rawData hashtables for O(1) lookup
+    $sw.Restart()
+    $topIncreasedResourcesSectionsHtml = [System.Text.StringBuilder]::new()
 
     foreach ($res in $topIncreasedResources) {
         # Find the increase data for this resource
@@ -815,22 +875,28 @@ $categoryHtml
         $increasePercent = [math]::Round($increaseData.IncreasePercent, 1)
         $increasePercentDisplay = if ($increasePercent -gt 1000) { "New" } else { "$increasePercent%" }
         
-        # Get all cost data for this resource from raw data
+        # Get all cost data for this resource from pre-grouped hashtables (O(1) lookup)
         # Try matching by ResourceId first, then fall back to ResourceName if ResourceId is empty
         $resourceData = @()
-        if ($resId -and -not [string]::IsNullOrWhiteSpace($resId)) {
-            $resourceData = $rawData | Where-Object { $_.ResourceId -eq $resId }
+        if ($resId -and -not [string]::IsNullOrWhiteSpace($resId) -and $rawDataByResourceId.ContainsKey($resId)) {
+            $resourceData = $rawDataByResourceId[$resId]
         }
         # Fall back to ResourceName matching if no match by ResourceId
-        if ($resourceData.Count -eq 0 -and $resName -and $resName -ne "N/A") {
-            $resourceData = $rawData | Where-Object { $_.ResourceName -eq $resName }
+        if ($resourceData.Count -eq 0 -and $resNameRaw -and $resNameRaw -ne "N/A" -and $rawDataByResourceName.ContainsKey($resNameRaw)) {
+            $resourceData = $rawDataByResourceName[$resNameRaw]
         }
         
         # Group by Meter Category (reuse same logic as top resources)
         $categoryGroups = $resourceData | Group-Object MeterCategory
-        $categoryHtml = ""
+        $categoryHtml = [System.Text.StringBuilder]::new()
         
-        foreach ($catGroup in ($categoryGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+        # Performance: Precompute sums to avoid O(n²) in Sort-Object
+        $categoryGroupsWithSums = $categoryGroups | ForEach-Object {
+            $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+            [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+        } | Sort-Object SumUsd -Descending
+        
+        foreach ($catGroup in $categoryGroupsWithSums) {
             $catName = $catGroup.Name
             if ([string]::IsNullOrWhiteSpace($catName)) {
                 $catName = "Unknown"
@@ -844,9 +910,15 @@ $categoryHtml
             
             # Group by Meter within category
             $meterGroups = $catItems | Group-Object Meter
-            $meterCardsHtml = ""
+            $meterCardsHtml = [System.Text.StringBuilder]::new()
             
-            foreach ($meterGroup in ($meterGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+            # Performance: Precompute sums to avoid O(n²) in Sort-Object
+            $meterGroupsWithSums = $meterGroups | ForEach-Object {
+                $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+                [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+            } | Sort-Object SumUsd -Descending
+            
+            foreach ($meterGroup in $meterGroupsWithSums) {
                 $meterName = $meterGroup.Name
                 if ([string]::IsNullOrWhiteSpace($meterName)) {
                     $meterName = "Unknown"
@@ -860,7 +932,7 @@ $categoryHtml
                 $meterNameEncoded = [System.Web.HttpUtility]::HtmlEncode($meterName)
                 $meterCount = $meterItems.Count
                 
-                $meterCardsHtml += @"
+                [void]$meterCardsHtml.Append(@"
                             <div class="meter-card no-expand">
                                 <div class="expandable__header meter-header" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
@@ -868,10 +940,11 @@ $categoryHtml
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                             </div>
-"@
+"@)
             }
             
-            $categoryHtml += @"
+            $meterCardsHtmlString = $meterCardsHtml.ToString()
+            [void]$categoryHtml.Append(@"
                         <div class="category-card collapsed">
                             <div class="expandable__header category-header collapsed" onclick="toggleCategory(this, event)">
                                 <span class="expand-arrow">&#9654;</span>
@@ -879,17 +952,18 @@ $categoryHtml
                                 <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
                             </div>
                             <div class="category-content" style="display: none !important;">
-$meterCardsHtml
+$meterCardsHtmlString
                             </div>
                         </div>
-"@
+"@)
         }
         
         $resNameEncoded = [System.Web.HttpUtility]::HtmlEncode($resNameRaw)
         $resSubIdForIncreased = if ($res.SubscriptionId) { $res.SubscriptionId } else { "" }
         $resSubIdForIncreasedEncoded = if ($resSubIdForIncreased) { [System.Web.HttpUtility]::HtmlEncode($resSubIdForIncreased) } else { "" }
         $resSubNameForIncreasedEncoded = [System.Web.HttpUtility]::HtmlEncode($resSub)
-        $topIncreasedResourcesSectionsHtml += @"
+        $categoryHtmlString = $categoryHtml.ToString()
+        [void]$topIncreasedResourcesSectionsHtml.Append(@"
                     <div class="category-card resource-card increased-cost-card" data-subscription-id="$resSubIdForIncreasedEncoded" data-subscription-name="$resSubNameForIncreasedEncoded" data-subscription="$resSubIdForIncreasedEncoded" data-resource="$resNameEncoded">
                         <div class="category-header" onclick="handleResourceCardSelection(this, event) || toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
@@ -905,14 +979,17 @@ $meterCardsHtml
                                     <div><strong>Cost Increase:</strong> +$currency $increaseAmount ($increasePercentDisplay)</div>
                                 </div>
                             </div>
-$categoryHtml
+$categoryHtmlString
                         </div>
                     </div>
-"@
+"@)
     }
+    Write-Host ("[CostTracking] Build TopIncreasedResources HTML: {0}" -f $sw.Elapsed)
 
     # Generate category sections HTML with drilldown (4 levels: Category > SubCategory > Meter > Resource)
-    $categorySectionsHtml = ""
+    # Performance: Use StringBuilder for HTML concatenation to avoid O(n²) behavior
+    $sw.Restart()
+    $categorySectionsHtml = [System.Text.StringBuilder]::new()
     $meterIdCounter = 0
     
     # Build categories structure from rawData if available, otherwise use simple byMeterCategory
@@ -920,7 +997,14 @@ $categoryHtml
         # Group raw data by category
         $categoryGroups = $rawData | Group-Object MeterCategory
         $categoriesArray = @()
-        foreach ($catGroup in ($categoryGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+        
+        # Performance: Precompute sums to avoid O(n²) in Sort-Object
+        $categoryGroupsWithSums = $categoryGroups | ForEach-Object {
+            $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+            [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+        } | Sort-Object SumUsd -Descending
+        
+        foreach ($catGroup in $categoryGroupsWithSums) {
             $catName = $catGroup.Name
             if ([string]::IsNullOrWhiteSpace($catName)) {
                 $catName = "Unknown"
@@ -932,7 +1016,13 @@ $categoryHtml
             # Build SubCategories structure
             $subCatGroups = $catItems | Group-Object MeterSubCategory
             $subCategories = @{}
-            foreach ($subCatGroup in ($subCatGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+            # Performance: Precompute sums to avoid O(n²) in Sort-Object
+            $subCatGroupsWithSums = $subCatGroups | ForEach-Object {
+                $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+                [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+            } | Sort-Object SumUsd -Descending
+            
+            foreach ($subCatGroup in $subCatGroupsWithSums) {
                 $subCatName = $subCatGroup.Name
                 if ([string]::IsNullOrWhiteSpace($subCatName)) {
                     $subCatName = "N/A"
@@ -944,7 +1034,13 @@ $categoryHtml
                 # Build Meters structure
                 $meterGroups = $subCatItems | Group-Object Meter
                 $meters = @{}
-                foreach ($meterGroup in ($meterGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                # Performance: Precompute sums to avoid O(n²) in Sort-Object
+                $meterGroupsWithSums = $meterGroups | ForEach-Object {
+                    $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+                    [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+                } | Sort-Object SumUsd -Descending
+                
+                foreach ($meterGroup in $meterGroupsWithSums) {
                     $meterName = $meterGroup.Name
                     if ([string]::IsNullOrWhiteSpace($meterName)) {
                         $meterName = "Unknown"
@@ -957,7 +1053,13 @@ $categoryHtml
                     # Build Resources structure (Phase 3: group by ResourceId for consistency with engine)
                     $resourceGroups = $meterItems | Where-Object { $_.ResourceId -and -not [string]::IsNullOrWhiteSpace($_.ResourceId) } | Group-Object ResourceId
                     $resources = @{}
-                    foreach ($resGroup in ($resourceGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                    # Performance: Precompute sums to avoid O(n²) in Sort-Object
+                    $resourceGroupsWithSums = $resourceGroups | ForEach-Object {
+                        $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+                        [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+                    } | Sort-Object SumUsd -Descending
+                    
+                    foreach ($resGroup in $resourceGroupsWithSums) {
                         $resId = $resGroup.Name  # ResourceId from the group
                         $resItems = $resGroup.Group
                         $resName = if ($resItems[0].ResourceName) { $resItems[0].ResourceName } else { "Unknown" }
@@ -1008,7 +1110,7 @@ $categoryHtml
         $catCostLocal = Format-NumberWithSeparator -Number $cat.CostLocal
         $catCostUSD = Format-NumberWithSeparator -Number $cat.CostUSD
         
-        $subCatHtml = ""
+        $subCatHtml = [System.Text.StringBuilder]::new()
         if ($cat.SubCategories -and $cat.SubCategories.Count -gt 0) {
             # Sort subcategories by cost descending
             $sortedSubCats = $cat.SubCategories.GetEnumerator() | Sort-Object { $_.Value.CostUSD } -Descending
@@ -1019,7 +1121,7 @@ $categoryHtml
                 $subCatCostLocal = Format-NumberWithSeparator -Number $subCat.CostLocal
                 $subCatCostUSD = Format-NumberWithSeparator -Number $subCat.CostUSD
                 
-                $meterCardsHtml = ""
+                $meterCardsHtml = [System.Text.StringBuilder]::new()
                 if ($subCat.Meters -and $subCat.Meters.Count -gt 0) {
                     # Sort meters by cost descending
                     $sortedMeters = $subCat.Meters.GetEnumerator() | Sort-Object { $_.Value.CostUSD } -Descending
@@ -1033,7 +1135,7 @@ $categoryHtml
                         $meterIdCounter++
                         
                         # Build resource rows if available
-                        $resourceRowsHtml = ""
+                        $resourceRowsHtml = [System.Text.StringBuilder]::new()
                         $hasResources = $false
                         if ($meter.Resources -and $meter.Resources.Count -gt 0) {
                             $hasResources = $true
@@ -1070,7 +1172,7 @@ $categoryHtml
                                 
                                 $resCostLocalFormatted = Format-NumberWithSeparator -Number $res.CostLocal
                                 $resCostUSDFormatted = Format-NumberWithSeparator -Number $res.CostUSD
-                                $resourceRowsHtml += @"
+                                [void]$resourceRowsHtml.Append(@"
                                             <tr $attr $subscriptionAttr data-resource="$resNameEncoded" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" style="cursor: pointer;">
                                                 <td>$resName</td>
                                                 <td>$resGroup</td>
@@ -1078,12 +1180,13 @@ $categoryHtml
                                                 <td class="cost-value text-right">$currency $resCostLocalFormatted</td>
                                                 <td class="cost-value text-right">`$$resCostUSDFormatted</td>
                                             </tr>
-"@
+"@)
                             }
                         }
                         
                         if ($hasResources) {
-                            $meterCardsHtml += @"
+                            $resourceRowsHtmlString = $resourceRowsHtml.ToString()
+                            [void]$meterCardsHtml.Append(@"
                             <div class="meter-card" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName">
                                 <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="expand-arrow">&#9654;</span>
@@ -1105,14 +1208,14 @@ $categoryHtml
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            $resourceRowsHtml
+                                            $resourceRowsHtmlString
                                         </tbody>
                                     </table>
                                 </div>
                             </div>
-"@
+"@)
                         } else {
-                            $meterCardsHtml += @"
+                            [void]$meterCardsHtml.Append(@"
                             <div class="meter-card no-expand" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName">
                                 <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catName" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterName</span>
@@ -1120,12 +1223,13 @@ $categoryHtml
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                             </div>
-"@
+"@)
                         }
                     }
                 }
                 
-                $subCatHtml += @"
+                $meterCardsHtmlString = $meterCardsHtml.ToString()
+                [void]$subCatHtml.Append(@"
                         <div class="subcategory-drilldown" data-subcategory="$subCatNameEncoded" data-category="$catName">
                             <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catName" data-subcategory-key="$catName|$subCatNameEncoded" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                 <span class="expand-arrow">&#9654;</span>
@@ -1133,14 +1237,15 @@ $categoryHtml
                                 <span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $subCatCostLocal (`$$subCatCostUSD)</span>
                             </div>
                             <div class="subcategory-content" style="display: none !important;">
-$meterCardsHtml
+$meterCardsHtmlString
                             </div>
                         </div>
-"@
+"@)
             }
         }
         
-        $categorySectionsHtml += @"
+        $subCatHtmlString = $subCatHtml.ToString()
+        [void]$categorySectionsHtml.Append(@"
                     <div class="category-card collapsed" data-category="$catName">
                         <div class="category-header collapsed" data-category="$catName" onclick="handleCategorySelection(this, event)">
                             <span class="expand-arrow">&#9654;</span>
@@ -1148,21 +1253,31 @@ $meterCardsHtml
                             <span class="category-cost">$currency $catCostLocal (`$$catCostUSD)</span>
                         </div>
                         <div class="category-content" style="display: none !important;">
-$subCatHtml
+$subCatHtmlString
                         </div>
                     </div>
-"@
+"@)
     }
+    Write-Host ("[CostTracking] Build MeterCategory HTML: {0}" -f $sw.Elapsed)
     
     # Generate subscription sections HTML with drilldown (5 levels: Subscription > Category > SubCategory > Meter > Resource)
-    $subscriptionSectionsHtml = ""
+    # This is the "Cost Breakdown" / "Cost by Subscription" section
+    # Performance: Use StringBuilder for HTML concatenation to avoid O(n²) behavior
+    $sw.Restart()
+    $subscriptionSectionsHtml = [System.Text.StringBuilder]::new()
     $subscriptionMeterIdCounter = 0
     $rawData = if ($CostTrackingData.RawData) { $CostTrackingData.RawData } else { @() }
     
     # Group raw data by subscription
     if ($rawData.Count -gt 0) {
         $subscriptionGroups = $rawData | Group-Object SubscriptionId
-        foreach ($subGroup in ($subscriptionGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+        # Performance: Precompute sums to avoid O(n²) in Sort-Object
+        $subscriptionGroupsWithSums = $subscriptionGroups | ForEach-Object {
+            $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+            [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+        } | Sort-Object SumUsd -Descending
+        
+        foreach ($subGroup in $subscriptionGroupsWithSums) {
             $subId = $subGroup.Name  # SubscriptionId (GUID)
             $subItems = $subGroup.Group
             $subName = if ($subItems[0].SubscriptionName) { $subItems[0].SubscriptionName } else { "Unknown" }
@@ -1175,9 +1290,15 @@ $subCatHtml
             
             # Group by category within subscription
             $categoryGroups = $subItems | Group-Object MeterCategory
-            $categoryHtml = ""
+            $categoryHtml = [System.Text.StringBuilder]::new()
             
-            foreach ($catGroup in ($categoryGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+            # Performance: Precompute sums to avoid O(n²) in Sort-Object
+            $categoryGroupsWithSums = $categoryGroups | ForEach-Object {
+                $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+                [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+            } | Sort-Object SumUsd -Descending
+            
+            foreach ($catGroup in $categoryGroupsWithSums) {
                 $catName = $catGroup.Name
                 if ([string]::IsNullOrWhiteSpace($catName)) {
                     $catName = "Unknown"
@@ -1191,9 +1312,15 @@ $subCatHtml
                 
                 # Group by subcategory within category
                 $subCatGroups = $catItems | Group-Object MeterSubCategory
-                $subCatHtml = ""
+                $subCatHtml = [System.Text.StringBuilder]::new()
                 
-                foreach ($subCatGroup in ($subCatGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                # Performance: Precompute sums to avoid O(n²) in Sort-Object
+                $subCatGroupsWithSums = $subCatGroups | ForEach-Object {
+                    $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+                    [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+                } | Sort-Object SumUsd -Descending
+                
+                foreach ($subCatGroup in $subCatGroupsWithSums) {
                     $subCatName = $subCatGroup.Name
                     if ([string]::IsNullOrWhiteSpace($subCatName)) {
                         $subCatName = "N/A"
@@ -1207,9 +1334,15 @@ $subCatHtml
                     
                     # Group by meter within subcategory
                     $meterGroups = $subCatItems | Group-Object Meter
-                    $meterCardsHtml = ""
+                    $meterCardsHtml = [System.Text.StringBuilder]::new()
                     
-                    foreach ($meterGroup in ($meterGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                    # Performance: Precompute sums to avoid O(n²) in Sort-Object
+                    $meterGroupsWithSums = $meterGroups | ForEach-Object {
+                        $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+                        [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+                    } | Sort-Object SumUsd -Descending
+                    
+                    foreach ($meterGroup in $meterGroupsWithSums) {
                         $meterName = $meterGroup.Name
                         if ([string]::IsNullOrWhiteSpace($meterName)) {
                             $meterName = "Unknown"
@@ -1227,12 +1360,18 @@ $subCatHtml
                         
                         # Group by resource within meter (by ResourceId for consistency with engine)
                         $resourceGroups = $meterItems | Where-Object { $_.ResourceId -and -not [string]::IsNullOrWhiteSpace($_.ResourceId) } | Group-Object ResourceId
-                        $resourceRowsHtml = ""
+                        $resourceRowsHtml = [System.Text.StringBuilder]::new()
                         $hasResources = $false
                         
                         if ($resourceGroups.Count -gt 0) {
                             $hasResources = $true
-                            foreach ($resGroup in ($resourceGroups | Sort-Object { ($_.Group | Measure-Object -Property CostUSD -Sum).Sum } -Descending)) {
+                            # Performance: Precompute sums to avoid O(n²) in Sort-Object
+                            $resourceGroupsWithSums = $resourceGroups | ForEach-Object {
+                                $sumUsd = ($_.Group | Measure-Object -Property CostUSD -Sum).Sum
+                                [PSCustomObject]@{ Name = $_.Name; Group = $_.Group; SumUsd = $sumUsd }
+                            } | Sort-Object SumUsd -Descending
+                            
+                            foreach ($resGroup in $resourceGroupsWithSums) {
                                 $resId = $resGroup.Name  # ResourceId from the group
                                 $resItems = $resGroup.Group
                                 $resName = if ($resItems[0].ResourceName) { $resItems[0].ResourceName } else { "Unknown" }
@@ -1262,19 +1401,20 @@ $subCatHtml
                                 # Build subscription attributes: data-subscription = GUID (ID-first), data-subscription-name = display name
                                 $subscriptionAttr = if ($subIdEncoded) { "data-subscription-id=""$subIdEncoded"" data-subscription-name=""$subNameEncoded"" data-subscription=""$subIdEncoded""" } else { "" }
                                 
-                                $resourceRowsHtml += @"
+                                [void]$resourceRowsHtml.Append(@"
                                             <tr $attr $subscriptionAttr data-resource="$resNameEncoded" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" style="cursor: pointer;">
                                                 <td>$resNameEncoded</td>
                                                 <td>$resGroupName</td>
                                                 <td class="cost-value text-right">$currency $resCostLocalFormatted</td>
                                                 <td class="cost-value text-right">`$$resCostUSDFormatted</td>
                                             </tr>
-"@
+"@)
                             }
                         }
                         
                         if ($hasResources) {
-                            $meterCardsHtml += @"
+                            $resourceRowsHtmlString = $resourceRowsHtml.ToString()
+                            [void]$meterCardsHtml.Append(@"
                             <div class="meter-card" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
                                 <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="expand-arrow">&#9654;</span>
@@ -1295,14 +1435,14 @@ $subCatHtml
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            $resourceRowsHtml
+                                            $resourceRowsHtmlString
                                         </tbody>
                                     </table>
                                 </div>
                             </div>
-"@
+"@)
                         } else {
-                            $meterCardsHtml += @"
+                            [void]$meterCardsHtml.Append(@"
                             <div class="meter-card no-expand" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
                                 <div class="expandable__header meter-header" data-meter="$meterNameEncoded" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="handleMeterSelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                     <span class="meter-name" style="flex-grow: 1; font-weight: 600; margin-right: 10px;">$meterNameEncoded</span>
@@ -1310,11 +1450,12 @@ $subCatHtml
                                     <span class="meter-count">$meterCount records</span>
                                 </div>
                             </div>
-"@
+"@)
                         }
                     }
                     
-                    $subCatHtml += @"
+                    $meterCardsHtmlString = $meterCardsHtml.ToString()
+                    [void]$subCatHtml.Append(@"
                         <div class="subcategory-drilldown" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
                             <div class="expandable__header subcategory-header" data-subcategory="$subCatNameEncoded" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" data-subcategory-key="$subIdEncoded|$catNameEncoded|$subCatNameEncoded" onclick="handleSubcategorySelection(this, event)" style="display: flex; align-items: center; justify-content: space-between;">
                                 <span class="expand-arrow">&#9654;</span>
@@ -1322,13 +1463,14 @@ $subCatHtml
                                 <span class="subcategory-cost" style="color: #54a0ff !important; text-align: right; font-weight: 600; white-space: nowrap; margin-left: auto;">$currency $subCatCostLocalRounded (`$$subCatCostUSDRounded)</span>
                             </div>
                             <div class="subcategory-content" style="display: none !important;">
-$meterCardsHtml
+$meterCardsHtmlString
                             </div>
                         </div>
-"@
+"@)
                 }
                 
-                $categoryHtml += @"
+                $subCatHtmlString = $subCatHtml.ToString()
+                [void]$categoryHtml.Append(@"
                         <div class="category-card collapsed" data-category="$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
                             <div class="expandable__header category-header collapsed" data-category="$catNameEncoded" data-category-key="$subIdEncoded|$catNameEncoded" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" data-category-name="$catNameEncoded" onclick="handleCategorySelection(this, event)">
                                 <span class="expand-arrow">&#9654;</span>
@@ -1336,13 +1478,14 @@ $meterCardsHtml
                                 <span class="category-cost">$currency $catCostLocalRounded (`$$catCostUSDRounded)</span>
                             </div>
                             <div class="category-content" style="display: none !important;">
-$subCatHtml
+$subCatHtmlString
                             </div>
                         </div>
-"@
+"@)
             }
             
-            $subscriptionSectionsHtml += @"
+            $categoryHtmlString = $categoryHtml.ToString()
+            [void]$subscriptionSectionsHtml.Append(@"
                     <div class="category-card subscription-card collapsed" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded">
                         <div class="category-header collapsed" data-subscription-id="$subIdEncoded" data-subscription-name="$subNameEncoded" data-subscription="$subIdEncoded" onclick="if (!handleSubscriptionSelection(this, event)) return; toggleCategory(this, event)">
                             <span class="expand-arrow">&#9654;</span>
@@ -1350,12 +1493,13 @@ $subCatHtml
                             <span class="category-cost">$currency $subCostLocalRounded (`$$subCostUSDRounded)</span>
                         </div>
                         <div class="category-content" style="display: none !important;">
-$categoryHtml
+$categoryHtmlString
                         </div>
                     </div>
-"@
+"@)
         }
     }
+    Write-Host ("[CostTracking] Build CostBreakdown HTML: {0}" -f $sw.Elapsed)
     
     # Build trend indicator with arrow and color class
     $trendArrow = switch ($trendDirection) {
@@ -1517,7 +1661,7 @@ $(Get-ReportStylesheet)
                 </h3>
                 <div class="subscription-filter-content">
                     <div class="subscription-filter-container">
-$subscriptionOptionsHtml
+$($subscriptionOptionsHtml.ToString())
                         <div class="filter-actions">
                             <button class="filter-btn" onclick="selectAllSubscriptions()">Select All</button>
                             <button class="filter-btn" onclick="deselectAllSubscriptions()">Deselect All</button>
@@ -1527,7 +1671,7 @@ $subscriptionOptionsHtml
             </div>
         </div>
         
-        <div class="section-box">
+        <div id="costBreakdownRoot" class="section-box">
             <h2>Cost Breakdown</h2>
             <div class="selection-legend">
                 <div class="selection-legend-item">
@@ -1547,7 +1691,7 @@ $subscriptionOptionsHtml
                     </div>
                 </div>
                 <div class="expandable__content">
-$subscriptionSectionsHtml
+$($subscriptionSectionsHtml.ToString())
                 </div>
             </div>
             
@@ -1581,7 +1725,7 @@ $subscriptionSectionsHtml
                     </div>
                 </div>
                 <div class="expandable__content">
-$topResourcesSectionsHtml
+$($topResourcesSectionsHtml.ToString())
                 </div>
             </div>
             
@@ -1593,7 +1737,7 @@ $topResourcesSectionsHtml
                     </div>
                 </div>
                 <div class="expandable__content">
-$topIncreasedResourcesSectionsHtml
+$($topIncreasedResourcesSectionsHtml.ToString())
                 </div>
             </div>
         </div>
@@ -2448,6 +2592,9 @@ $factRowsJson
             // Initialize DOM-index after DOM is ready (Phase 3)
             initDomIndex();
             
+            // Phase 5.2: Initialize event delegation for Meter Category table
+            initMeterCategoryDelegatedClicks();
+            
             // Phase 5.1: Use central refresh pipeline instead of manual updateChart() and renderCostByMeterCategory()
             refreshUIFromState({ skipMeterCategoryRerender: false });
             
@@ -3208,12 +3355,37 @@ $factRowsJson
                 resourceKeys: new Set()
             };
             
+            // --- APPLY BLUE (subscription top-layer) ---
+            // Robust application using document.querySelector (not scoped to costBreakdownRoot)
+            if (topSource === 'subscription') {
+                const catKeys = Array.from(topLayerPicks.categories || []);
+                const subKeys = Array.from(topLayerPicks.subcategories || []);
+                
+                catKeys.forEach(key => {
+                    const el = document.querySelector('[data-category-key="' + CSS.escape(key) + '"]');
+                    if (el) el.classList.add('pick-selected');
+                });
+                
+                subKeys.forEach(key => {
+                    const el = document.querySelector('[data-subcategory-key="' + CSS.escape(key) + '"]');
+                    if (el) el.classList.add('pick-selected');
+                });
+                
+                // Temporär debug-logg (ta bort senare)
+                console.log('DBG apply subscription picks', {
+                    catKeys: Array.from(topLayerPicks.categories || []).slice(0, 3),
+                    subKeys: Array.from(topLayerPicks.subcategories || []).slice(0, 3),
+                    pickSelectedCount: document.querySelectorAll('.pick-selected').length
+                });
+            }
+            
             // Update category headers - Phase 5.2: Hard-scope to correct roots, use data-category-key
             // Cost Breakdown category headers (scoped to costBreakdownRoot)
             if (costBreakdownRoot) {
                 // Phase 5.2: Use data-category-key for exact matching (no text matching)
                 if (topSource === 'subscription') {
                     // Top-layer is from subscription table: show blue for subscription picks
+                    // (Already applied above with document.querySelector, but keep for compatibility)
                     topLayerPicks.categories.forEach(categoryKey => {
                         const elements = costBreakdownRoot.querySelectorAll('[data-category-key="' + categoryKey + '"]');
                         elements.forEach(element => {
@@ -3257,7 +3429,7 @@ $factRowsJson
                         if (parts.length === 3) {
                             const elements = costBreakdownRoot.querySelectorAll('[data-subcategory-key="' + scopedKey + '"]');
                             elements.forEach(element => {
-                                element.classList.add('pick-selected');
+                    element.classList.add('pick-selected');
                             });
                         }
                     });
@@ -3266,7 +3438,7 @@ $factRowsJson
                     if (topActive && topActive.size > 0 && engine.index.bySubcategory) {
                         engine.index.bySubcategory.forEach((subcatRowIds, scopedKey) => {
                             // Only match scoped keys (3 parts: subscriptionId|category|subcategory)
-                            const parts = scopedKey.split('|');
+                const parts = scopedKey.split('|');
                             if (parts.length === 3) {
                                 const intersection = engine.intersectSets(topActive, subcatRowIds);
                                 if (intersection.size > 0) {
@@ -3302,17 +3474,7 @@ $factRowsJson
                         if (topLayerPicks.meterNames.has(meter)) {
                             element.classList.add('pick-selected');
                         }
-                    }
-                    // If topSource === 'subscription' or null: no markers in Meter Category
-                });
-            }
-            
-            // Cost Breakdown meter headers (scoped to costBreakdownRoot)
-            if (costBreakdownRoot) {
-                costBreakdownRoot.querySelectorAll('.expandable__header.meter-header[data-meter], .meter-header[data-meter]').forEach(element => {
-                    const meter = element.getAttribute('data-meter');
-                    
-                    if (topSource === 'subscription') {
+                    } else if (topSource === 'subscription') {
                         // Top-layer is from subscription table: show yellow for affected meters
                         if (topActive && topActive.size > 0 && engine.index.byMeter) {
                             const meterRowIds = engine.index.byMeter.get(meter);
@@ -3324,7 +3486,65 @@ $factRowsJson
                             }
                         }
                     }
-                    // If topSource === 'meter' or null: no markers in Cost Breakdown
+                    // If topSource === null: no markers in Meter Category
+                });
+            }
+            
+            // Cost Breakdown meter headers (scoped to costBreakdownRoot)
+            if (costBreakdownRoot) {
+                // Cache: meter -> Set(resourceKeys) för snabb subset-check
+                const meterToResourceKeys = new Map();
+                function getMeterResourceKeys(meter) {
+                    if (meterToResourceKeys.has(meter)) return meterToResourceKeys.get(meter);
+                    
+                    const rowIds = engine.index.byMeter?.get(meter);
+                    const set = new Set();
+                    if (rowIds && typeof factRows !== 'undefined') {
+                        rowIds.forEach(rowId => {
+                            const rk = factRows[rowId]?.resourceKey;
+                            if (rk) set.add(rk);
+                        });
+                    }
+                    meterToResourceKeys.set(meter, set);
+                    return set;
+                }
+                
+                function isSubset(subSet, superSet) {
+                    for (const v of subSet) if (!superSet.has(v)) return false;
+                    return true;
+                }
+                
+                costBreakdownRoot.querySelectorAll('.expandable__header.meter-header[data-meter], .meter-header[data-meter]').forEach(element => {
+                    const meter = element.getAttribute('data-meter');
+                    
+                    // 1) Om metern är explicit vald (meterNames) -> BLÅ
+                    if (topSource === 'meter' && topLayerPicks.meterNames?.has(meter)) {
+                        element.classList.add('pick-selected');
+                        return;
+                    }
+                    
+                    // 2) Om top är resourceKeys (meter-top) -> markera meter ENDAST om alla resurser under metern är valda
+                    if (topSource === 'meter' && topLayerPicks.resourceKeys?.size > 0) {
+                        const meterResources = getMeterResourceKeys(meter);
+                        if (meterResources.size > 0 && isSubset(meterResources, topLayerPicks.resourceKeys)) {
+                            element.classList.add('cross-selected'); // "complete coverage"
+                        }
+                        return; // annars: ingen markering
+                    }
+                    
+                    // 3) Om top är subscription -> gul om påverkas (intersection > 0 är ok här)
+                    if (topSource === 'subscription') {
+                        if (topActive && topActive.size > 0 && engine.index.byMeter) {
+                            const meterRowIds = engine.index.byMeter.get(meter);
+                            if (meterRowIds) {
+                                const intersection = engine.intersectSets(topActive, meterRowIds);
+                                if (intersection.size > 0) {
+                                    element.classList.add('cross-selected');
+                                }
+                            }
+                        }
+                    }
+                    // If topSource === null: no markers in Cost Breakdown
                 });
             }
             
@@ -3452,10 +3672,64 @@ $factRowsJson
             updateClearSelectionsButtonVisibility();
         }
         
+        // Phase 5.2: Event delegation for Meter Category table (#meterCategoryDynamicRoot)
+        // All clicks in meter table should create meter-layer with source='meter'
+        function initMeterCategoryDelegatedClicks() {
+            const root = document.getElementById('meterCategoryDynamicRoot');
+            if (!root || root.__delegationBound) return;
+            root.__delegationBound = true;
+
+            root.addEventListener('click', (event) => {
+                // Protect against clicks on links/buttons
+                if (event.target.closest('a,button,input,select,textarea,label')) return;
+                
+                // Phase 5.2: Resource row click in meter table → handleResourceSelection with source='meter'
+                const tr = event.target.closest('tr.clickable[data-resource-key]');
+                if (tr) {
+                    event.stopPropagation(); // Prevent collapse/expand of parent sections
+                    // Only handle Ctrl/Cmd clicks for picks
+                    if (event.ctrlKey || event.metaKey) {
+                        handleResourceSelection(tr, event, 'meter');
+                    }
+                    return;
+                }
+
+                // Phase 5.2: Meter header click in meter table → handleMeterSelection with source='meter'
+                const meterHeader = event.target.closest('.expandable__header.meter-header');
+                if (meterHeader && !meterHeader.closest('#costBreakdownRoot')) {
+                    // Only handle if in meter table (not in Cost Breakdown)
+                    // handleMeterSelection will be called via onclick, but we override source here
+                    // Actually, we let onclick handle it and fix handleMeterSelection instead
+                    return;
+                }
+
+                // Phase 5.2: Category header click in meter table → handleCategorySelection with source='meter'
+                const catHeader = event.target.closest('.expandable__header.category-header[data-category]');
+                if (catHeader && !catHeader.closest('#costBreakdownRoot')) {
+                    // Only handle if in meter table (not in Cost Breakdown)
+                    // handleCategorySelection will be called via onclick, but we override source
+                    // Actually, we let onclick handle it and fix handleCategorySelection instead
+                    return;
+                }
+
+                // Phase 5.2: Subcategory header click in meter table → handleSubcategorySelection with source='meter'
+                const subHeader = event.target.closest('.expandable__header.subcategory-header[data-subcategory]');
+                if (subHeader && !subHeader.closest('#costBreakdownRoot')) {
+                    // Only handle if in meter table (not in Cost Breakdown)
+                    // handleSubcategorySelection will be called via onclick, but we override source
+                    // Actually, we let onclick handle it and fix handleSubcategorySelection instead
+                    return;
+                }
+            }, true); // Use capture phase to catch before inline handlers
+        }
+        
         // Event delegation for resource clicks (Phase 3: use data-resource-key, canonical keys)
         // Resource tables are in multiple locations (category sections, subscription sections)
         // Use event delegation on document but check for data-resource-key attribute
         document.addEventListener('click', function(e) {
+            // Phase 5.2: Skip if click is in meter table (handled by dedicated delegation)
+            if (e.target.closest('#meterCategoryDynamicRoot')) return;
+            
             // Protect against clicks on links/buttons in row (links should work without toggling selection)
             if (e.target.closest('a,button,input,select,textarea,label')) return;
             
@@ -3472,68 +3746,17 @@ $factRowsJson
             
             if (row.tagName !== 'TR') return;
             
-            // B) Implement Explorer selection logic for picks.resourceKeys
-            const isMulti = e.ctrlKey || e.metaKey; // Ctrl on Win/Linux, Cmd on Mac
-            const set = engine.state.picks.resourceKeys;
-            
-            if (isMulti) {
-                // Ctrl/Cmd-click → toggle (multi)
-                if (set.has(key)) {
-                    set.delete(key);
-                } else {
-                    set.add(key);
-                }
-            } else {
-                // Single-click → exclusive select or clear
-                const isOnlyThis = (set.size === 1 && set.has(key));
-                if (isOnlyThis) {
-                    set.clear(); // Single-click on already-selected item => deselect
-                } else {
-                    set.clear();
-                    set.add(key); // Single-click replaces selection
-                }
+            // Phase 5.2: Use handleResourceSelection with proper source detection
+            // Only handle Ctrl/Cmd clicks for picks
+            if (e.ctrlKey || e.metaKey) {
+                // Detect source from element location (Cost Breakdown = subscription, otherwise = meter)
+                const isInCostBreakdown = row.closest('#costBreakdownRoot') !== null;
+                const source = isInCostBreakdown ? 'subscription' : 'meter';
+                handleResourceSelection(row, e, source);
             }
             
-            // Clear other picks to avoid split-brain (strict policy)
-            // Phase 5: Legacy picksets (resourceIds, resourceNames, resourceGroups) are deprecated - no longer cleared
-            engine.state.picks.meterNames.clear();
-            engine.state.picks.categories.clear();
-            engine.state.picks.subcategories.clear();
-            
-            // C) Run refresh pipeline after selection change
-            // FIX: Check if resource click is in Cost by Meter Category section
-            // If so, skip re-render to preserve expand/collapse state (costs are already calculated from activeRowIds)
-            const isInMeterCategory = row.closest('#meterCategoryDynamicRoot') !== null;
-            
-            // Re-index DOM (in case rows were added/removed)
-            initDomIndex();
-            
-            // Phase 5: Use central refresh pipeline (skip meter category re-render if click is in that section)
-            refreshUIFromState({ skipMeterCategoryRerender: isInMeterCategory });
-            
-            // Debug logging (Phase 3)
-            if (window.DEBUG_COST_REPORT) {
-                console.debug('Resource selection state:', {
-                    scopeSubscriptionIds: Array.from(engine.state.scope.subscriptionIds),
-                    pickedResourceKeys: Array.from(engine.state.picks.resourceKeys),
-                    activeRowIdsSize: engine.getActiveRowIds().size
-                });
-                
-                // Validate DOM index
-                if (!window.domIndex || !window.domIndex.byResourceKey) {
-                    console.warn('⚠️ DOM index missing - run initDomIndex()');
-                } else {
-                    const mapSize = window.domIndex.byResourceKey.size;
-                    if (mapSize === 0) {
-                        console.warn('⚠️ DOM index empty - no resource rows found');
-                    } else {
-                        console.debug('✓ DOM index valid:', { mapSize });
-                    }
-                }
-            }
-            
-            // Phase 5: UI updates already handled by syncUIFromEngine() -> refreshUIFromState() above
-            // No need for duplicate calls
+            // Note: Single-click behavior removed in Phase 5.2 - only Ctrl/Cmd clicks create picks
+            // If you need single-click behavior, it should be handled separately
         });
         
         // Phase 5: Legacy chart functions removed - engine-only now
@@ -4407,10 +4630,18 @@ $factRowsJson
                 // Phase 5.2: Use data-category-key if available (scoped), otherwise fallback to data-category
                 const categoryKey = element.getAttribute('data-category-key') || getCategoryFromElement(element);
                 if (categoryKey && engine) {
-                    // Phase 5.2: Identify source (subscription or meter table)
-                    const subscriptionId = element.getAttribute('data-subscription-id') || 
-                                         element.closest('[data-subscription-id]')?.getAttribute('data-subscription-id') || '';
-                    const source = subscriptionId ? 'subscription' : 'meter';
+                    // Phase 5.2: Identify source - if in meter table, always use 'meter', otherwise check subscriptionId
+                    const isInMeterTable = element.closest('#meterCategoryDynamicRoot') !== null;
+                    let source;
+                    let subscriptionId = ''; // Fix: definiera här i outer scope
+                    
+                    if (isInMeterTable) {
+                        source = 'meter';
+                    } else {
+                        subscriptionId = element.getAttribute('data-subscription-id') || 
+                                       element.closest('[data-subscription-id]')?.getAttribute('data-subscription-id') || '';
+                        source = subscriptionId ? 'subscription' : 'meter';
+                    }
                     
                     // Phase 5.2: If no data-category-key, build scoped key (fallback for Meter Category)
                     const finalCategoryKey = categoryKey.includes('|') ? categoryKey : (subscriptionId ? (subscriptionId + '|' + categoryKey) : categoryKey);
@@ -4441,19 +4672,27 @@ $factRowsJson
                 event.stopPropagation();
                 const subcategory = element.getAttribute('data-subcategory');
                 const category = element.getAttribute('data-category');
-                const subscriptionId = element.getAttribute('data-subscription-id') || '';
                 if (subcategory && category && engine) {
-                    // REVERT: Use scoped key (subscriptionId|category|subcategory) for Cost Breakdown
-                    // For Meter Category section (no subscriptionId), skip pick (or use global key if needed)
-                    // For now, only allow scoped picks from Cost Breakdown
-                    if (!subscriptionId) {
-                        // Meter Category section - don't set scoped picks here
-                        // (Meter Category will highlight resources instead)
-                        return false;
-                    }
+                    // Phase 5.2: Identify source - if in meter table, always use 'meter', otherwise check subscriptionId
+                    const isInMeterTable = element.closest('#meterCategoryDynamicRoot') !== null;
+                    let source;
+                    let scopedKey;
                     
-                    const scopedKey = subscriptionId + '|' + category + '|' + subcategory;
-                    const source = 'subscription';
+                    if (isInMeterTable) {
+                        // Meter Category section - use global key (category|subcategory) and source='meter'
+                        source = 'meter';
+                        scopedKey = category + '|' + subcategory; // Global key for meter table
+                    } else {
+                        // Cost Breakdown section - use scoped key (subscriptionId|category|subcategory) and source='subscription'
+                        const subscriptionId = element.getAttribute('data-subscription-id') || 
+                                             element.closest('[data-subscription-id]')?.getAttribute('data-subscription-id') || '';
+                        if (!subscriptionId) {
+                            // No subscriptionId in Cost Breakdown - skip pick
+                            return false;
+                        }
+                        source = 'subscription';
+                        scopedKey = subscriptionId + '|' + category + '|' + subcategory;
+                    }
                     
                     // Phase 5.2: Ensure top-layer and clear other picks in that layer
                     const topLayer = engine.ensureTopLayer(source);
@@ -4481,10 +4720,16 @@ $factRowsJson
                 event.stopPropagation();
                 const meter = element.getAttribute('data-meter');
                 if (meter && engine) {
-                    // Phase 5.2: Identify source (subscription or meter table)
-                    const subscriptionId = element.getAttribute('data-subscription-id') || 
-                                         element.closest('[data-subscription-id]')?.getAttribute('data-subscription-id') || '';
-                    const source = subscriptionId ? 'subscription' : 'meter';
+                    // Phase 5.2: Identify source - if in meter table, always use 'meter', otherwise check subscriptionId
+                    const isInMeterTable = element.closest('#meterCategoryDynamicRoot') !== null;
+                    let source;
+                    if (isInMeterTable) {
+                        source = 'meter';
+                    } else {
+                        const subscriptionId = element.getAttribute('data-subscription-id') || 
+                                             element.closest('[data-subscription-id]')?.getAttribute('data-subscription-id') || '';
+                        source = subscriptionId ? 'subscription' : 'meter';
+                    }
                     
                     // Phase 5.2: Ensure top-layer and clear other picks in that layer
                     const topLayer = engine.ensureTopLayer(source);
@@ -4506,14 +4751,35 @@ $factRowsJson
             return false;
         }
         
-        function handleResourceSelection(element, event) {
+        function handleResourceSelection(element, event, explicitSource) {
             if (event && (event.ctrlKey || event.metaKey)) {
                 event.preventDefault();
                 event.stopPropagation();
-                const resource = getResourceFromElement(element);
-                if (resource && engine) {
-                    // Phase 5.2: Resource picks are always from meter table
-                    const source = 'meter';
+                
+                // Phase 5.2: Always use data-resource-key (canonical key) instead of data-resource (short name)
+                // This ensures the key matches what DOM-index uses for visual highlighting
+                const resourceKey = element.getAttribute('data-resource-key') ||
+                                   element.closest('tr[data-resource-key]')?.getAttribute('data-resource-key') ||
+                                   null;
+                
+                if (resourceKey && engine) {
+                    // Phase 5.2: Identify source - use explicitSource if provided, otherwise detect from element location
+                    let source;
+                    if (explicitSource) {
+                        source = explicitSource;
+                    } else {
+                        // Phase 5.2: Detect source from element location (meter table vs Cost Breakdown)
+                        const isInMeterTable = element.closest('#meterCategoryDynamicRoot') !== null;
+                        const isInCostBreakdown = element.closest('#costBreakdownRoot') !== null;
+                        if (isInMeterTable) {
+                            source = 'meter';
+                        } else if (isInCostBreakdown) {
+                            source = 'subscription';
+                        } else {
+                            // Default to meter for resource picks (most common case)
+                            source = 'meter';
+                        }
+                    }
                     
                     // Phase 5.2: Ensure top-layer and clear other picks in that layer
                     const topLayer = engine.ensureTopLayer(source);
@@ -4523,7 +4789,8 @@ $factRowsJson
                     // Keep: resourceKeys (for multi-select within level)
                     
                     // Toggle resource pick in top-layer (canonical: resourceKeys)
-                    engine.togglePick('resourceKeys', resource, 'toggle', source);
+                    // Use resourceKey (data-resource-key) instead of resource (data-resource) to match DOM-index
+                    engine.togglePick('resourceKeys', resourceKey, 'toggle', source);
                     
                     // Phase 5: Use central refresh pipeline (skip meter category re-render to preserve expand/collapse state)
                     refreshUIFromState({ skipMeterCategoryRerender: true });
@@ -4854,6 +5121,8 @@ $factRowsJson
 </body>
 </html>
 "@
+    
+    Write-Host ("[CostTracking] Export total: {0}" -f $swAll.Elapsed)
     
     # Write HTML to file
     try {
