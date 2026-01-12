@@ -2,6 +2,82 @@
 
 PowerShell module for automated Azure security posture assessments across multiple subscriptions. Scans Azure resources against CIS Azure Foundations Benchmark v2.0 controls with focus on TLS enforcement, encryption, network security, and deprecated component detection.
 
+## Quick Start
+
+### 1. Prerequisites
+
+- PowerShell 5.1 or later
+- Azure PowerShell modules (Az.*)
+- (Optional) OpenAI API key for AI-powered analysis
+
+### 2. Install Azure PowerShell Modules
+
+```powershell
+# Install Azure PowerShell modules
+Install-Module Az -Force -AllowClobber
+
+# Or install individual Az modules
+Install-Module Az.Accounts, Az.Resources, Az.Storage, Az.Websites, Az.Compute, Az.Sql, Az.Network, Az.Monitor, Az.ConnectedMachine -Force
+```
+
+### 3. Setup Environment Variables (Optional)
+
+If you want to use service principal authentication or AI analysis, create a `.env` file:
+
+```powershell
+# Copy the example file
+Copy-Item .env-example .env
+
+# Edit .env and fill in your values:
+# - AZURE_TENANT_ID
+# - AZURE_CLIENT_ID
+# - AZURE_CLIENT_SECRET
+# - OPENAI_API_KEY (optional, for AI analysis)
+```
+
+### 4. Initialize Module (Local Development)
+
+**IMPORTANT:** You must use dot-sourcing (dot and space before the script):
+
+```powershell
+# Navigate to the module directory
+cd C:\Dev\Scripts\AzureInventory
+
+# Initialize and load all functions
+. .\Init-Local.ps1
+```
+
+> **Note:** The dot (`.`) and space before `.\Init-Local.ps1` is required! This loads functions into your current PowerShell session. Running `.\Init-Local.ps1` without the dot will not work.
+
+### 5. Connect to Azure
+
+```powershell
+# Interactive login (default)
+Connect-AuditEnvironment
+
+# Or use service principal from .env file
+Connect-AuditEnvironment -EnvFile ".env"
+```
+
+### 6. Run Audit
+
+```powershell
+# Full audit with all reports (live data)
+Start-AzureGovernanceAudit
+
+# Full audit with test/mock data (for development)
+Start-AzureGovernanceAudit -Mode Test
+
+# Single report type
+Start-AzureGovernanceAudit -ReportType CostTracking
+
+# With AI analysis
+Start-AzureGovernanceAudit -AI
+
+# Show all options
+Start-AzureGovernanceAudit -Help
+```
+
 ## Features
 
 - **Multi-Subscription Scanning**: Automatically scans all enabled subscriptions or specific subscriptions
@@ -24,30 +100,61 @@ PowerShell module for automated Azure security posture assessments across multip
 
 ## Installation
 
-### Prerequisites
+### For Local Development (Recommended)
 
-- PowerShell 5.1 or later
-- Azure PowerShell modules (Az.*)
-
-### Install Required Modules
+Use `Init-Local.ps1` to load all functions directly without installing the module:
 
 ```powershell
-# Install Azure PowerShell modules
-Install-Module Az -Force -AllowClobber
+# Navigate to the module directory
+cd C:\Dev\Scripts\AzureInventory
 
-# Or install individual Az modules
-Install-Module Az.Accounts, Az.Resources, Az.Storage, Az.Websites, Az.Compute, Az.Sql, Az.Network, Az.Monitor, Az.ConnectedMachine -Force
+# Initialize module (MUST use dot-sourcing)
+. .\Init-Local.ps1
 ```
 
-### Install Module
+This will:
+- Load all module functions into your current PowerShell session
+- Automatically reload functions if they already exist
+- Load environment variables from `.env` file if present
+- Validate CSS structure for reports
+
+### For Production Installation
+
+If you want to install the module system-wide:
 
 ```powershell
 # Clone or download the module
 # Navigate to the module directory
-cd D:\Dev\scripts\AzureInventory
+cd C:\Dev\Scripts\AzureInventory
 
 # Import the module
 Import-Module .\AzureSecurityAudit.psd1 -Force
+```
+
+> **Note:** For development, using `Init-Local.ps1` is recommended as it allows you to edit functions and reload them without reinstalling the module.
+
+## Available Report Types
+
+The module supports the following report types:
+
+- **Security** - CIS Azure Foundations Benchmark compliance findings
+- **VMBackup** - VM backup status and protection
+- **ChangeTracking** - Recent Azure changes with security flags
+- **CostTracking** - Cost analysis by subscription/category/resource
+- **EOL** - End-of-life tracking for Azure components
+- **NetworkInventory** - VNets, subnets, NSGs, peerings
+- **RBAC** - Role assignments and permissions analysis
+- **Advisor** - Azure Advisor recommendations
+- **Dashboard** - Combined executive dashboard
+
+Run all reports:
+```powershell
+Start-AzureGovernanceAudit -ReportType All
+```
+
+Or specify individual reports:
+```powershell
+Start-AzureGovernanceAudit -ReportType Security, CostTracking, RBAC
 ```
 
 ## Authentication
@@ -116,36 +223,63 @@ Connect-AuditEnvironment -UseManagedIdentity
 
 ## Usage
 
+### Main Command: Start-AzureGovernanceAudit
+
+The primary command for running audits is `Start-AzureGovernanceAudit`. It supports both live Azure data and test/mock data modes.
+
 ### Basic Usage
 
 ```powershell
 # Connect to Azure (interactive or via .env)
 Connect-AuditEnvironment
 
-# Run full audit across all enabled subscriptions
-Invoke-AzureSecurityAudit
+# Run full audit across all enabled subscriptions (all reports, live data)
+Start-AzureGovernanceAudit
 
-# Run audit for specific categories
-Invoke-AzureSecurityAudit -Categories Storage, SQL, Network
+# Run full audit with test/mock data (for development/testing)
+Start-AzureGovernanceAudit -Mode Test
 
-# Run audit for specific subscriptions
-Invoke-AzureSecurityAudit -SubscriptionIds "sub-123", "sub-456"
+# Run specific report type
+Start-AzureGovernanceAudit -ReportType CostTracking
+Start-AzureGovernanceAudit -ReportType Security, RBAC
 
-# Export JSON in addition to HTML
-Invoke-AzureSecurityAudit -ExportJson
+# Run for specific subscriptions
+Start-AzureGovernanceAudit -SubscriptionIds "sub-123", "sub-456"
 
-# Get result object for further processing
-$result = Invoke-AzureSecurityAudit -PassThru
+# Save collected data as JSON (useful for debugging)
+Start-AzureGovernanceAudit -SaveDataPayload
+
+# Show all available options
+Start-AzureGovernanceAudit -Help
 ```
 
 ### Advanced Usage
 
 ```powershell
 # Custom output path
-Invoke-AzureSecurityAudit -OutputPath ".\Reports\SecurityAudit_2025.html"
+Start-AzureGovernanceAudit -OutputPath ".\Reports\MyAudit"
 
-# Scan specific categories with JSON export
-Invoke-AzureSecurityAudit -Categories Storage, SQL -ExportJson -OutputPath ".\audit.html"
+# Security audit with specific categories
+Start-AzureGovernanceAudit -ReportType Security -SecurityCategories Storage, SQL, Network
+
+# Include Level 2 CIS controls (for critical data)
+Start-AzureGovernanceAudit -ReportType Security -IncludeLevel2 -CriticalStorageAccounts "critical-storage-1"
+
+# Cost tracking with custom date range
+Start-AzureGovernanceAudit -ReportType CostTracking -DaysToInclude 14
+
+# Full audit with AI analysis
+Start-AzureGovernanceAudit -AI
+```
+
+### Legacy Command (Backward Compatible)
+
+The old `Invoke-AzureSecurityAudit` command is still available as an alias:
+
+```powershell
+# This is equivalent to Start-AzureGovernanceAudit -ReportType Security
+Invoke-AzureSecurityAudit
+```
 
 ## AI-Powered Analysis
 
@@ -336,7 +470,76 @@ Total Findings: 150
 HTML Report: .\AzureSecurityAudit_20250106_143022.html
 ```
 
+## Common Workflows
+
+### Development Workflow
+
+```powershell
+# 1. Navigate to project directory
+cd C:\Dev\Scripts\AzureInventory
+
+# 2. Initialize module (loads all functions)
+. .\Init-Local.ps1
+
+# 3. Test with mock data (no Azure connection needed)
+Start-AzureGovernanceAudit -Mode Test -ReportType CostTracking
+
+# 4. After making code changes, reload functions
+. .\Init-Local.ps1
+
+# 5. Test again
+Start-AzureGovernanceAudit -Mode Test -ReportType CostTracking
+```
+
+### Production Workflow
+
+```powershell
+# 1. Navigate to project directory
+cd C:\Dev\Scripts\AzureInventory
+
+# 2. Initialize module
+. .\Init-Local.ps1
+
+# 3. Connect to Azure
+Connect-AuditEnvironment -EnvFile ".env"
+
+# 4. Run full audit
+Start-AzureGovernanceAudit
+
+# 5. Or run specific reports
+Start-AzureGovernanceAudit -ReportType Security, CostTracking -AI
+```
+
+### Testing Report Generation
+
+```powershell
+# Generate all reports with dummy data (no Azure connection required)
+. .\Init-Local.ps1
+. .\Tools\Test-ReportsWithDummyData.ps1
+Test-AllReportsWithDummyData -OutputFolder "test-reports"
+```
+
 ## Troubleshooting
+
+### Init-Local.ps1 Issues
+
+**Problem:** Functions not loading after running `Init-Local.ps1`
+
+**Solution:** Make sure you're using dot-sourcing:
+```powershell
+# Correct (with dot and space)
+. .\Init-Local.ps1
+
+# Wrong (will not work)
+.\Init-Local.ps1
+```
+
+**Problem:** "Script must be run with dot-source!" error
+
+**Solution:** The script detected you didn't use dot-sourcing. Use:
+```powershell
+. .\Init-Local.ps1
+```
 
 ### Module Import Errors
 
@@ -345,7 +548,10 @@ HTML Report: .\AzureSecurityAudit_20250106_143022.html
 $env:PSModulePath
 
 # Import with full path
-Import-Module "D:\Dev\scripts\AzureInventory\AzureSecurityAudit.psd1" -Force
+Import-Module "C:\Dev\Scripts\AzureInventory\AzureSecurityAudit.psd1" -Force
+
+# Or use Init-Local.ps1 instead (recommended for development)
+. .\Init-Local.ps1
 ```
 
 ### Missing Permissions
@@ -361,6 +567,18 @@ Get-AzRoleAssignment -SignInName <your-email>
 ### API Rate Limiting
 
 The module includes automatic retry logic with exponential backoff for rate limiting (HTTP 429) and transient errors (HTTP 503).
+
+### Environment Variables Not Loading
+
+If `.env` file variables aren't loading:
+
+1. Make sure `.env` file exists in the module root directory
+2. Check file encoding (should be UTF-8)
+3. Verify variable names match exactly (case-sensitive): `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `OPENAI_API_KEY`
+4. Run `Init-Local.ps1` again to reload variables:
+   ```powershell
+   . .\Init-Local.ps1
+   ```
 
 
 ## Module Structure

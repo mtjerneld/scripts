@@ -3451,7 +3451,7 @@ $factRowsJson
             if (costBreakdownRoot) {
                 // Phase 5.2: Use data-subcategory-key for exact matching (no text matching)
                 if (topSource === 'subscription') {
-                    // Top-layer is from subscription table: show blue for subscription picks
+                    // Top-layer is from subscription table: show blue for explicit subscription picks
                     topLayerPicks.subcategories.forEach(scopedKey => {
                         // Only match scoped keys (3 parts: subscriptionId|category|subcategory)
                         const parts = scopedKey.split('|');
@@ -3462,6 +3462,23 @@ $factRowsJson
                             });
                         }
                     });
+                    
+                    // Hierarchical: also mark all subcategories that are in topActive (from category picks)
+                    if (topActive && topActive.size > 0 && engine.index.bySubcategory) {
+                        engine.index.bySubcategory.forEach((subcatRowIds, scopedKey) => {
+                            // Only match scoped keys (3 parts: subscriptionId|category|subcategory)
+                            const parts = scopedKey.split('|');
+                            if (parts.length === 3) {
+                                const intersection = engine.intersectSets(topActive, subcatRowIds);
+                                if (intersection.size > 0) {
+                                    const elements = costBreakdownRoot.querySelectorAll('[data-subcategory-key="' + scopedKey + '"]');
+                                    elements.forEach(element => {
+                                        element.classList.add('pick-selected'); // Blue for hierarchical
+                                    });
+                                }
+                            }
+                        });
+                    }
                 } else if (topSource === 'meter') {
                     // Top-layer is from meter table: show yellow for affected subcategories
                     if (topActive && topActive.size > 0 && engine.index.bySubcategory) {
@@ -3501,11 +3518,46 @@ $factRowsJson
                 }
             }
             
-            // Meter Category subcategory headers (scoped to meterCategoryRoot) - no visual markers from picks
+            // Meter Category subcategory headers (scoped to meterCategoryRoot)
             if (meterCategoryRoot) {
-                meterCategoryRoot.querySelectorAll('.expandable__header.subcategory-header[data-subcategory-key]').forEach(element => {
-                    // Meter Category headers should not be marked by scoped picks
+                meterCategoryRoot.querySelectorAll('.expandable__header.subcategory-header[data-subcategory-key], .subcategory-header[data-subcategory]').forEach(element => {
+                    // Clear first
                     element.classList.remove('pick-selected', 'cross-selected', 'filter-selected');
+                    
+                    // If subscription-top: mark subcategory as yellow if ALL resources under it are selected (subset-check)
+                    if (topSource === 'subscription' && topActive && topActive.size > 0) {
+                        const subcategory = element.getAttribute('data-subcategory');
+                        const category = element.getAttribute('data-category');
+                        
+                        if (subcategory && category) {
+                            // Find all rowIds for this subcategory in Meter Category (global key: category|subcategory)
+                            // We need to check if all resources under this subcategory are in topActive
+                            let allSubcategoryRowIds = new Set();
+                            
+                            // Get all rowIds for this category+subcategory combination
+                            // Meter Category uses global keys, so we need to find all rows with this category and subcategory
+                            if (typeof factRows !== 'undefined' && factRows) {
+                                Object.keys(factRows).forEach(rowIdStr => {
+                                    const rowId = parseInt(rowIdStr);
+                                    const row = factRows[rowIdStr];
+                                    if (row && row.meterCategory === category && row.meterSubCategory === subcategory) {
+                                        allSubcategoryRowIds.add(rowId);
+                                    }
+                                });
+                            }
+                            
+                            // Check if allSubcategoryRowIds is subset of topActive
+                            if (allSubcategoryRowIds.size > 0) {
+                                const isSubset = Array.from(allSubcategoryRowIds).every(rowId => {
+                                    // topActive may contain rowIds as numbers or strings, check both
+                                    return topActive.has(rowId) || topActive.has(String(rowId));
+                                });
+                                if (isSubset) {
+                                    element.classList.add('cross-selected'); // Yellow for complete coverage
+                                }
+                            }
+                        }
+                    }
                 });
             }
             
@@ -3545,12 +3597,15 @@ $factRowsJson
                             }
                         }
                     } else if (topSource === 'subscription') {
-                        // Top-layer is from subscription table: show yellow for affected meters
+                        // Top-layer is from subscription table: show yellow for affected meters in Meter Category
+                        // Note: Always yellow (cross-selected), never blue (pick-selected) in Meter Category when subscription is top
                         if (topActive && topActive.size > 0 && engine.index.byMeter) {
                             const meterRowIds = engine.index.byMeter.get(meter);
                             if (meterRowIds) {
                                 const intersection = engine.intersectSets(topActive, meterRowIds);
                                 if (intersection.size > 0) {
+                                    // Ensure it's yellow, not blue
+                                    element.classList.remove('pick-selected');
                                     element.classList.add('cross-selected');
                                 }
                             }
@@ -3615,14 +3670,14 @@ $factRowsJson
                         return; // annars: ingen markering
                     }
                     
-                    // 3) Om top är subscription -> gul om påverkas (intersection > 0 är ok här)
+                    // 3) Om top är subscription -> blå om påverkas (hierarkisk markering)
                     if (topSource === 'subscription') {
                         if (topActive && topActive.size > 0 && engine.index.byMeter) {
                             const meterRowIds = engine.index.byMeter.get(meter);
                             if (meterRowIds) {
                                 const intersection = engine.intersectSets(topActive, meterRowIds);
                                 if (intersection.size > 0) {
-                                    element.classList.add('cross-selected');
+                                    element.classList.add('pick-selected'); // Blue for hierarchical
                                 }
                             }
                         }
@@ -3706,12 +3761,12 @@ $factRowsJson
             
             if (meterCategoryRoot) {
                 if (topSource === 'meter') {
-                    // Top-layer is from meter table: show blue for meter picks
-                    topLayerPicks.forEach(resourceKey => {
+                    // Top-layer is from meter table: show blue for all resources in topActive (hierarchical)
+                    activeResourceKeys.forEach(resourceKey => {
                         const elements = domIdx.byResourceKey.get(resourceKey) || [];
                         elements.forEach(el => {
                             if (meterCategoryRoot.contains(el)) {
-                                el.classList.add('pick-selected');
+                                el.classList.add('pick-selected'); // Blue for hierarchical
                             }
                         });
                     });
@@ -3726,12 +3781,15 @@ $factRowsJson
                         });
                     });
                 } else if (topSource === 'subscription') {
-                    // Top-layer is from subscription table: show yellow for affected resources
-            activeResourceKeys.forEach(resourceKey => {
-                    const elements = domIdx.byResourceKey.get(resourceKey) || [];
-                    elements.forEach(el => {
-                            if (meterCategoryRoot.contains(el) && !topLayerPicks.has(resourceKey)) {
-                            el.classList.add('cross-selected');
+                    // Top-layer is from subscription table: show yellow for affected resources in Meter Category
+                    // Note: Always yellow (cross-selected), never blue (pick-selected) in Meter Category when subscription is top
+                    activeResourceKeys.forEach(resourceKey => {
+                        const elements = domIdx.byResourceKey.get(resourceKey) || [];
+                        elements.forEach(el => {
+                            if (meterCategoryRoot.contains(el)) {
+                                // Always yellow in Meter Category when subscription is top (even if also in topLayerPicks)
+                                el.classList.remove('pick-selected'); // Force remove to ensure yellow
+                                el.classList.add('cross-selected');
                             }
                         });
                     });
@@ -3743,9 +3801,15 @@ $factRowsJson
             // (costBreakdownRoot already declared above)
             if (costBreakdownRoot) {
                 if (topSource === 'subscription') {
-                    // Top-layer is from subscription table: blue handled in updateHeaderSelectionVisual
-                    // Yellow for resources affected by subscription picks (if any)
-                    // (Resources in subscription table are handled via headers, not rows)
+                    // Top-layer is from subscription table: show blue for all resources in topActive (hierarchical)
+                    activeResourceKeys.forEach(resourceKey => {
+                        const elements = domIdx.byResourceKey.get(resourceKey) || [];
+                        elements.forEach(el => {
+                            if (costBreakdownRoot.contains(el)) {
+                                el.classList.add('pick-selected'); // Blue for hierarchical
+                            }
+                        });
+                    });
                     
                     // Also show yellow from meter-layer (if exists)
                     otherLayerActiveResourceKeys.forEach(resourceKey => {
@@ -3757,11 +3821,14 @@ $factRowsJson
                         });
                     });
                 } else if (topSource === 'meter') {
-                    // Top-layer is from meter table: show yellow for affected resources
+                    // Top-layer is from meter table: show yellow for affected resources in Cost Breakdown
+                    // Note: Always yellow (cross-selected), never blue (pick-selected) in Cost Breakdown when meter is top
                     activeResourceKeys.forEach(resourceKey => {
-                    const elements = domIdx.byResourceKey.get(resourceKey) || [];
-                    elements.forEach(el => {
-                            if (costBreakdownRoot.contains(el) && !topLayerPicks.has(resourceKey)) {
+                        const elements = domIdx.byResourceKey.get(resourceKey) || [];
+                        elements.forEach(el => {
+                            if (costBreakdownRoot.contains(el)) {
+                                // Always yellow in Cost Breakdown when meter is top
+                                el.classList.remove('pick-selected'); // Force remove to ensure yellow
                                 el.classList.add('cross-selected');
                             }
                         });
