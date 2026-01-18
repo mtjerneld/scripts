@@ -270,6 +270,42 @@ function Get-AzureNetworkInventory {
                         }
                     }
                     
+                    # Check sync status from peering object properties
+                    $peeringSyncStatus = $null
+                    $remoteAddressSpaceSyncStatus = $null
+                    
+                    # Check if properties exist on the peering object directly
+                    if ($peering.PSObject.Properties.Name -contains 'PeeringSyncLevel') {
+                        $peeringSyncStatus = $peering.PeeringSyncLevel
+                    }
+                    if ($peering.PSObject.Properties.Name -contains 'RemoteAddressSpaceSyncStatus') {
+                        $remoteAddressSpaceSyncStatus = $peering.RemoteAddressSpaceSyncStatus
+                    }
+                    
+                    # If not found, try to get detailed peering info
+                    if (-not $peeringSyncStatus -and -not $remoteAddressSpaceSyncStatus) {
+                        try {
+                            $detailedPeering = Get-AzVirtualNetworkPeering `
+                                -ResourceGroupName $vnet.ResourceGroupName `
+                                -VirtualNetworkName $vnet.Name `
+                                -Name $peering.Name `
+                                -ErrorAction SilentlyContinue
+                            
+                            if ($detailedPeering) {
+                                # Check for sync-related properties
+                                if ($detailedPeering.PSObject.Properties.Name -contains 'PeeringSyncLevel') {
+                                    $peeringSyncStatus = $detailedPeering.PeeringSyncLevel
+                                }
+                                if ($detailedPeering.PSObject.Properties.Name -contains 'RemoteAddressSpaceSyncStatus') {
+                                    $remoteAddressSpaceSyncStatus = $detailedPeering.RemoteAddressSpaceSyncStatus
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Verbose "Could not get detailed peering info for $($peering.Name): $_"
+                        }
+                    }
+                    
                     $vnetObj.Peerings.Add([PSCustomObject]@{
                         Name = $peering.Name
                         RemoteVnetId = $remoteVnetId
@@ -280,6 +316,9 @@ function Get-AzureNetworkInventory {
                         UseRemoteGateways = $peering.UseRemoteGateways
                         IsVirtualWANHub = $isVirtualWANHub
                         RemoteHubId = $remoteHubId
+                        PeeringSyncLevel = $peeringSyncStatus
+                        RemoteAddressSpaceSyncStatus = $remoteAddressSpaceSyncStatus
+                        SyncRequired = if ($remoteAddressSpaceSyncStatus -eq 'NotSynced' -or $peeringSyncStatus -eq 'RemoteNotSynced') { $true } else { $false }
                     })
                 }
             }
