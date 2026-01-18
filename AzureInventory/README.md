@@ -44,7 +44,7 @@ Install-Module Az.Accounts, Az.Resources, Az.Storage, Az.Websites, Az.Compute, A
 ```powershell
 # Clone or download the module
 # Navigate to the module directory
-cd D:\Dev\scripts\AzureInventory
+cd .\AzureInventory
 
 # Import the module
 Import-Module .\AzureSecurityAudit.psd1 -Force
@@ -138,6 +138,25 @@ Invoke-AzureSecurityAudit -ExportJson
 $result = Invoke-AzureSecurityAudit -PassThru
 ```
 
+### Subscription Filtering
+
+For tenants with many subscriptions (e.g., schools with hundreds of student subscriptions), you can export and filter subscriptions:
+
+```powershell
+# Step 1: Export all subscriptions to CSV
+Connect-AuditEnvironment -ExportSubscriptions
+# Creates: output/TenantName-YYYYMMDD-HHmmss.csv with SubscriptionID and SubscriptionName columns
+
+# Step 2: Edit the CSV to select which subscriptions to scan (remove unwanted rows)
+
+# Step 3: Run audit with subscription filter
+Start-AzureGovernanceAudit -SubscriptionFilter "output\TenantName-YYYYMMDD-HHmmss.csv"
+```
+
+The CSV file must contain a `SubscriptionID` column (case-insensitive). Only subscriptions listed in the CSV will be scanned. You can include multiple subscription IDs in a single cell, separated by semicolons (e.g., `sub-123;sub-456;sub-789`).
+
+**Note:** `-SubscriptionFilter` and `-SubscriptionIds` cannot be used together.
+
 ### Advanced Usage
 
 ```powershell
@@ -146,6 +165,9 @@ Invoke-AzureSecurityAudit -OutputPath ".\Reports\SecurityAudit_2025.html"
 
 # Scan specific categories with JSON export
 Invoke-AzureSecurityAudit -Categories Storage, SQL -ExportJson -OutputPath ".\audit.html"
+
+# Filter subscriptions using CSV file
+Start-AzureGovernanceAudit -SubscriptionFilter ".\subscriptions.csv"
 
 ## AI-Powered Analysis
 
@@ -344,8 +366,8 @@ HTML Report: .\AzureSecurityAudit_20250106_143022.html
 # Check if module is in PSModulePath
 $env:PSModulePath
 
-# Import with full path
-Import-Module "D:\Dev\scripts\AzureInventory\AzureSecurityAudit.psd1" -Force
+# Import with relative path
+Import-Module ".\AzureSecurityAudit.psd1" -Force
 ```
 
 ### Missing Permissions
