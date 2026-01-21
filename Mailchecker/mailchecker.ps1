@@ -914,12 +914,20 @@ function Test-MXRecords {
         $domainExists = $domainCheck.Exists
         
         if ($domainCheck.Status -eq 'NXDOMAIN') {
-            # Domain does not exist (NXDOMAIN response)
-            $details = @("Domain does not exist - DNS returned NXDOMAIN (Non-Existent Domain).")
-            $warnings = @("Warning: Domain '$Domain' does not exist in DNS.")
-            $status = 'FAIL'
-            $reason = "Domain: does not exist (NXDOMAIN)"
-            $domainExists = $false
+            # NXDOMAIN response - domain may exist but nameservers don't host the zone
+            # Since we don't do registrar lookups, we classify as send-only domain with DNS misconfiguration
+            $details = @("DNS returned NXDOMAIN (Non-Existent Domain response).")
+            $details += "This typically indicates:"
+            $details += "  - Domain may exist in registry but nameservers do not host the zone"
+            $details += "  - DNS is misconfigured (nameservers not properly delegated)"
+            $details += "  - Domain is likely send-only (cannot receive email)"
+            $details += ""
+            $details += "Note: Without registrar lookups, we cannot determine if domain truly exists."
+            $details += "Treating as send-only domain with DNS misconfiguration."
+            $warnings = @("Warning: DNS is misconfigured - nameservers do not host the zone for '$Domain'.")
+            $status = 'WARN'  # WARN to indicate DNS misconfiguration, not complete failure
+            $reason = "MX: N/A (send-only domain, DNS misconfigured)"
+            $domainExists = $false  # Keep as false to mark other checks as N/A (send-only)
         } elseif ($domainCheck.Status -eq 'SERVFAIL') {
             # DNS server failed - domain might exist but DNS is misconfigured
             # Still run email security checks as domain may have SPF/DMARC records
@@ -1245,14 +1253,8 @@ function Test-SPFRecords {
         [bool]$DomainExists = $true
     )
     
-    # If domain doesn't exist, mark as N/A
-    if (-not $DomainExists) {
-        return New-CheckResult -Section 'SPF' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
-            SPFRecords = @()
-            Healthy = $false
-            Reason = "SPF: N/A (domain does not exist)"
-        }
-    }
+    # Note: For send-only domains (DomainExists=false due to NXDOMAIN/DNS misconfiguration),
+    # we still check SPF because send-only domains send email and need SPF for authentication
     
     # IDNA conversion is done automatically in Resolve-SPF, no need to show in output
     $spfRecs = Resolve-SPF $Domain
@@ -1462,6 +1464,9 @@ function Test-SPFRecords {
         }
     } else {
         $details = @("No SPF (v=spf1) record found at $Domain")
+        if (-not $DomainExists) {
+            $details += "Note: DNS is misconfigured for this send-only domain. SPF is required even for send-only domains to authenticate outbound email."
+        }
         $spfHealthy = $false
         $status = 'FAIL'
         $reason = "SPF: missing"
@@ -1493,12 +1498,12 @@ function Test-DKIMRecords {
     $status = 'FAIL'
     $dkimResults = @()
     
-    # If domain doesn't exist, mark as N/A
+    # If domain doesn't exist (NXDOMAIN - send-only with DNS misconfigured), mark as N/A
     if (-not $DomainExists) {
-        return New-CheckResult -Section 'DKIM' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
+        return New-CheckResult -Section 'DKIM' -Status 'N/A' -Details @("Send-only domain - DNS is misconfigured (nameservers do not host the zone).") -InfoMessages @("Not applicable - send-only domain") -Data @{
             DKIMResults = @()
             AnyValid = $false
-            Reason = "DKIM: N/A (domain does not exist)"
+            Reason = "DKIM: N/A (send-only domain, DNS misconfigured)"
         }
     }
     
@@ -1779,13 +1784,13 @@ function Test-MTASts {
     
     # If domain doesn't exist, mark as N/A
     if (-not $DomainExists) {
-        return New-CheckResult -Section 'MTA-STS' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
+        return New-CheckResult -Section 'MTA-STS' -Status 'N/A' -Details @("Send-only domain - DNS is misconfigured (nameservers do not host the zone).") -InfoMessages @("Not applicable - send-only domain") -Data @{
             MtaStsTxt = $null
             MtaStsBody = $null
             MtaStsUrl = $null
             MtaStsModeTesting = $false
             MtaStsEnforced = $false
-            Reason = "MTA-STS: N/A (domain does not exist)"
+            Reason = "MTA-STS: N/A (send-only domain, DNS misconfigured)"
         }
     }
     
@@ -1910,15 +1915,8 @@ function Test-DMARC {
     $status = 'FAIL'
     $reason = ""
     
-    # If domain doesn't exist, mark as N/A
-    if (-not $DomainExists) {
-        return New-CheckResult -Section 'DMARC' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
-            DmarcMap = @{}
-            DmarcTxt = $null
-            Enforced = $false
-            Reason = "DMARC: N/A (domain does not exist)"
-        }
-    }
+    # Note: For send-only domains (DomainExists=false due to NXDOMAIN/DNS misconfiguration),
+    # we still check DMARC because send-only domains send email and need DMARC for reputation protection
 
     # IDNA conversion is done automatically in Resolve-Txt, no need to show in output
     $dmarcHost = "_dmarc.$Domain"
@@ -2042,6 +2040,9 @@ function Test-DMARC {
         }
     } else {
         $details += "No DMARC record found at _dmarc.$Domain"
+        if (-not $DomainExists) {
+            $details += "Note: DNS is misconfigured for this send-only domain. DMARC is recommended for send-only domains to protect domain reputation."
+        }
         $reason = "DMARC: missing"
         $status = 'FAIL'
     }
@@ -2067,11 +2068,11 @@ function Test-TLSReport {
     $status = 'FAIL'
     $reason = ""
     
-    # If domain doesn't exist, mark as N/A
+    # If domain doesn't exist (NXDOMAIN - send-only with DNS misconfigured), mark as N/A
     if (-not $DomainExists) {
-        return New-CheckResult -Section 'SMTP TLS Reporting (TLS-RPT)' -Status 'N/A' -Details @("Domain does not exist - no NS records found.") -InfoMessages @("Not applicable - domain does not exist") -Data @{
+        return New-CheckResult -Section 'SMTP TLS Reporting (TLS-RPT)' -Status 'N/A' -Details @("Send-only domain - DNS is misconfigured (nameservers do not host the zone).") -InfoMessages @("Not applicable - send-only domain") -Data @{
             TlsRptTxt = $null
-            Reason = "TLS-RPT: N/A (domain does not exist)"
+            Reason = "TLS-RPT: N/A (send-only domain, DNS misconfigured)"
         }
     }
 
@@ -2778,9 +2779,11 @@ function Get-ProcessedIssues {
     foreach ($result in $Results) {
         if ($null -eq $result) { continue }
         
-        # Skip domain existence failures
+        # Skip old format "domain does not exist" messages (deprecated - now handled as DNS misconfiguration)
+        # Note: NXDOMAIN cases are now classified as "send-only domain, DNS misconfigured" and should be shown
         $reason = if ($result.Data -and $result.Data.Reason) { $result.Data.Reason } else { '' }
-        if ($reason -match 'Domain: does not exist|NXDOMAIN') {
+        if ($reason -match 'Domain: does not exist') {
+            # Only skip the old "Domain: does not exist" format, not DNS misconfiguration warnings
             continue
         }
         
@@ -4677,6 +4680,17 @@ function Write-IndexPage {
     
     # Collect condensed issues with line breaks
     $issues = @()
+    # Check for MX WARN status (DNS misconfiguration - send-only domain)
+    if ($result.MXResult.Status -eq 'WARN') {
+      $mxReason = if ($result.MXResult.Data.Reason) { $result.MXResult.Data.Reason } else { '' }
+      if ($mxReason -match 'DNS misconfigured') {
+        $issues += "MX: DNS misconfigured (send-only domain - nameservers do not host the zone)"
+      } elseif ($mxReason -match 'SERVFAIL') {
+        $issues += "MX: DNS misconfigured (SERVFAIL - nameservers not responding)"
+      } else {
+        $issues += "MX: " + ($mxReason -replace '^MX:\s*', '')
+      }
+    }
     # Check for invalid MX records
     if ($result.MXResult.Data.InvalidMXRecords -and @($result.MXResult.Data.InvalidMXRecords).Count -gt 0) {
       foreach ($invalidMx in $result.MXResult.Data.InvalidMXRecords) {
@@ -4736,10 +4750,15 @@ function Write-IndexPage {
     } elseif ($result.MXResult.Status -eq 'N/A') {
       '<span class="text-muted-light">N/A (send-only)</span>'
     } elseif ($result.MXResult.Status -eq 'WARN') {
-      # SERVFAIL case - shown as warning with note about DNS issues
-      '<span class="text-warning">DNS misconfigured (SERVFAIL)</span>'
+      # DNS misconfigured (SERVFAIL or NXDOMAIN - send-only domain)
+      $reason = if ($result.MXResult.Data.Reason) { $result.MXResult.Data.Reason } else { '' }
+      if ($reason -match 'DNS misconfigured') {
+        '<span class="text-warning">DNS misconfigured (send-only)</span>'
+      } else {
+        '<span class="text-warning">DNS misconfigured (SERVFAIL)</span>'
+      }
     } elseif ($result.MXResult.Data.DomainExists -eq $false) {
-      # NXDOMAIN - domain truly doesn't exist
+      # Other cases where domain doesn't exist (should be rare now)
       '<span class="text-error">Domain does not exist</span>'
     } else {
       '<span class="text-error">No MX records</span>'

@@ -1756,6 +1756,8 @@ $(Get-ReportNavigation -ActivePage "Advisor")
     # Calculate advisor counts
     $advisorCount = $totalRecs
     $advisorHighCount = @($groupedRecs | Where-Object { $_.Impact -eq 'High' }).Count
+    $advisorMediumCount = @($groupedRecs | Where-Object { $_.Impact -eq 'Medium' }).Count
+    $advisorLowCount = @($groupedRecs | Where-Object { $_.Impact -eq 'Low' }).Count
     
     # Generate AI insights if requested
     $aiInsights = $null
@@ -1788,6 +1790,8 @@ $(Get-ReportNavigation -ActivePage "Advisor")
         OutputPath = $OutputPath
         AdvisorCount = $advisorCount
         AdvisorHighCount = $advisorHighCount
+        AdvisorMediumCount = $advisorMediumCount
+        AdvisorLowCount = $advisorLowCount
         TotalSavings = $totalSavings
         SavingsCurrency = $savingsCurrency
         RiTotal = $riTotal

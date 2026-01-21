@@ -4,25 +4,38 @@
 param(
     [Parameter(Mandatory = $false)][switch]$Help,
     [Parameter(Mandatory = $false)][string]$FirstFile,
-    [Parameter(Mandatory = $false)][string]$LastFile
+    [Parameter(Mandatory = $false)][string]$LastFile,
+    [Parameter(Mandatory = $false)][switch]$ExportCsv,
+    [Parameter(Mandatory = $false)][string]$OutputCsv
 )
 
 function Show-Usage {
-    Write-Host "Usage: .\statusupdate.ps1 -FirstFile <path> -LastFile <path>" -ForegroundColor Cyan
+    Write-Host "Usage: .\statusupdate.ps1 -FirstFile <path> -LastFile <path> [-ExportCsv] [-OutputCsv <path>]" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Compares two Mailchecker bulk-results CSVs and prints per-domain diffs." -ForegroundColor Gray
     Write-Host ""
     Write-Host "Parameters:" -ForegroundColor Gray
     Write-Host "  -FirstFile    Path to older CSV (e.g., .\\Statusupdate\\bulk-results-20251021-185735.csv)" -ForegroundColor Gray
     Write-Host "  -LastFile     Path to newer CSV (e.g., .\\Statusupdate\\bulk-results-20251029-101246.csv)" -ForegroundColor Gray
+    Write-Host "  -ExportCsv    Export results to CSV with default filename (statusupdate-YYYYMMDD-HHMMSS.csv)" -ForegroundColor Gray
+    Write-Host "  -OutputCsv    Path to export results CSV" -ForegroundColor Gray
+    Write-Host "                Use empty string for default: -OutputCsv \"\"" -ForegroundColor DarkGray
+    Write-Host "                Or specify custom path: -OutputCsv .\\comparison-results.csv" -ForegroundColor DarkGray
     Write-Host "  -Help         Show this help and exit" -ForegroundColor Gray
     Write-Host ""
     Write-Host "Output:" -ForegroundColor Gray
-    Write-Host "  Table with columns: Domain, Category, Change, Trend, StatusChange, Details" -ForegroundColor Gray
-    Write-Host "  StatusChange colors: FAIL (red), WARN (yellow), PASS (green), N/A (dark gray)" -ForegroundColor Gray
+    Write-Host "  - Console table with columns: Domain, Category, Change, Trend, StatusChange, Details" -ForegroundColor Gray
+    Write-Host "  - CSV file exported when -ExportCsv is used or -OutputCsv is specified" -ForegroundColor Gray
+    Write-Host "    Default filename: statusupdate-YYYYMMDD-HHMMSS.csv" -ForegroundColor Gray
+    Write-Host "    CSV columns: Domain, Category, Change, Trend, StatusChange, NewStatus, Details" -ForegroundColor Gray
+    Write-Host "  - StatusChange colors: FAIL (red), WARN (yellow), PASS (green), N/A (dark gray)" -ForegroundColor Gray
     Write-Host "" 
-    Write-Host "Example:" -ForegroundColor Gray
-    Write-Host "  .\\statusupdate.ps1 -FirstFile .\\Statusupdate\\bulk-results-20251021-185735.csv -LastFile .\\Statusupdate\\bulk-results-20251029-101246.csv" -ForegroundColor Gray
+    Write-Host "Examples:" -ForegroundColor Gray
+    Write-Host "  .\\statusupdate.ps1 -FirstFile .\\file1.csv -LastFile .\\file2.csv -ExportCsv" -ForegroundColor Gray
+    Write-Host "    (Exports to: statusupdate-20251029-101246.csv)" -ForegroundColor DarkGray
+    Write-Host "  .\\statusupdate.ps1 -FirstFile .\\file1.csv -LastFile .\\file2.csv -OutputCsv \"\"" -ForegroundColor Gray
+    Write-Host "    (Exports to: statusupdate-20251029-101246.csv)" -ForegroundColor DarkGray
+    Write-Host "  .\\statusupdate.ps1 -FirstFile .\\file1.csv -LastFile .\\file2.csv -OutputCsv .\\comparison-results.csv" -ForegroundColor Gray
 }
 
 if ($Help) { Show-Usage; exit 0 }
@@ -385,5 +398,55 @@ if ($rowsOut.Count -eq 0) {
 Write-Output ""
 $summary = ("Summary: New={0}, Removed={1}, Changed={2}, Improved={3}, Regressed={4}" -f $countNew, $countRemoved, $countChanged, $countImproved, $countRegressed)
 Write-Host $summary -ForegroundColor Cyan
+
+# Export to CSV if requested or if rows exist
+if ($rowsOut.Count -gt 0) {
+    $shouldExport = $false
+    $csvPath = $null
+    
+    # Check if ExportCsv switch was used
+    if ($ExportCsv) {
+        $shouldExport = $true
+    }
+    # Check if OutputCsv was provided (even if empty, user wants to export)
+    if ($PSBoundParameters.ContainsKey('OutputCsv')) {
+        $shouldExport = $true
+        $csvPath = $OutputCsv
+    }
+    
+    # If export is requested, determine the path
+    if ($shouldExport) {
+        # If OutputCsv was not provided or is empty, use default filename
+        if (-not $csvPath -or [string]::IsNullOrWhiteSpace($csvPath)) {
+            $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            $csvPath = "statusupdate-$timestamp.csv"
+        }
+        
+        try {
+            # Ensure all rows have consistent properties and sort them
+            $exportRows = @()
+            foreach ($row in ($rowsOut | Sort-Object Domain, Category)) {
+                $exportRow = [ordered]@{
+                    Domain = if ($row.Domain) { $row.Domain } else { '' }
+                    Category = if ($row.Category) { $row.Category } else { '' }
+                    Change = if ($row.Change) { $row.Change } else { '' }
+                    Trend = if ($row.Trend) { $row.Trend } else { '' }
+                    StatusChange = if ($row.StatusChange) { $row.StatusChange } else { '' }
+                    NewStatus = if ($row.NewStatus) { $row.NewStatus } else { '' }
+                    Details = if ($row.Details) { 
+                        $detailsText = Coerce-Details -details $row.Details
+                        $detailsText
+                    } else { '' }
+                }
+                $exportRows += [pscustomobject]$exportRow
+            }
+            
+            $exportRows | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
+            Write-Host "Results exported to: $csvPath" -ForegroundColor Green
+        } catch {
+            Write-Warning "Failed to export CSV to $csvPath : $_"
+        }
+    }
+}
 
 
