@@ -241,10 +241,42 @@ function Export-NetworkInventoryReport {
                 if ($peering.State -and $peering.State -ne "Connected") {
                     $disconnectedConnectionsList.Add([PSCustomObject]@{
                         Type = "Peering"
-                        Name = "Peering: $($vnet.Name) <-> $($peering.RemoteVnetName)"
+                        Name = "$($vnet.Name) <-> $($peering.RemoteVnetName)"
                         VNetName = $vnet.Name
                         SubscriptionName = $vnet.SubscriptionName
                         Status = $peering.State
+                        RemoteNetworkName = $peering.RemoteVnetName
+                        GatewayName = "N/A"
+                    })
+                }
+                
+                # Collect peerings with sync issues
+                $hasSyncIssue = $false
+                $syncIssueStatus = ""
+                if ($peering.SyncRequired -eq $true) {
+                    $hasSyncIssue = $true
+                    $syncIssueStatus = "Remote Sync Required"
+                }
+                elseif ($peering.RemoteAddressSpaceSyncStatus -and ($peering.RemoteAddressSpaceSyncStatus -eq "NotSynced" -or $peering.RemoteAddressSpaceSyncStatus -eq "NotInSync")) {
+                    $hasSyncIssue = $true
+                    $syncIssueStatus = "Not Synced"
+                }
+                elseif ($peering.PeeringSyncLevel -and ($peering.PeeringSyncLevel -eq "RemoteNotSynced" -or $peering.PeeringSyncLevel -eq "RemoteNotInSync" -or $peering.PeeringSyncLevel -eq "NotInSync")) {
+                    $hasSyncIssue = $true
+                    $syncIssueStatus = "Remote Not Synced"
+                }
+                elseif ($peering.PeeringSyncLevel -and ($peering.PeeringSyncLevel -eq "LocalNotInSync" -or $peering.PeeringSyncLevel -eq "LocalNotSynced")) {
+                    $hasSyncIssue = $true
+                    $syncIssueStatus = "Local Not Synced"
+                }
+                
+                if ($hasSyncIssue) {
+                    $disconnectedConnectionsList.Add([PSCustomObject]@{
+                        Type = "Peering Sync"
+                        Name = "$($vnet.Name) <-> $($peering.RemoteVnetName)"
+                        VNetName = $vnet.Name
+                        SubscriptionName = $vnet.SubscriptionName
+                        Status = $syncIssueStatus
                         RemoteNetworkName = $peering.RemoteVnetName
                         GatewayName = "N/A"
                     })
@@ -422,7 +454,7 @@ function Export-NetworkInventoryReport {
                     if ($peering.State -and $peering.State -ne "Connected") {
                         $disconnectedConnectionsList.Add([PSCustomObject]@{
                             Type = "Peering"
-                            Name = "Peering: $($peering.VNetName) <-> $($hub.Name)"
+                            Name = "$($peering.VNetName) <-> $($hub.Name)"
                             VNetName = $hub.Name
                             SubscriptionName = $hub.SubscriptionName
                             Status = $peering.State
@@ -615,7 +647,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
-                        <span>Links Down: $($disconnectedConnectionsList.Count)</span>
+                        <span>Link Issues: $($disconnectedConnectionsList.Count)</span>
                     </div>
                 </div>
                 <div class="expandable__content" id="$disconnectedId" style="display: none;">
@@ -634,7 +666,14 @@ $(Get-ReportNavigation -ActivePage "Network")
                         <tbody>
 "@
                 foreach ($conn in $disconnectedConnectionsList) {
-                    $statusClass = if ($conn.Status -eq "Connected") { "status-connected" } else { "status-disconnected" }
+                    # Determine status class - sync issues are warnings (yellow), not disconnected (red)
+                    $statusClass = if ($conn.Status -eq "Connected") { 
+                        "status-connected" 
+                    } elseif ($conn.Type -eq "Peering Sync" -or $conn.Status -like "*Not Synced*" -or $conn.Status -like "*Sync Required*" -or $conn.Status -like "*Local Not Synced*" -or $conn.Status -like "*Remote Not Synced*") {
+                        "status-warning"
+                    } else {
+                        "status-disconnected"
+                    }
                     $html += @"
                             <tr>
                                 <td>$(Encode-Html $conn.Type)</td>
@@ -1491,6 +1530,7 @@ $(Get-ReportNavigation -ActivePage "Network")
                                         <th>Remote VNet</th>
                                         <th>Subscription</th>
                                         <th>State</th>
+                                        <th>Sync Status</th>
                                         <th>Traffic</th>
                                         <th>Gateway Use</th>
                                     </tr>
@@ -1525,11 +1565,56 @@ $(Get-ReportNavigation -ActivePage "Network")
                             "None" 
                         }
                         
+                        # Build sync status display (use green/yellow/red like State column)
+                        $syncStatusDisplay = "N/A"
+                        $syncStatusClass = ""
+                        $hasSyncIssue = $false
+                        
+                        if ($peering.SyncRequired -eq $true) {
+                            $syncStatusDisplay = "Remote Sync Required"
+                            $syncStatusClass = "status-warning"
+                            $hasSyncIssue = $true
+                        }
+                        elseif ($peering.RemoteAddressSpaceSyncStatus) {
+                            if ($peering.RemoteAddressSpaceSyncStatus -eq "NotSynced" -or $peering.RemoteAddressSpaceSyncStatus -eq "NotInSync") {
+                                $syncStatusClass = "status-warning"
+                                $syncStatusDisplay = "Not Synced"
+                                $hasSyncIssue = $true
+                            }
+                            elseif ($peering.RemoteAddressSpaceSyncStatus -eq "Synced" -or $peering.RemoteAddressSpaceSyncStatus -eq "InSync") {
+                                $syncStatusClass = "status-connected"
+                                $syncStatusDisplay = "Synced"
+                            }
+                            else {
+                                $syncStatusDisplay = $peering.RemoteAddressSpaceSyncStatus
+                            }
+                        }
+                        elseif ($peering.PeeringSyncLevel) {
+                            if ($peering.PeeringSyncLevel -eq "RemoteNotSynced" -or $peering.PeeringSyncLevel -eq "RemoteNotInSync" -or $peering.PeeringSyncLevel -eq "NotInSync") {
+                                $syncStatusClass = "status-warning"
+                                $syncStatusDisplay = "Remote Not Synced"
+                                $hasSyncIssue = $true
+                            }
+                            elseif ($peering.PeeringSyncLevel -eq "LocalNotInSync" -or $peering.PeeringSyncLevel -eq "LocalNotSynced") {
+                                $syncStatusClass = "status-warning"
+                                $syncStatusDisplay = "Local Not Synced"
+                                $hasSyncIssue = $true
+                            }
+                            elseif ($peering.PeeringSyncLevel -eq "FullyInSync" -or $peering.PeeringSyncLevel -eq "InSync") {
+                                $syncStatusClass = "status-connected"
+                                $syncStatusDisplay = "Fully In Sync"
+                            }
+                            else {
+                                $syncStatusDisplay = $peering.PeeringSyncLevel
+                            }
+                        }
+                        
                         $html += @"
                                     <tr>
                                         <td>$(Encode-Html $peering.RemoteVnetName) <span style="color:var(--text-muted); font-size:0.85em;">($remoteType)</span></td>
                                         <td>$(Encode-Html $remoteSubscription)</td>
                                         <td class="$stateClass">$(Encode-Html $peering.State)</td>
+                                        <td class="$syncStatusClass">$syncStatusDisplay</td>
                                         <td>Fwd: $($peering.AllowForwardedTraffic)</td>
                                         <td style="text-align:center;">$gatewayDisplay</td>
                                     </tr>
@@ -1956,10 +2041,28 @@ $(Get-ReportNavigation -ActivePage "Network")
                     
                     if (-not $processedPeerings.Contains($peeringKey)) {
                         [void]$processedPeerings.Add($peeringKey)
+                        # Use State for color determination - sync issues don't mean the link is down
                         $edgeColor = if ($peering.State -eq "Connected") { "#2ecc71" } else { "#e74c3c" }
                         # Use different edge style for Virtual WAN hub peerings
                         $edgeDashes = if ($peering.IsVirtualWANHub) { "true" } else { "false" }
-                        $edgeTitle = if ($peering.IsVirtualWANHub) { "Peering to Virtual WAN Hub: $($peering.State)" } else { "Peering: $($peering.State)" }
+                        
+                        # Build edge title with state and sync status
+                        $syncStatusText = ""
+                        if ($peering.SyncRequired -eq $true) {
+                            $syncStatusText = " (Sync Required)"
+                        }
+                        elseif ($peering.RemoteAddressSpaceSyncStatus -and ($peering.RemoteAddressSpaceSyncStatus -eq "NotSynced" -or $peering.RemoteAddressSpaceSyncStatus -eq "NotInSync")) {
+                            $syncStatusText = " (Not Synced)"
+                        }
+                        elseif ($peering.PeeringSyncLevel -and ($peering.PeeringSyncLevel -eq "RemoteNotSynced" -or $peering.PeeringSyncLevel -eq "RemoteNotInSync" -or $peering.PeeringSyncLevel -eq "NotInSync")) {
+                            $syncStatusText = " (Remote Not Synced)"
+                        }
+                        
+                        $edgeTitle = if ($peering.IsVirtualWANHub) { 
+                            "Peering to Virtual WAN Hub: $($peering.State)$syncStatusText" 
+                        } else { 
+                            "Peering: $($peering.State)$syncStatusText" 
+                        }
                         
                         # Determine arrow direction based on gateway usage
                         # UseRemoteGateways = true means this VNet uses remote gateway (arrow to remote)

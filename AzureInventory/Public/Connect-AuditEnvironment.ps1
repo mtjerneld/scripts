@@ -30,6 +30,10 @@
 .PARAMETER AccountId
     Account ID for interactive authentication (optional).
 
+.PARAMETER ExportSubscriptions
+    Export all enabled subscriptions in the tenant to a CSV file (SubscriptionID, SubscriptionName).
+    File is saved to the output folder root with format: TenantName-Datetime.csv
+
 .EXAMPLE
     Connect-AuditEnvironment
     
@@ -38,6 +42,10 @@
     
 .EXAMPLE
     Connect-AuditEnvironment -TenantId "tenant-id" -ApplicationId "app-id" -ClientSecret "secret"
+    
+.EXAMPLE
+    Connect-AuditEnvironment -ExportSubscriptions
+    # Exports all enabled subscriptions to CSV in the output folder
 #>
 function Connect-AuditEnvironment {
     [CmdletBinding()]
@@ -52,8 +60,50 @@ function Connect-AuditEnvironment {
         
         [switch]$UseManagedIdentity,
         
-        [string]$AccountId
+        [string]$AccountId,
+        
+        [switch]$ExportSubscriptions,
+        
+        [switch]$Help
     )
+    
+    #region Help
+    if ($Help) {
+        Write-Host "`n=== Connect-AuditEnvironment ===" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "SYNOPSIS" -ForegroundColor Yellow
+        Write-Host "  Connects to Azure and validates environment for security auditing." -ForegroundColor White
+        Write-Host ""
+        Write-Host "DESCRIPTION" -ForegroundColor Yellow
+        Write-Host "  Wrapper around Connect-AzAccount that validates required modules and RBAC" -ForegroundColor White
+        Write-Host "  permissions for performing security audits. Supports interactive login," -ForegroundColor White
+        Write-Host "  Service Principal, and Managed Identity." -ForegroundColor White
+        Write-Host ""
+        Write-Host "PARAMETERS" -ForegroundColor Yellow
+        Write-Host "  -EnvFile <String>           Path to .env file (default: .env)" -ForegroundColor White
+        Write-Host "  -TenantId <String>          Entra ID Tenant ID" -ForegroundColor White
+        Write-Host "  -ApplicationId <String>     Service Principal Application (Client) ID" -ForegroundColor White
+        Write-Host "  -ClientSecret <String>      Service Principal Client Secret" -ForegroundColor White
+        Write-Host "  -UseManagedIdentity         Use Managed Identity for authentication" -ForegroundColor White
+        Write-Host "  -AccountId <String>         Account ID for interactive authentication" -ForegroundColor White
+        Write-Host "  -ExportSubscriptions        Export all subscriptions to CSV" -ForegroundColor White
+        Write-Host ""
+        Write-Host "AUTHENTICATION METHODS" -ForegroundColor Yellow
+        Write-Host "  1. Interactive (default): Connect-AuditEnvironment" -ForegroundColor White
+        Write-Host "  2. Service Principal with .env file:" -ForegroundColor White
+        Write-Host "     Connect-AuditEnvironment -EnvFile .env" -ForegroundColor Gray
+        Write-Host "  3. Service Principal with parameters:" -ForegroundColor White
+        Write-Host "     Connect-AuditEnvironment -TenantId id -ApplicationId id -ClientSecret secret" -ForegroundColor Gray
+        Write-Host "  4. Managed Identity: Connect-AuditEnvironment -UseManagedIdentity" -ForegroundColor White
+        Write-Host ""
+        Write-Host "EXAMPLES" -ForegroundColor Yellow
+        Write-Host "  Connect-AuditEnvironment" -ForegroundColor Gray
+        Write-Host "  Connect-AuditEnvironment -EnvFile .env" -ForegroundColor Gray
+        Write-Host "  Connect-AuditEnvironment -ExportSubscriptions" -ForegroundColor Gray
+        Write-Host ""
+        return
+    }
+    #endregion
     
     # Check for NuGet provider (required for module installation)
     $nugetProvider = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
@@ -454,6 +504,86 @@ function Connect-AuditEnvironment {
             # Show Account if available and not empty
             if ($azContext.Account -and $azContext.Account.Id -and -not [string]::IsNullOrWhiteSpace($azContext.Account.Id)) {
                 Write-Host ('  Account: ' + $azContext.Account.Id) -ForegroundColor White
+            }
+        }
+        
+        # Export subscriptions if requested
+        if ($ExportSubscriptions) {
+            try {
+                Write-Host ''
+                Write-Host '=== Exporting Subscriptions ===' -ForegroundColor Cyan
+                
+                $tenantId = $azContext.Tenant.Id
+                
+                # Get all subscriptions in the tenant
+                $allSubscriptions = Get-AzSubscription -TenantId $tenantId -ErrorAction Stop
+                $enabledSubscriptions = $allSubscriptions | Where-Object { $_.State -eq 'Enabled' }
+                
+                if ($enabledSubscriptions.Count -eq 0) {
+                    Write-Warning 'No enabled subscriptions found in tenant.'
+                    return
+                }
+                
+                # Try to get tenant name, fallback to tenant ID
+                $tenantName = $tenantId
+                try {
+                    $tenantInfo = Get-AzTenant -TenantId $tenantId -ErrorAction Stop
+                    # Handle if Get-AzTenant returns an array
+                    if ($tenantInfo -is [array] -and $tenantInfo.Count -gt 0) {
+                        $tenantInfo = $tenantInfo[0]
+                    }
+                    
+                    # Try DisplayName first, then Name property
+                    if ($tenantInfo) {
+                        if ($tenantInfo.DisplayName -and -not [string]::IsNullOrWhiteSpace($tenantInfo.DisplayName)) {
+                            $tenantName = $tenantInfo.DisplayName
+                        }
+                        elseif ($tenantInfo.Name -and -not [string]::IsNullOrWhiteSpace($tenantInfo.Name)) {
+                            $tenantName = $tenantInfo.Name
+                        }
+                    }
+                }
+                catch {
+                    # Fallback to tenant ID if tenant name cannot be retrieved
+                    Write-Verbose "Could not retrieve tenant name, using tenant ID: $_"
+                }
+                
+                # Sanitize tenant name for filename (remove invalid characters)
+                $sanitizedTenantName = $tenantName -replace '[<>:"/\\|?*]', '_' -replace '\s+', '_'
+                
+                # Determine output folder root
+                $moduleRoot = Split-Path -Parent $PSScriptRoot
+                $outputFolder = Join-Path $moduleRoot "output"
+                
+                # Create output folder if it doesn't exist
+                if (-not (Test-Path $outputFolder)) {
+                    New-Item -ItemType Directory -Path $outputFolder -Force | Out-Null
+                }
+                
+                # Generate filename with datetime
+                $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+                $fileName = "$sanitizedTenantName-$timestamp.csv"
+                $csvPath = Join-Path $outputFolder $fileName
+                
+                # Prepare data for export
+                $exportData = $enabledSubscriptions | ForEach-Object {
+                    [PSCustomObject]@{
+                        SubscriptionID = $_.Id
+                        SubscriptionName = if ($_.Name) { $_.Name } else { '' }
+                    }
+                }
+                
+                # Export to CSV
+                $exportData | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+                
+                Write-Host "Exported $($enabledSubscriptions.Count) subscription(s) to:" -ForegroundColor Green
+                Write-Host "  $csvPath" -ForegroundColor White
+                if ($tenantName -ne $tenantId) {
+                    Write-Host "  Tenant: $tenantName" -ForegroundColor Gray
+                }
+            }
+            catch {
+                Write-Warning "Failed to export subscriptions: $_"
             }
         }
         

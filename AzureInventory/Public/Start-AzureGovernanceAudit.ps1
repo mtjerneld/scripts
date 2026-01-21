@@ -24,6 +24,11 @@
 .PARAMETER SubscriptionIds
     (Live mode) Array of subscription IDs to scan. If not specified, scans all enabled subscriptions.
 
+.PARAMETER SubscriptionFilter
+    (Live mode) Path to CSV file containing subscriptions to scan. CSV must have SubscriptionID column.
+    Only subscriptions listed in the CSV will be scanned. Supports semicolon-separated IDs in a single cell.
+    Cannot be used together with SubscriptionIds.
+
 .PARAMETER OutputPath
     Custom output folder path. If not specified:
     - Live mode: output/{tenantId}-{timestamp}
@@ -92,6 +97,9 @@ function Start-AzureGovernanceAudit {
         [string[]]$SubscriptionIds,
 
         [Parameter(Mandatory = $false)]
+        [string]$SubscriptionFilter,
+
+        [Parameter(Mandatory = $false)]
         [string]$OutputPath,
 
         [Parameter(Mandatory = $false)]
@@ -143,6 +151,7 @@ function Start-AzureGovernanceAudit {
         Write-Host "  -ReportType <String[]>   Reports to generate (default: All)" -ForegroundColor White
         Write-Host "  -Mode <String>           'Live' (default) or 'Test'" -ForegroundColor White
         Write-Host "  -SubscriptionIds         Filter to specific subscriptions" -ForegroundColor White
+        Write-Host "  -SubscriptionFilter      Path to CSV file with subscriptions to scan" -ForegroundColor White
         Write-Host "  -OutputPath              Custom output folder" -ForegroundColor White
         Write-Host "  -SaveDataPayload         Save dataset as JSON" -ForegroundColor White
         Write-Host "  -PassThru                Return result object" -ForegroundColor White
@@ -161,6 +170,7 @@ function Start-AzureGovernanceAudit {
         Write-Host "  Start-AzureGovernanceAudit -Mode Test" -ForegroundColor Gray
         Write-Host "  Start-AzureGovernanceAudit -ReportType CostTracking -Mode Test" -ForegroundColor Gray
         Write-Host "  Start-AzureGovernanceAudit -ReportType Security -AI" -ForegroundColor Gray
+        Write-Host "  Start-AzureGovernanceAudit -SubscriptionFilter subscriptions.csv" -ForegroundColor Gray
         Write-Host ""
         return
     }
@@ -224,8 +234,91 @@ function Start-AzureGovernanceAudit {
     $subscriptionNames = @{}
 
     if ($Mode -eq 'Live') {
+        # Validate that SubscriptionIds and SubscriptionFilter are not both provided
+        if ($SubscriptionIds -and $SubscriptionFilter) {
+            Write-Error "Cannot use both -SubscriptionIds and -SubscriptionFilter parameters. Use only one."
+            return
+        }
+
         $subscriptionResult = Get-SubscriptionsToScan -SubscriptionIds $SubscriptionIds -Errors $errors
         $subscriptions = $subscriptionResult.Subscriptions
+
+        # Apply subscription filter from CSV if provided
+        if ($SubscriptionFilter) {
+            $subscriptionCountBefore = $subscriptions.Count
+            
+            if (-not (Test-Path $SubscriptionFilter)) {
+                Write-Error "Subscription filter CSV file not found: $SubscriptionFilter"
+                return
+            }
+
+            try {
+                # Try to detect delimiter by reading first line
+                $firstLine = Get-Content -Path $SubscriptionFilter -TotalCount 1 -ErrorAction Stop
+                $delimiter = ','
+                $semicolonCount = ($firstLine -split ';').Count
+                $commaCount = ($firstLine -split ',').Count
+                
+                # Use semicolon if it appears and creates at least 2 columns
+                if ($semicolonCount -ge 2 -and $semicolonCount -ge $commaCount) {
+                    $delimiter = ';'
+                }
+                
+                $filterCsv = Import-Csv -Path $SubscriptionFilter -Delimiter $delimiter -ErrorAction Stop
+                
+                if ($filterCsv.Count -eq 0) {
+                    Write-Warning "Subscription filter CSV file is empty: $SubscriptionFilter"
+                    return
+                }
+
+                # Find SubscriptionID column (case-insensitive)
+                $subscriptionIdColumn = $null
+                foreach ($prop in $filterCsv[0].PSObject.Properties.Name) {
+                    if ($prop -eq 'SubscriptionID' -or $prop -eq 'SubscriptionId' -or $prop -eq 'subscriptionid') {
+                        $subscriptionIdColumn = $prop
+                        break
+                    }
+                }
+
+                if (-not $subscriptionIdColumn) {
+                    Write-Error "Subscription filter CSV must contain a 'SubscriptionID' column. Found columns: $($filterCsv[0].PSObject.Properties.Name -join ', ')"
+                    return
+                }
+
+                # Extract subscription IDs from CSV (support semicolon-separated values)
+                $filterSubscriptionIds = @($filterCsv | ForEach-Object { 
+                    $id = $_.$subscriptionIdColumn
+                    if (-not [string]::IsNullOrWhiteSpace($id)) {
+                        # Split by semicolon and trim each ID
+                        $id -split ';' | ForEach-Object {
+                            $trimmedId = $_.Trim()
+                            if (-not [string]::IsNullOrWhiteSpace($trimmedId)) {
+                                $trimmedId
+                            }
+                        }
+                    }
+                } | Where-Object { $_ } | Select-Object -Unique)
+
+                if ($filterSubscriptionIds.Count -eq 0) {
+                    Write-Warning "No valid subscription IDs found in filter CSV: $SubscriptionFilter"
+                    return
+                }
+
+                # Filter subscriptions to only those in the CSV
+                $subscriptions = $subscriptions | Where-Object { $_.Id -in $filterSubscriptionIds }
+                
+                $subscriptionCountAfter = $subscriptions.Count
+                $filteredCount = $subscriptionCountBefore - $subscriptionCountAfter
+                
+                if ($filteredCount -gt 0) {
+                    Write-Host "Filtered subscriptions: $subscriptionCountBefore -> $subscriptionCountAfter (removed $filteredCount)" -ForegroundColor Gray
+                }
+            }
+            catch {
+                Write-Error "Failed to read subscription filter CSV: $_"
+                return
+            }
+        }
 
         if ($subscriptions.Count -eq 0) {
             Write-Warning "No subscriptions found to scan."

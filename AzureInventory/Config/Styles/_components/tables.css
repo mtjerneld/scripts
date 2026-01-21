@@ -52,6 +52,11 @@
     color: #e74c3c;
 }
 
+.data-table .status-warning,
+.data-table td.status-warning {
+    color: var(--accent-yellow);
+}
+
 /* Sticky header modifier */
 .data-table--sticky-header thead {
     position: sticky;
